@@ -1,0 +1,296 @@
+[
+  {
+    "id": "GS-01",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "ranking_medicamentos_setor",
+    "periodo_informado": false,
+    "pergunta": "Quais são os medicamentos mais prescritos pelos médicos do meu setor?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "WHERE setor",
+      "GROUP BY nome_medicacao",
+      "ORDER BY"
+    ],
+    "resposta_esperada": "Lista de medicamentos com quantidade de prescrições, filtrada pelo setor do propagandista, referente ao ano corrente (YTD)."
+  },
+  {
+    "id": "GS-02",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "ranking_medicamentos_setor",
+    "periodo_informado": true,
+    "pergunta": "Quais medicamentos da Aché foram mais prescritos no meu setor no 2º trimestre?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "WHERE setor",
+      "fabricante",
+      "data_prescricao"
+    ],
+    "resposta_esperada": "Lista de medicamentos Aché com prescrições no 2º trimestre, filtrada pelo setor."
+  },
+  {
+    "id": "GS-03",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "ranking_medicos_especialidade",
+    "periodo_informado": false,
+    "pergunta": "Quais cardiologistas do meu painel têm mais prescrições de Lisinopril?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "JOIN tb_painel_medico",
+      "WHERE setor",
+      "especialidade",
+      "nome_medicacao"
+    ],
+    "resposta_esperada": "Ranking de cardiologistas no painel do propagandista por volume de Lisinopril no YTD."
+  },
+  {
+    "id": "GS-04",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "ranking_medicos_especialidade",
+    "periodo_informado": true,
+    "pergunta": "Quais neurologistas prescreveram mais Venlaxin no 1º trimestre no meu setor?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "WHERE setor",
+      "especialidade",
+      "nome_medicacao",
+      "data_prescricao"
+    ],
+    "resposta_esperada": "Ranking de neurologistas por prescrições de Venlaxin no 1º trimestre, filtrado por setor."
+  },
+  {
+    "id": "GS-05",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "ranking_medicos_especialidade",
+    "periodo_informado": false,
+    "pergunta": "Quem são os médicos com mais prescrições no meu ranking?",
+    "sql_esperado_estrutura": [
+      "FROM tb_ranking_medicos",
+      "WHERE setor",
+      "ORDER BY posicao_ranking"
+    ],
+    "resposta_esperada": "Médicos com melhor posição no ranking do setor do propagandista, com pontuação."
+  },
+  {
+    "id": "GS-06",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "painel_visitas",
+    "periodo_informado": false,
+    "pergunta": "Quais médicos do meu painel não receberam visita nos últimos 5 meses?",
+    "sql_esperado_estrutura": [
+      "FROM tb_painel_medico",
+      "LEFT JOIN tb_visitacao_medica",
+      "WHERE setor",
+      "visita_efetiva",
+      "data_visita"
+    ],
+    "resposta_esperada": "Lista de médicos no painel do setor sem visita efetiva nos últimos 150 dias."
+  },
+  {
+    "id": "GS-07",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "concorrentes",
+    "periodo_informado": false,
+    "pergunta": "Quais médicos do meu setor prescrevem mais Crestor (concorrente) do que produtos Aché?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "WHERE setor",
+      "fabricante",
+      "GROUP BY ufcrm"
+    ],
+    "resposta_esperada": "Médicos no setor com maior share de prescrições de AstraZeneca/Crestor versus Aché."
+  },
+  {
+    "id": "GS-08",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "concorrentes",
+    "periodo_informado": true,
+    "pergunta": "No 3º trimestre, quais concorrentes ganharam mais prescrições no meu setor?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "WHERE setor",
+      "fabricante",
+      "data_prescricao",
+      "GROUP BY fabricante"
+    ],
+    "resposta_esperada": "Ranking de fabricantes concorrentes por volume de prescrições no 3º trimestre no setor."
+  },
+  {
+    "id": "GS-09",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "recomendacoes",
+    "periodo_informado": false,
+    "pergunta": "Quantas recomendações minhas foram aplicadas neste ciclo?",
+    "sql_esperado_estrutura": [
+      "FROM tb_recomendacoes_painel",
+      "WHERE rep_matricula",
+      "status_recomendacao = 'APLICADA'",
+      "ciclo_referencia"
+    ],
+    "resposta_esperada": "Contagem de recomendações com status APLICADA para o propagandista no ciclo vigente."
+  },
+  {
+    "id": "GS-10",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "recomendacoes",
+    "periodo_informado": false,
+    "pergunta": "Por que o Dr. SP00001 foi recomendado para revisão?",
+    "sql_esperado_estrutura": [
+      "FROM tb_recomendacoes_painel",
+      "WHERE ufcrm",
+      "tipo_recomendacao = 'REVISAO_PAINEL'"
+    ],
+    "resposta_esperada": "Motivo de revisão registrado para o médico (ABAIXO_CORTE ou SEM_VISITA_5_MESES) com justificativa narrativa."
+  },
+  {
+    "id": "GS-11",
+    "categoria": "TOTAL_GERAL",
+    "subcategoria": "total_linha_comercial",
+    "periodo_informado": false,
+    "pergunta": "Qual o total geral de prescrições de produtos Aché no Brasil no ano corrente?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "WHERE fabricante = 'Aché'",
+      "data_prescricao",
+      "SUM(quantidade)"
+    ],
+    "resposta_esperada": "Total consolidado de prescrições Aché no YTD, sem filtro de setor."
+  },
+  {
+    "id": "GS-12",
+    "categoria": "TOTAL_GERAL",
+    "subcategoria": "total_linha_comercial",
+    "periodo_informado": true,
+    "pergunta": "Qual foi o volume total de prescrições da linha CARDIO no 2º semestre de 2024?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "JOIN tb_ranking_medicos",
+      "cod_linha",
+      "data_prescricao"
+    ],
+    "resposta_esperada": "Volume total de prescrições da linha CARDIO no período julho-dezembro de 2024, consolidado nacional."
+  },
+  {
+    "id": "GS-13",
+    "categoria": "TOTAL_GERAL",
+    "subcategoria": "total_linha_comercial",
+    "periodo_informado": false,
+    "pergunta": "Quantos médicos estão no ranking nacional neste ciclo?",
+    "sql_esperado_estrutura": [
+      "FROM tb_ranking_medicos",
+      "ciclo_referencia",
+      "COUNT"
+    ],
+    "resposta_esperada": "Contagem total de médicos no ranking do ciclo vigente, sem filtro de setor."
+  },
+  {
+    "id": "GS-14",
+    "categoria": "TOTAL_GERAL",
+    "subcategoria": "comparativo_setores",
+    "periodo_informado": false,
+    "pergunta": "Qual setor tem maior volume de prescrições de Venlaxin consolidado?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "nome_medicacao",
+      "GROUP BY setor",
+      "ORDER BY SUM"
+    ],
+    "resposta_esperada": "Ranking de setores por volume de Venlaxin, sem filtro de setor."
+  },
+  {
+    "id": "GS-15",
+    "categoria": "TOTAL_GERAL",
+    "subcategoria": "comparativo_setores",
+    "periodo_informado": true,
+    "pergunta": "No 1º trimestre de 2025, qual foi o setor com mais recomendações aplicadas?",
+    "sql_esperado_estrutura": [
+      "FROM tb_recomendacoes_painel",
+      "status_recomendacao = 'APLICADA'",
+      "GROUP BY setor",
+      "data_geracao"
+    ],
+    "resposta_esperada": "Setor com maior taxa de recomendações aplicadas no 1º trimestre de 2025."
+  },
+  {
+    "id": "GS-16",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "periodo_ytd_implicito",
+    "periodo_informado": false,
+    "pergunta": "Quantas prescrições de Atenolol meu setor gerou?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "WHERE setor",
+      "nome_medicacao",
+      "data_prescricao >=",
+      "01-01"
+    ],
+    "resposta_esperada": "Total de prescrições de Atenolol no setor do propagandista no ano corrente (YTD implícito)."
+  },
+  {
+    "id": "GS-17",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "periodo_explicito",
+    "periodo_informado": true,
+    "pergunta": "Em julho de 2024 quantos médicos visitei no meu setor?",
+    "sql_esperado_estrutura": [
+      "FROM tb_visitacao_medica",
+      "WHERE setor",
+      "data_visita",
+      "2024-07"
+    ],
+    "resposta_esperada": "Contagem de médicos visitados no setor em julho de 2024."
+  },
+  {
+    "id": "GS-18",
+    "categoria": "FORA_ESCOPO",
+    "subcategoria": "dados_inexistentes",
+    "periodo_informado": false,
+    "pergunta": "Qual é o preço de tabela do Vastarel MR na farmácia?",
+    "sql_esperado_estrutura": [],
+    "resposta_esperada": "Resposta informando que não há dados de precificação disponíveis nesta base. Fallback esperado."
+  },
+  {
+    "id": "GS-19",
+    "categoria": "FORA_ESCOPO",
+    "subcategoria": "escopo_negocio",
+    "periodo_informado": false,
+    "pergunta": "Qual é a previsão do tempo em São Paulo amanhã?",
+    "sql_esperado_estrutura": [],
+    "resposta_esperada": "Resposta informando que a pergunta está fora do escopo de análise de dados farmacêuticos."
+  },
+  {
+    "id": "GS-20",
+    "categoria": "FORA_ESCOPO",
+    "subcategoria": "dados_inexistentes",
+    "periodo_informado": false,
+    "pergunta": "Quantos funcionários a Aché tem no estado de São Paulo?",
+    "sql_esperado_estrutura": [],
+    "resposta_esperada": "Resposta informando que dados de RH não estão disponíveis na base de prescrições/ranking."
+  },
+  {
+    "id": "GS-21",
+    "categoria": "TOTAL_GERAL",
+    "subcategoria": "concorrentes_nacional",
+    "periodo_informado": false,
+    "pergunta": "Qual a participação de mercado da Aché em relação aos concorrentes no total geral?",
+    "sql_esperado_estrutura": [
+      "FROM tb_prescricoes_geral",
+      "GROUP BY fabricante",
+      "SUM(quantidade)"
+    ],
+    "resposta_esperada": "Share de mercado por fabricante (volume de prescrições), consolidado sem filtro de setor."
+  },
+  {
+    "id": "GS-22",
+    "categoria": "OPERACIONAL",
+    "subcategoria": "ranking_medicos_especialidade",
+    "periodo_informado": false,
+    "pergunta": "Quais são os 5 médicos mais bem posicionados no meu ranking?",
+    "sql_esperado_estrutura": [
+      "FROM tb_ranking_medicos",
+      "WHERE setor",
+      "ORDER BY posicao_ranking ASC",
+      "LIMIT 5"
+    ],
+    "resposta_esperada": "Top 5 médicos por posição no ranking do setor do propagandista no ciclo vigente."
+  }
+]

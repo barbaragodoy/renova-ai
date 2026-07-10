@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:15
+    container_name: renovai_postgres
+    environment:
+      POSTGRES_DB: renovai
+      POSTGRES_USER: renovai
+      POSTGRES_PASSWORD: renovai
+    ports:
+      - "5432:5432"
+    volumes:
+      - renovai_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U renovai -d renovai"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: renovai_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@renovai.com
+      PGADMIN_DEFAULT_PASSWORD: renovai
+    ports:
+      - "5050:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - renovai_pgadmin:/var/lib/pgadmin
+
+volumes:
+  renovai_pgdata:
+  renovai_pgadmin:

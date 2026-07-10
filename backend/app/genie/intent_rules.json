@@ -1,0 +1,40 @@
+{
+  "_comentario": "Palavras-chave para classificação de intenção da pergunta do usuário. ESTE É O ÚNICO ARQUIVO A ALTERAR após alinhamento com Pavan sobre novos critérios.",
+  "TOTAL_GERAL": {
+    "descricao": "Perguntas que solicitam visão agregada sem filtro de setor",
+    "palavras_chave": [
+      "total geral",
+      "toda a empresa",
+      "todos os setores",
+      "nacional",
+      "brasil",
+      "consolidado",
+      "geral",
+      "ranking geral",
+      "visão geral"
+    ]
+  },
+  "OPERACIONAL": {
+    "descricao": "Perguntas operacionais do propagandista sobre seu setor. Aplica filtro de setor automaticamente.",
+    "palavras_chave": [
+      "meu setor",
+      "minha carteira",
+      "meus médicos",
+      "meu painel",
+      "minha região",
+      "meu ranking",
+      "minhas recomendações",
+      "minha área"
+    ]
+  },
+  "periodo": {
+    "ytd_keywords": [
+      "ytd",
+      "ano atual",
+      "acumulado",
+      "janeiro até",
+      "início do ano"
+    ],
+    "periodo_regex": "(\\d{1,2}[°º]?\\s*trimestre|q[1-4]|jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez|20\\d{2})"
+  }
+}

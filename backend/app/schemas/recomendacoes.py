@@ -11,7 +11,11 @@ from pydantic import BaseModel
 
 class RecomendacaoItem(BaseModel):
     id_recomendacao: UUID
-    nome_medico: str
+    # Optional: candidatos a ENTRADA_PAINEL ainda fora do painel podem não ter
+    # cadastro em nenhuma fonte hoje usada pelo pipeline (ver
+    # docs/context/known-issues.md). O router aplica um fallback textual antes
+    # de construir este objeto, mas o schema reflete a realidade da fonte.
+    nome_medico: Optional[str] = None
     ufcrm: str
     posicao_ranking: Optional[int]
     soma_pontuacao: Optional[float]

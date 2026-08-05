@@ -12,27 +12,17 @@ real hoje, mas a lógica defensiva é mantida no código.
 """
 import pytest
 from backend.app.auth.context import resolver_contexto, StatusContexto
-from backend.app.config import get_settings
 
+# Este arquivo testa contra a seed do Postgres local — deve continuar
+# passando independente do DATA_SOURCE configurado no .env real (que pode
+# estar em 'databricks' para rodar a API/test_context_integration.py contra
+# o Databricks de verdade). Fixture compartilhada em conftest.py.
+pytestmark = pytest.mark.usefixtures("forcar_data_source_local")
 
 # E-mail inserido em 02_populate_propagandistas.sql (domínio ache.com.br)
 EMAIL_ACHE = "ana.lima@ache.com.br"
 # E-mail que não existe no banco
 EMAIL_INEXISTENTE = "fulano.naoexiste@ache.com.br"
-
-
-@pytest.fixture(autouse=True)
-def _forcar_data_source_local(monkeypatch):
-    """
-    Este arquivo testa contra a seed do Postgres local — deve continuar
-    passando independente do DATA_SOURCE configurado no .env real (que pode
-    estar em 'databricks' para rodar a API/test_context_integration.py
-    contra o Databricks de verdade).
-    """
-    monkeypatch.setenv("DATA_SOURCE", "local")
-    get_settings.cache_clear()
-    yield
-    get_settings.cache_clear()
 
 
 def test_setor_resolvido_dominio_ache():

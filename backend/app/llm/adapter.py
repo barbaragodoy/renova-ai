@@ -28,6 +28,7 @@ def get_llm_provider(settings: "Settings | None" = None) -> LLMAdapter:
     from backend.app.llm.claude_provider import ClaudeProvider
     from backend.app.llm.openai_provider import OpenAIProvider
     from backend.app.llm.gemini_provider import GeminiProvider
+    from backend.app.llm.groq_provider import GroqProvider
 
     if settings is None:
         settings = get_settings()
@@ -39,4 +40,6 @@ def get_llm_provider(settings: "Settings | None" = None) -> LLMAdapter:
         return OpenAIProvider(settings)
     if provider == "gemini":
         return GeminiProvider(settings)
-    raise ValueError(f"LLM_PROVIDER inválido: '{provider}'. Use claude, openai ou gemini.")
+    if provider == "groq":
+        return GroqProvider(settings)
+    raise ValueError(f"LLM_PROVIDER inválido: '{provider}'. Use claude, openai, gemini ou groq.")

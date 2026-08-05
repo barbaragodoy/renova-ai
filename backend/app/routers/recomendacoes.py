@@ -1,10 +1,12 @@
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import create_engine, text
 
 from backend.app.auth.context import resolver_contexto, StatusContexto
+from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.config import get_settings
 from backend.app.schemas.recomendacoes import (
     DesconsiderarRequest,
@@ -32,10 +34,11 @@ def _validar_contexto(email: str):
 
 @router.get("/entrada", response_model=ListaRecomendacoesResponse)
 def listar_entrada(
-    email: str = Query(...),
+    email: Optional[str] = Query(None),
     ciclo: str = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
-    ctx = _validar_contexto(email)
+    ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
     ciclo = ciclo or settings.ciclo_referencia
     limite = settings.limite_sugestoes
@@ -62,10 +65,11 @@ def listar_entrada(
 
 @router.get("/revisao", response_model=ListaRecomendacoesResponse)
 def listar_revisao(
-    email: str = Query(...),
+    email: Optional[str] = Query(None),
     ciclo: str = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
-    ctx = _validar_contexto(email)
+    ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
     ciclo = ciclo or settings.ciclo_referencia
     limite = settings.limite_sugestoes
@@ -92,8 +96,12 @@ def listar_revisao(
 
 
 @router.post("/desconsiderar", response_model=DesconsiderarResponse)
-def desconsiderar(body: DesconsiderarRequest, email: str = Query(...)):
-    ctx = _validar_contexto(email)
+def desconsiderar(
+    body: DesconsiderarRequest,
+    email: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
 
     with _engine().connect() as conn:
         row = conn.execute(

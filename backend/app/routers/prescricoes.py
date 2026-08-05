@@ -1,8 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
 from backend.app.auth.context import resolver_contexto, StatusContexto
+from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.genie import nl_to_sql
 
 router = APIRouter()
@@ -10,7 +11,7 @@ router = APIRouter()
 
 class ConsultaRequest(BaseModel):
     pergunta: str
-    email: str
+    email: Optional[str] = None
     periodo: Optional[str] = None
     perfil_tecnico: bool = False
 
@@ -30,8 +31,9 @@ _ERRO_HTTP = {
 
 
 @router.post("/consultar", response_model=ConsultaResponse)
-async def consultar_prescricoes(body: ConsultaRequest):
-    contexto = resolver_contexto(body.email)
+async def consultar_prescricoes(body: ConsultaRequest, authorization: Optional[str] = Header(None)):
+    email_autenticado = resolver_email_autenticado(authorization, body.email)
+    contexto = resolver_contexto(email_autenticado)
     if contexto.status != StatusContexto.SETOR_RESOLVIDO:
         raise HTTPException(
             status_code=403,

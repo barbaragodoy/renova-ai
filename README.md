@@ -11,6 +11,7 @@
 - [Arquitetura](#arquitetura)
 - [Estrutura de Pastas](#estrutura-de-pastas)
 - [Stack Tecnológica](#stack-tecnológica)
+- [Fonte de Dados (`DATA_SOURCE`)](#fonte-de-dados-data_source)
 - [Regras de Negócio](#regras-de-negócio)
 - [Endpoints da API](#endpoints-da-api)
 - [Banco de Dados](#banco-de-dados)
@@ -34,7 +35,12 @@ O **RenovAI** é um motor de recomendação que apoia propagandistas farmacêuti
 | **ENTRADA_PAINEL** | Médico no ranking ≤ 400, fora do painel atual | Incluir no painel |
 | **REVISAO_PAINEL** | Médico no painel com ranking > 400 **ou** sem visita há > 5 meses | Revisar permanência |
 
-O propagandista recebe no máximo **5 sugestões por tipo** por ciclo, ordenadas por pontuação. Pode aceitar (ação tomada → `APLICADA`), desconsiderar com justificativa (`DESCONSIDERADA`) ou deixar expirar no fim do ciclo (`EXPIRADA`).
+> A ampliação do critério de revisão para incluir médicos com ranking bom
+> (≤ 400) sem visita há 5+ meses é o comportamento real da fonte hoje, mas
+> ainda **não foi formalmente confirmada como regra intencional** com
+> George/Bruno — ver `docs/context/known-issues.md`.
+
+O propagandista recebe no máximo **5 sugestões por tipo** por ciclo, ordenadas por pontuação. Pode aceitar (ação tomada → `APLICADA`), desconsiderar com justificativa (`DESCONSIDERADA`) ou deixar expirar no fim do ciclo (`EXPIRADA`). **O fluxo de desconsiderar está congelado** (ver seção de Endpoints) — não recebe manutenção nova no momento.
 
 Além das listas, o sistema oferece um **chat analítico em linguagem natural** que traduz perguntas do propagandista em SQL, executa no banco de dados e retorna a resposta sintetizada — simulando localmente o comportamento do Databricks Genie.
 
@@ -65,19 +71,26 @@ Além das listas, o sistema oferece um **chat analítico em linguagem natural** 
 │                              │                                    │
 │  ┌───────────────────────────▼──────────────────────────────┐  │
 │  │                   LLM Adapter Layer                        │  │
-│  │   ClaudeProvider │ OpenAIProvider │ GeminiProvider        │  │
+│  │  ClaudeProvider │ OpenAIProvider │ GeminiProvider │ GroqProvider │  │
 │  │   (get_llm_provider() — selecionado via LLM_PROVIDER)     │  │
 │  └──────────────────────────────────────────────────────────┘  │
 └──────────────────────────────┬──────────────────────────────────┘
-                               │ SQLAlchemy
-┌──────────────────────────────▼──────────────────────────────────┐
-│                  PostgreSQL 15 (Docker)                           │
-│                                                                   │
-│  tb_propagandistas       tb_ranking_medicos                       │
-│  tb_painel_medico        tb_prescricoes_geral                     │
-│  tb_recomendacoes_painel tb_visitacao_medica                     │
-│  tb_hierarquia_gd                                                 │
-└─────────────────────────────────────────────────────────────────┘
+                                │ SQLAlchemy
+                                │ db/databricks_connection.py:get_engine()
+                                │ troca de fonte via DATA_SOURCE (.env)
+              ┌─────────────────┴──────────────────┐
+              ▼ DATA_SOURCE=local                   ▼ DATA_SOURCE=databricks
+┌───────────────────────────┐          ┌────────────────────────────────────┐
+│  PostgreSQL 15 (Docker)    │          │  Databricks SQL Warehouse (real)    │
+│                            │          │  acheinfo_dev.renovai — OAuth M2M   │
+│  tb_propagandistas         │          │  do SP sp-renovai-genie-api-poc     │
+│  tb_ranking_medicos        │          │                                      │
+│  tb_painel_medico          │          │  tb_propagandistas                  │
+│  tb_prescricoes_geral      │          │  tb_recomendacoes_painel_historico  │
+│  tb_recomendacoes_painel   │          │  vw_ranking_setor                   │
+│  tb_visitacao_medica       │          │  vw_ranking_corte_hist              │
+│  tb_hierarquia_gd          │          │  vw_ultima_visita                   │
+└───────────────────────────┘          └────────────────────────────────────┘
 
 Jobs (CLI / cron):
   gerar_recomendacoes.py  →  roda no início de cada ciclo
@@ -127,7 +140,10 @@ renovai-local/
 │       ├── config.py                  # Leitura centralizada de env vars (pydantic-settings)
 │       ├── main.py                    # FastAPI: routers + middleware de logging + CORS
 │       ├── auth/
-│       │   └── context.py             # resolver_contexto() + GET /auth/contexto
+│       │   ├── context.py             # resolver_contexto() + GET /auth/contexto
+│       │   └── jwt_auth.py            # resolver_email_autenticado() — flag AUTH_REQUIRE_JWT
+│       ├── db/
+│       │   └── databricks_connection.py  # get_engine() — alterna Postgres/Databricks via DATA_SOURCE
 │       ├── genie/
 │       │   ├── intent_rules.json      # ⚠️ ÚNICO arquivo a mudar após alinhamento com Pavan
 │       │   └── nl_to_sql.py           # Fluxo completo NL→SQL→NL
@@ -135,10 +151,11 @@ renovai-local/
 │       │   ├── adapter.py             # Interface abstrata LLMAdapter + factory
 │       │   ├── claude_provider.py     # Anthropic SDK
 │       │   ├── openai_provider.py     # OpenAI SDK
-│       │   └── gemini_provider.py     # Google Generative AI SDK
+│       │   ├── gemini_provider.py     # Google Generative AI SDK
+│       │   └── groq_provider.py       # SDK OpenAI apontado para api.groq.com (compatível)
 │       ├── routers/
 │       │   ├── prescricoes.py         # POST /prescricoes/consultar
-│       │   ├── recomendacoes.py       # GET /entrada, /revisao | POST /desconsiderar
+│       │   ├── recomendacoes.py       # GET /entrada, /revisao | POST /desconsiderar (CONGELADO)
 │       │   └── gerencial.py           # GET /indicadores, /propagandistas, /recomendacoes
 │       ├── schemas/
 │       │   ├── recomendacoes.py       # Contrato frontend ↔ backend (recomendações)
@@ -148,9 +165,13 @@ renovai-local/
 │       │   ├── atualizar_status.py    # Atualiza PENDENTE → APLICADA diariamente
 │       │   └── novo_ciclo.py          # Expira ciclo anterior + abre novo ciclo
 │       └── tests/
+│           ├── conftest.py
 │           ├── test_context.py
+│           ├── test_context_integration.py    # só roda com DATA_SOURCE=databricks
+│           ├── test_jwt_auth.py
 │           ├── test_prescricoes.py
 │           ├── test_recomendacoes.py
+│           ├── test_recomendacoes_integration.py  # só roda com DATA_SOURCE=databricks
 │           ├── test_desconsiderar.py
 │           ├── test_ciclo.py
 │           ├── test_gerencial.py
@@ -171,8 +192,14 @@ renovai-local/
 │   ├── cenarios/
 │   │   ├── matriz_teste.md            # 37 cenários em 6 grupos
 │   │   └── golden_set.json            # 22 perguntas categorizadas
+│   ├── context/                       # ler sob demanda — ver índice no CLAUDE.md
+│   │   ├── decisions-log.md           # decisões de negócio/arquitetura datadas
+│   │   ├── databricks-schema-real.md  # de-para completo schema local ↔ Databricks real
+│   │   ├── known-issues.md            # bugs técnicos na fonte real, RESOLVIDO/ABERTO
+│   │   └── arquitetura.md             # inventário completo do implementado + tasks
 │   └── promocao_producao.md           # Checklist local → produção Aché
 ├── docker-compose.yml                 # PostgreSQL 15 + pgAdmin
+├── requirements.txt
 ├── .env.example
 ├── CLAUDE.md                          # Contexto do projeto para Claude Code
 └── README.md
@@ -190,8 +217,9 @@ renovai-local/
 | ORM | SQLAlchemy 2.x |
 | Backend | Python 3.10+ / FastAPI |
 | Validação | Pydantic v2 + pydantic-settings |
-| LLM | Anthropic Claude / OpenAI GPT-4o / Google Gemini (selecionável via `.env`) |
-| Auth | Auth0 free tier (simula Entra ID) |
+| LLM | Anthropic Claude / OpenAI GPT-4o / Google Gemini / Groq (selecionável via `LLM_PROVIDER` no `.env`) |
+| Auth | Auth0 free tier (simula Entra ID) — JWT opcional via `AUTH_REQUIRE_JWT` |
+| Fonte de dados | Postgres local **ou** Databricks real (`DATA_SOURCE`, ver seção abaixo) |
 | Testes | pytest + unittest.mock |
 
 ### Produção (Aché)
@@ -207,19 +235,34 @@ renovai-local/
 
 ---
 
+## Fonte de Dados (`DATA_SOURCE`)
+
+A alternância local ↔ real é feita por `DATA_SOURCE` no `.env` (`local` | `databricks`), resolvida centralmente em `db/databricks_connection.py:get_engine()`. Nenhum outro módulo (`auth/**`, `routers/recomendacoes.py`) sabe ou deve saber qual fonte está por trás da engine.
+
+| `DATA_SOURCE` | Engine | Autenticação |
+|---|---|---|
+| `local` (padrão) | PostgreSQL 15 via Docker | nenhuma (`docker-compose.yml`) |
+| `databricks` | Databricks SQL Warehouse real (`acheinfo_dev.renovai`) | OAuth M2M (`client_credentials`) do Service Principal `sp-renovai-genie-api-poc` — **nunca PAT** |
+
+Isso permite rodar a API localmente (`uvicorn` na sua máquina) apontando para o dado real de produção do Databricks, sem precisar do deploy em Azure. `GET /recomendacoes/entrada` e `GET /recomendacoes/revisao` já usam esse mecanismo e alternam nome de tabela/coluna por fonte (`tb_recomendacoes_painel` local vs. `tb_recomendacoes_painel_historico` real — ver `docs/context/databricks-schema-real.md`). `POST /recomendacoes/desconsiderar` ainda opera só contra o schema local (congelado, ver Endpoints).
+
+---
+
 ## Regras de Negócio
 
 ### Cortes do ranking
 
 | Ambiente | Entrada | Revisão |
 |---|---|---|
-| Local (simulado) | posicao_ranking ≤ 100 | posicao_ranking > 100 |
-| Produção (Aché) | posicao_ranking ≤ 400 | posicao_ranking > 400 |
+| Local (simulado, Postgres) | posicao_ranking ≤ 100 | posicao_ranking > 100 |
+| Produção / Databricks real | posicao_ranking (por setor) ≤ 400 | posicao_ranking (por setor) > 400 |
 
 ### Critérios de revisão
 
-- **ABAIXO_CORTE** — médico no painel com ranking acima do corte
-- **SEM_VISITA_5_MESES** — médico no painel sem visita efetiva nos últimos 150 dias
+- **ABAIXO_CORTE** (modelo local) / `REVISAO_RANKING_SETOR_ACIMA_400` (fonte real) — médico no painel com ranking acima do corte
+- **SEM_VISITA_5_MESES** (modelo local) / `REVISAO_SEM_VISITA_5_MESES` (fonte real) — médico no painel sem visita efetiva nos últimos 5 meses, **independente do ranking** (ver nota de pendência de negócio na Visão Geral)
+- `REVISAO_RANKING_SETOR_ACIMA_400_E_SEM_VISITA_5_MESES` — combinação dos dois critérios (só existe na fonte real, `MOTIVO_RECOMENDACAO`)
+- Trava adicional só na fonte real: propagandista precisa ter **mais de 400 médicos no painel** (`QTD_MEDICOS_PAINEL_CICLO > 400`) para a revisão ser sugerida — mantida no backend como defesa em profundidade mesmo já validada na origem
 
 ### Limites e ordenação
 
@@ -230,7 +273,7 @@ renovai-local/
 
 ### Identidade do propagandista
 
-- Backend resolve matrícula/setor a partir do e-mail do token JWT
+- Backend resolve matrícula/setor a partir do e-mail (`resolver_email_autenticado()`, ver seção Autenticação — origem do e-mail depende de `AUTH_REQUIRE_JWT`)
 - Propagandista **nunca informa matrícula manualmente**
 - `tb_propagandistas` **nunca é exposta** nas respostas da API
 
@@ -254,6 +297,11 @@ renovai-local/
 ---
 
 ## Endpoints da API
+
+> `email` via query string só é aceito com `AUTH_REQUIRE_JWT=false` (padrão
+> local). Com `AUTH_REQUIRE_JWT=true`, todos os endpoints abaixo exigem
+> header `Authorization: Bearer <token>` e ignoram `email` — ver seção
+> Autenticação.
 
 ### Autenticação
 
@@ -281,9 +329,21 @@ renovai-local/
 
 | Método | Endpoint | Descrição |
 |---|---|---|
-| GET | `/recomendacoes/entrada?email={email}` | Lista ENTRADA_PAINEL PENDENTE (≤ 5) |
-| GET | `/recomendacoes/revisao?email={email}` | Lista REVISAO_PAINEL PENDENTE (≤ 5) |
-| POST | `/recomendacoes/desconsiderar?email={email}` | Desconsiderar recomendação com motivo |
+| GET | `/recomendacoes/entrada?email={email}&ciclo={ciclo}` | Lista ENTRADA_PAINEL PENDENTE (≤ 5) |
+| GET | `/recomendacoes/revisao?email={email}&ciclo={ciclo}` | Lista REVISAO_PAINEL PENDENTE (≤ 5) |
+| POST | `/recomendacoes/desconsiderar?email={email}` | Desconsiderar recomendação com motivo — **CONGELADO** |
+
+> `ciclo` é opcional e cai no default `CICLO_REFERENCIA` (`config.py`/`.env`),
+> hoje **desatualizado** (`202507`) em relação ao ciclo real mais recente na
+> fonte Databricks (`202607`). Sem `?ciclo=` explícito, chamadas contra
+> `DATA_SOURCE=databricks` retornam lista vazia mesmo havendo dado
+> disponível — passe o ciclo explicitamente até o default ser corrigido.
+>
+> `POST /recomendacoes/desconsiderar` está **congelado por decisão do
+> George** desde 2026-07-23 (possível redesenho para fluxo conversacional em
+> vez de REST) — segue funcional apenas contra o schema local
+> (`tb_recomendacoes_painel`), sem manutenção nova prevista. Ver
+> `docs/context/decisions-log.md`.
 
 **Body de desconsiderar:**
 ```json
@@ -318,7 +378,7 @@ renovai-local/
 
 ## Banco de Dados
 
-### Tabelas principais
+### Tabelas principais (schema local — `DATA_SOURCE=local`)
 
 | Tabela | Descrição |
 |---|---|
@@ -326,9 +386,19 @@ renovai-local/
 | `tb_ranking_medicos` | Ranking mensal por setor/linha/ciclo |
 | `tb_painel_medico` | Painel atual de médicos por setor/ciclo |
 | `tb_prescricoes_geral` | Prescrições capturadas de fontes externas (IQVIA/Close-Up) |
-| `tb_recomendacoes_painel` | Sugestões geradas pelo motor, com histórico completo |
+| `tb_recomendacoes_painel` | Sugestões geradas pelo motor — **estado mais recente sobrescrito** (não histórico) |
 | `tb_visitacao_medica` | Registro de visitas efetivas e tentativas |
 | `tb_hierarquia_gd` | Relacionamento GD → propagandistas subordinados |
+
+> No schema Databricks real (`DATA_SOURCE=databricks`), `tb_recomendacoes_painel`
+> é substituída por `tb_recomendacoes_painel_historico` — histórico por
+> ciclo (não sobrescrito), 15 colunas, nomes de coluna diferentes (ex.:
+> `RANKING_POSICAO_CICLO`, `MOTIVO_RECOMENDACAO`, `QTD_MEDICOS_PAINEL_CICLO`).
+> `tb_propagandistas` também difere (sem `cod_linha`/`ativo`, com campos
+> `GD_*` embutidos). Mapeamento completo coluna a coluna em
+> `docs/context/databricks-schema-real.md`. Hoje só `/recomendacoes/entrada`
+> e `/recomendacoes/revisao` já alternam por fonte — `gerencial.py` e
+> `/recomendacoes/desconsiderar` ainda assumem só o schema local.
 
 ### Views gerenciais
 
@@ -374,6 +444,7 @@ Configurada em `genie/intent_rules.json` — **único arquivo a alterar** após 
 | `claude` | claude-sonnet-4-6 | `ANTHROPIC_API_KEY` |
 | `openai` | gpt-4o | `OPENAI_API_KEY` |
 | `gemini` | gemini-1.5-pro | `GOOGLE_API_KEY` |
+| `groq` | llama-3.3-70b-versatile | `GROQ_API_KEY` |
 
 ---
 
@@ -407,13 +478,19 @@ python -m backend.app.jobs.novo_ciclo --ciclo-atual 202507 --ciclo-novo 202508
 
 ## Autenticação
 
-### Local (Auth0)
+`backend/app/auth/jwt_auth.py:resolver_email_autenticado()` é o ponto único de resolução de identidade — usado por `auth/context.py`, `routers/prescricoes.py` e `routers/recomendacoes.py`. O comportamento é controlado pela flag `AUTH_REQUIRE_JWT` (`.env`):
 
-O token JWT do Auth0 contém o campo `email`. O endpoint `GET /auth/contexto?email={email}` resolve a identidade do propagandista consultando `tb_propagandistas`.
+### `AUTH_REQUIRE_JWT=false` (padrão local, dev)
 
-### Produção (Entra ID)
+Aceita o e-mail cru vindo de query string ou body — nenhum token é validado. É o modo usado nos exemplos deste README e nos testes mockados.
 
-O claim de e-mail no JWT do Entra ID pode ser `preferred_username` ou `upn` — a confirmar com Flávio antes do go-live.
+### `AUTH_REQUIRE_JWT=true` (produção / homologação)
+
+Exige header `Authorization: Bearer <token>`. O token é validado (assinatura, audience, issuer) via JWKS do Auth0/Entra ID (`PyJWKClient`, com cache por domínio), e o e-mail é extraído da claim configurada em `AUTH_EMAIL_CLAIM` (padrão `preferred_username`). Nesse modo, `email` via query/body é **ignorado** — só o token é fonte de verdade. Em qualquer modo, uma vez resolvido, o e-mail é usado para consultar `tb_propagandistas` (local ou Databricks, conforme `DATA_SOURCE`) e obter matrícula/setor.
+
+### Claim de e-mail no Entra ID — pendente
+
+O claim correto (`preferred_username` vs. `upn`) ainda **não foi confirmado com Flávio**. `AUTH_EMAIL_CLAIM` é configurável via `.env` justamente para não exigir mudança de código quando a resposta chegar.
 
 ---
 
@@ -459,9 +536,14 @@ docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/08_cre
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install fastapi uvicorn sqlalchemy psycopg2-binary pydantic pydantic-settings \
-            anthropic openai google-generativeai pytest httpx
+pip install -r requirements.txt
 ```
+
+> Inclui os SDKs de todos os providers LLM (Claude/OpenAI/Gemini/Groq), o
+> stack de conexão Databricks (`databricks-sql-connector`,
+> `databricks-sqlalchemy`, `databricks-sdk`, usados só quando
+> `DATA_SOURCE=databricks`) e `PyJWT` (validação de token quando
+> `AUTH_REQUIRE_JWT=true`).
 
 ### 5. Validar dados
 
@@ -497,16 +579,19 @@ pytest backend/app/tests/ -v
 
 | Arquivo | Cenários | Tipo |
 |---|---|---|
-| `test_context.py` | 3 | Unitário (mock) |
+| `test_context.py` | 4 | Unitário (mock; força `DATA_SOURCE=local`) |
+| `test_context_integration.py` | 6 | Integração contra Databricks real — `skipif DATA_SOURCE != databricks` |
+| `test_jwt_auth.py` | 7 | Unitário (mock) — `AUTH_REQUIRE_JWT` true/false |
 | `test_prescricoes.py` | 6 | Integração (mock LLM) |
 | `test_recomendacoes.py` | 4 | Integração (mock banco) |
+| `test_recomendacoes_integration.py` | — | Integração contra Databricks real — `skipif DATA_SOURCE != databricks` |
 | `test_desconsiderar.py` | 5 | Integração (mock banco) |
 | `test_ciclo.py` | 5 | Unitário (mock banco) |
 | `test_gerencial.py` | 6 | Integração (mock banco) |
 | `test_cenarios_completos.py` | 10 | E2E mockado |
 | `test_golden_set.py` | 22 + relatório | Golden set NL |
 
-O `test_golden_set.py` imprime ao final a taxa de acerto por categoria (OPERACIONAL / TOTAL_GERAL / FORA_ESCOPO).
+O `test_golden_set.py` imprime ao final a taxa de acerto por categoria (OPERACIONAL / TOTAL_GERAL / FORA_ESCOPO). Os testes `*_integration.py` só executam de fato com `DATA_SOURCE=databricks` configurado no `.env` — caso contrário aparecem como `SKIPPED`.
 
 ---
 
@@ -517,7 +602,11 @@ O `test_golden_set.py` imprime ao final a taxa de acerto por categoria (OPERACIO
 | `docs/cenarios/matriz_teste.md` | 37 cenários em 6 grupos com critérios de aceite |
 | `docs/cenarios/golden_set.json` | 22 perguntas categorizadas para validação do Genie local |
 | `docs/promocao_producao.md` | Checklist de promoção local → produção com responsáveis |
-| `CLAUDE.md` | Contexto completo do projeto para sessões com Claude Code |
+| `docs/context/decisions-log.md` | Decisões de negócio/arquitetura datadas (permissões do SP, warehouse, domínios de e-mail, congelamento do desconsiderar, pendências abertas) |
+| `docs/context/databricks-schema-real.md` | Mapeamento completo de colunas entre o schema local (Postgres) e o schema real do Databricks |
+| `docs/context/known-issues.md` | Bugs técnicos na fonte real, com status RESOLVIDO/ABERTO |
+| `docs/context/arquitetura.md` | Inventário completo do implementado, tasks por pessoa e ambiente de desenvolvimento |
+| `CLAUDE.md` | Contexto completo do projeto para sessões com Claude Code (índice de leitura sob demanda) |
 
 ---
 
@@ -525,9 +614,9 @@ O `test_golden_set.py` imprime ao final a taxa de acerto por categoria (OPERACIO
 
 As etapas abaixo são necessárias para o projeto estar **funcional em produção**.
 
-### 1. Implementar `GeniProvider` (Databricks SDK)
+### 1. Implementar `GenieProvider` (Databricks Genie, para o chat NL→SQL)
 
-O único provider ainda não implementado. Será usado em produção no lugar de Claude/OpenAI/Gemini.
+O único provider de LLM ainda não implementado — usado hoje: Claude, OpenAI, Gemini e Groq. **Não confundir com `DATA_SOURCE=databricks`**, que já funciona: essa flag só troca a fonte de dados (SQL direto via SP OAuth M2M) usada por `/recomendacoes/*` e `/auth/contexto`; o motor de chat de `/prescricoes/consultar` (`genie/nl_to_sql.py`) continua chamando um dos 4 providers de LLM acima, nunca o Databricks Genie de fato.
 
 ```
 backend/app/llm/genie_provider.py
@@ -535,7 +624,7 @@ backend/app/llm/genie_provider.py
 
 - Chamar Databricks Genie via REST API ou SDK (`databricks-sdk`)
 - Registrar `genie` como opção válida no factory `get_llm_provider()`
-- Testar com o SQL Warehouse 2XS da POC
+- Testar com o SQL Warehouse da POC (`783ae0217086255c`)
 - **Responsável:** Colin
 
 ### 2. Frontend React
@@ -567,7 +656,7 @@ Este é o **único arquivo** a mudar para ajustar o comportamento do classificad
 
 ### 5. Confirmar claim JWT do Entra ID
 
-Verificar com **Flávio** qual campo do token Entra ID contém o e-mail corporativo (`preferred_username` vs `upn`) e atualizar `backend/app/auth/context.py` se necessário.
+Verificar com **Flávio** qual campo do token Entra ID contém o e-mail corporativo (`preferred_username` vs `upn`) e atualizar `AUTH_EMAIL_CLAIM` em `backend/app/auth/jwt_auth.py`/`.env` se necessário — hoje configurável, sem mudança de código prevista.
 
 ### 6. Configurar Azure Key Vault
 
@@ -588,11 +677,20 @@ Executar `data/scripts/08_create_views_gerencial.sql` adaptado para o schema de 
 
 - **Responsável:** Caio
 
-### 9. Executar `gerar_recomendacoes` para o ciclo vigente em produção
+### 9. Pendências abertas de curto prazo (não bloqueiam código, bloqueiam homologação)
 
-Após validação de todos os itens acima, rodar o job para o ciclo atual e validar as recomendações com dados reais.
+Levantadas durante a migração de `/recomendacoes/*` para o Databricks real (ver `docs/context/known-issues.md`):
 
-### 10. Piloto com usuários reais
+- Atualizar o default `CICLO_REFERENCIA` (`config.py`/`.env`), hoje `202507`, desatualizado em relação ao ciclo real mais recente na fonte (`202607`) — sem `?ciclo=` explícito, os endpoints retornam lista vazia mesmo com dado disponível.
+- Confirmar com **George/Bruno** se a ampliação do critério de `REVISAO_PAINEL` (incluir médicos com ranking ≤ 400 sem visita há 5+ meses) é regra de negócio intencional.
+- Decidir com **George** o redesenho de `/recomendacoes/desconsiderar` (fluxo conversacional vs. REST atual) antes de tirá-lo do congelamento.
+- Confirmar se `MOTIVO_RECOMENDACAO` deve bloquear a mesma recomendação de ser re-sugerida no ciclo seguinte, ou se é sempre re-sugerida — aberto com George, impacta `gerar_recomendacoes.py`.
+
+### 10. Executar `gerar_recomendacoes` para o ciclo vigente em produção
+
+Após validação de todos os itens acima, rodar o job para o ciclo atual e validar as recomendações com dados reais. (A leitura via `DATA_SOURCE=databricks` já foi validada ponta a ponta — falta o deploy em Azure Container Apps em si, itens 6–8.)
+
+### 11. Piloto com usuários reais
 
 - Validar golden set contra o Genie de produção
 - Validar taxa de acerto dos endpoints com propagandistas e GDs piloto
@@ -602,16 +700,19 @@ Após validação de todos os itens acima, rodar o job para o ciclo atual e vali
 
 ## Mapeamento Local → Produção
 
-| Item | Local | Produção |
-|---|---|---|
-| Banco | PostgreSQL 15 (Docker) | Databricks SQL Warehouse + Unity Catalog |
-| LLM | Claude / OpenAI / Gemini | Databricks Genie |
-| Auth | Auth0 | Microsoft Entra ID |
-| Secrets | `.env` | Azure Key Vault |
-| Deploy | `uvicorn` manual | Azure Container Apps |
-| Corte de ranking | ≤ 100 | ≤ 400 |
+| Item | Local (`DATA_SOURCE=local`) | Local apontando pro real (`DATA_SOURCE=databricks`) | Produção (deploy Azure) |
+|---|---|---|---|
+| Banco | PostgreSQL 15 (Docker) | Databricks SQL Warehouse real (`acheinfo_dev.renovai`), via OAuth M2M | Databricks SQL Warehouse + Unity Catalog |
+| LLM (chat NL→SQL) | Claude / OpenAI / Gemini / Groq | mesmo (LLM não muda com `DATA_SOURCE`) | Databricks Genie (`GenieProvider`, ainda não implementado) |
+| Auth | Auth0 / e-mail cru (`AUTH_REQUIRE_JWT=false`) | idem | Microsoft Entra ID / SSO |
+| Secrets | `.env` | `.env` | Azure Key Vault |
+| Deploy | `uvicorn` manual | `uvicorn` manual | Azure Container Apps |
+| Corte de ranking | ≤ 100 | ≤ 400 (por setor) | ≤ 400 (por setor) |
 
-> **O código não muda. Apenas variáveis de ambiente e providers.**
+> **O código de negócio não muda entre as três colunas.** A troca é só
+> `DATA_SOURCE` (fonte de dados) e `LLM_PROVIDER`/`AUTH_REQUIRE_JWT`/secrets —
+> `DATA_SOURCE=databricks` já é hoje uma forma de rodar contra o dado real de
+> produção sem depender do deploy em Azure.
 
 ---
 
@@ -619,10 +720,17 @@ Após validação de todos os itens acima, rodar o job para o ciclo atual e vali
 
 | Papel | Pessoa | Área |
 |---|---|---|
+| Dados na origem (correções em `tb_recomendacoes_painel_historico`, pipeline) | Hugo | Dados |
+| Decisões de negócio/arquitetura, orquestração do projeto | George | Orquestração / PM |
 | Dados e Unity Catalog | Caio | Dados |
 | Infra Azure, Key Vault, Entra ID | Flávio | Infraestrutura |
-| Backend FastAPI, GeniProvider | Colin | Backend IA |
+| Backend FastAPI, GenieProvider | Colin | Backend IA |
 | Critérios de intent e ranking | Pavan | Negócio |
+
+> Nesta simulação local, Bárbara cobre todos os papéis de implementação
+> (dados/Hugo, orquestração/George, backend de IA/Bárbara) — as pessoas
+> acima são os stakeholders reais do projeto Aché, referenciados nas
+> decisões registradas em `docs/context/decisions-log.md`.
 
 ---
 

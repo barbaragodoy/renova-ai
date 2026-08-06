@@ -217,30 +217,72 @@ vez de depender do default. Sem ajuste, chamadas aos endpoints sem `?ciclo=`
 explícito retornam lista vazia mesmo com dado real disponível — vale
 atualizar o default antes de qualquer demo/homologação sem esse parâmetro.
 
-## PENDENTE DE CONFIRMAÇÃO DE NEGÓCIO — ampliação de escopo do REVISAO_PAINEL
-Não é bug. O Hugo ampliou o critério de `REVISAO_PAINEL` para incluir
+## RESOLVIDO — ampliação de escopo do REVISAO_PAINEL confirmada pelo George — 2026-08-06
+Não era bug. O Hugo ampliou o critério de `REVISAO_PAINEL` para incluir
 médicos com **ranking bom (≤400)** que estão no painel mas sem visita há 5+
-meses (`REVISAO_SEM_VISITA_5_MESES`, 146.853 linhas reais confirmadas —
-exemplo real observado: rep `184430`, médicos com `posicao_ranking` entre
-313–322, muito dentro do corte de 400). Antes, o critério de
-`REVISAO_PAINEL` considerava apenas ranking ruim (`> 400`,
+meses (`REVISAO_SEM_VISITA_5_MESES`). Antes, o critério de `REVISAO_PAINEL`
+considerava apenas ranking ruim (`> 400`,
 `ABAIXO_CORTE`/`REVISAO_RANKING_SETOR_ACIMA_400`).
 
-Essa é uma mudança real de regra de negócio (mais médicos entram na lista
-de revisão do que antes), e **ainda não foi formalmente confirmada com
-George/Bruno** como intencional. Não bloqueia o código — o backend já lida
-corretamente com os 3 valores de motivo — mas é uma pendência de alinhamento
-de produto antes de tratar isso como comportamento definitivo em
-homologação/produção.
+**Confirmação de negócio:** o George confirmou que "sem visita há 5 meses"
+é regra real e intencional, e ele mesmo aplicou uma correção adicional na
+condição: o médico só entra nessa regra se estiver há **5 ciclos
+consecutivos no painel** — isso evita penalizar (marcar para revisão) um
+médico recém-adicionado ao painel que ainda não teve tempo/oportunidade de
+ser visitado.
+
+**Execução oficial validada (2026-08-06):** rodada pelo notebook oficial do
+Hugo (`notebookId 1296520715972786`), não mais por SQL solto como na
+correção manual anterior do George. Distribuição de
+`MOTIVO_RECOMENDACAO` no ciclo `202607`:
+- `ENTRADA_RANKING_SETOR_ATE_400`: 287.232
+- `REVISAO_RANKING_SETOR_ACIMA_400`: 107.691
+- `REVISAO_SEM_VISITA_5_MESES`: 17.069
+- `REVISAO_RANKING_SETOR_ACIMA_400_E_SEM_VISITA_5_MESES`: 4.753
+
+`STATUS_RECOMENDACAO`: 100% `PENDENTE` (416.745 linhas) — esperado nesta
+primeira carga completa pós-correção. Fan-out: 0 duplicatas. Trava de 400:
+`MIN(RANKING_POSICAO_CICLO) = 401` para `REVISAO_PAINEL`. `NOME_MEDICO`: 0
+nulos nos dois tipos. Médicos "nunca visitados" que caem na regra de
+sem-visita têm exatamente 5 ciclos consecutivos no painel — regra
+funcionando como especificado.
+
+**Validação end-to-end via API real (2026-08-06, ciclo `202608` — o ciclo
+rolou entre a validação técnica direta e esta validação de API):**
+- `GET /recomendacoes/entrada?email=henrique.domingues@ache.com.br&ciclo=202608`
+  (rep `187870`): 200 OK, 5 itens, nomes reais sem fallback, ordenado por
+  `soma_pontuacao` DESC.
+- `GET /recomendacoes/revisao?email=luan.pereira@ache.com.br&ciclo=202608`
+  (rep `184430`, escolhido especificamente por ter a regra nova dominando
+  seu top-5 por `posicao_ranking` DESC): 200 OK, 5 itens, **os 5** com
+  `motivo_revisao = "REVISAO_SEM_VISITA_5_MESES"`, ordenado corretamente
+  (234→206→197→102→86) — confirma que a regra corrigida do George está
+  acessível de ponta a ponta via API, não só no dado bruto.
+- Trava de 400 cruzada por fora, direto na fonte, para os 5 IDs retornados:
+  todos com `QTD_MEDICOS_PAINEL_CICLO = 495 > 400` — defesa em profundidade
+  continua funcionando mesmo com a nova regra.
+
+**Observação sobre Cmd 12 do notebook (não é bug):** a célula usa um
+placeholder `'<ID>'`, aparentemente pensada para parametrização externa
+(execução via job/API com ID injetado), não uma célula quebrada ou
+esquecida — registrar aqui para não ser confundida com problema novo numa
+próxima leitura do notebook.
+
+Nenhuma pendência de negócio remanescente neste item.
 
 ## Próxima ação
 1. ~~`NOME_MEDICO` nulo em `ENTRADA_PAINEL`~~ — **RESOLVIDO NA ORIGEM em
    2026-07-31**, ver seção acima. Nenhuma ação pendente neste item; o
    fallback de backend fica como defesa em profundidade permanente.
-2. Atualizar (ou parametrizar explicitamente em quem chama) o default
-   `CICLO_REFERENCIA`, hoje desatualizado (`202507` vs. `202607` real).
-3. Levar a ampliação de escopo do `REVISAO_PAINEL` (ver PENDENTE acima)
-   para confirmação com George/Bruno antes de tratar como regra definitiva.
+2. ~~Atualizar o default `CICLO_REFERENCIA`~~ — **RESOLVIDO em 2026-08-06**:
+   `config.py` atualizado de `202507` para `202608` (ciclo real na fonte
+   no momento). Esse default volta a ficar desatualizado a cada rollover
+   mensal — considerar resolvê-lo dinamicamente (`MAX(CICLO_RECOMENDACAO)`)
+   em vez de manter um valor estático, para não repetir esse ajuste manual
+   todo mês.
+3. ~~Levar a ampliação de escopo do `REVISAO_PAINEL` para confirmação com
+   George/Bruno~~ — **RESOLVIDO em 2026-08-06**, ver seção acima. George
+   confirmou a regra e aplicou a correção dos 5 ciclos consecutivos.
 4. Se algum dia o backend precisar consultar
    `dmn_inteligencia_dados_prd.gold.ranking_medicos_renovache_dim_medicos`
    diretamente: solicitar `USE CATALOG` em `dmn_inteligencia_dados_prd`

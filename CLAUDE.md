@@ -26,40 +26,41 @@ pytest backend/app/tests/ -v          # rodar testes
 uvicorn backend.app.main:app --reload # rodar API
 ```
 
-## Status ativo — migração dos endpoints de recomendações (BARBARA-04/05)
+## Status ativo — migração dos endpoints de recomendações (BARBARA-04/05) — CONCLUÍDA
 
-Migração de código concluída (2026-07-29) e **conteúdo real desbloqueado e
-revalidado** (2026-07-30, após Hugo corrigir `STATUS_RECOMENDACAO` e um
-problema estrutural de JOIN que afetava `TIPO_RECOMENDACAO`/`MOTIVO_RECOMENDACAO`).
+Concluída e validada de ponta a ponta em 2026-08-06 (origem, notebook
+oficial do Hugo, backend, API e regra de negócio confirmada pelo George).
 `GET /recomendacoes/entrada` e `GET /recomendacoes/revisao` usam
 `db/databricks_connection.py:get_engine()` (respeita `DATA_SOURCE`) e
 alternam tabela/colunas por fonte via mapeamento em `routers/recomendacoes.py`.
 
-**`GET /recomendacoes/revisao` — pronto para homologação:** validado via
-curl real (payload coerente, `ORDER BY posicao_ranking DESC`, ≤5 itens,
-0 violações da trava `QTD_MEDICOS_PAINEL_CICLO > 400`, motivo
-`REVISAO_SEM_VISITA_5_MESES` confirmado acessível via API). Sujeito à
-**confirmação de negócio pendente** (não bloqueia código): o Hugo ampliou o
-critério de revisão para incluir médicos com ranking bom (≤400) sem visita
-há 5+ meses — ainda não confirmado com George/Bruno como mudança
-intencional (ver `docs/context/known-issues.md`).
-
-**`GET /recomendacoes/entrada` — totalmente funcional e validado
-(2026-07-31):** o bloqueio de `NOME_MEDICO` nulo (100% das linhas de
-`ENTRADA_PAINEL` até 2026-07-30) foi **resolvido na origem pelo Hugo** via
-`COALESCE` com a tabela dimensional
-`ranking_medicos_renovache_dim_medicos` — revalidado com 0 nulos em
-271.660 linhas, nomes reais conferidos via API (`curl` real, sem
-fallback). Sem nenhuma limitação de dado conhecida remanescente. O
-fallback `"Médico ainda não identificado (UFCRM {ufcrm})"` continua no
-código (`schemas`/`routers/recomendacoes.py`) como defesa em profundidade
-permanente, não como workaround a remover. Detalhes completos em
+**`GET /recomendacoes/revisao` — concluído:** validado via curl real contra
+dado gerado pelo notebook oficial (`notebookId 1296520715972786`) —
+payload coerente, `ORDER BY posicao_ranking DESC`, ≤5 itens, trava
+`QTD_MEDICOS_PAINEL_CICLO > 400` sem violações. A ampliação de escopo para
+`REVISAO_SEM_VISITA_5_MESES` (médico com ranking bom, ≤400, mas sem visita
+há 5+ meses e com 5 ciclos consecutivos no painel) foi **confirmada pelo
+George como regra de negócio real e intencional** — sem pendência de
+alinhamento remanescente. Detalhes completos em
 `docs/context/known-issues.md`.
 
-Achado à parte (config, não bug): o default `CICLO_REFERENCIA` em
-`config.py`/`.env` (`202507`) está desatualizado — o ciclo real na fonte
-hoje é `202607`. Chamadas sem `?ciclo=` explícito retornam lista vazia
-mesmo com dado disponível.
+**`GET /recomendacoes/entrada` — concluído (2026-07-31):** o bloqueio de
+`NOME_MEDICO` nulo foi **resolvido na origem pelo Hugo** via `COALESCE` com
+a tabela dimensional `ranking_medicos_renovache_dim_medicos` — revalidado
+com 0 nulos, nomes reais conferidos via API (`curl` real, sem fallback).
+Sem nenhuma limitação de dado conhecida remanescente. O fallback `"Médico
+ainda não identificado (UFCRM {ufcrm})"` continua no código
+(`schemas`/`routers/recomendacoes.py`) como defesa em profundidade
+permanente, não como workaround a remover.
+
+Achado à parte (config, não bug): o default `ciclo_referencia` em
+`config.py` foi atualizado em 2026-08-06 de `202507` para `202608`
+(ciclo real na fonte no momento da atualização). Como esse default fica
+desatualizado a cada rollover mensal de ciclo, chamadas sem `?ciclo=`
+explícito continuam sujeitas a retornar lista vazia assim que o ciclo
+rolar de novo — vale revisar esse default periodicamente ou considerar
+resolvê-lo dinamicamente (`MAX(CICLO_RECOMENDACAO)`, como já fazem os
+testes de integração) em vez de manter um valor estático.
 
 `POST /recomendacoes/desconsiderar` está **CONGELADO** por decisão do
 George desde 2026-07-23 — não investir manutenção nova nele (ver

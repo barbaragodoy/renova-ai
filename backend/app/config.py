@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Negócio
-    ciclo_referencia: str = "202507"
+    ciclo_referencia: str = "202608"
     corte_ranking: int = 400
     corte_ranking_local: int = 100
     sem_visita_meses: int = 5

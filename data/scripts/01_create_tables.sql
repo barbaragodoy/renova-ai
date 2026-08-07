@@ -140,9 +140,11 @@ CREATE TABLE IF NOT EXISTS tb_recomendacoes_painel (
     justificativa_texto         TEXT,           -- justificativa narrativa
     ciclo_referencia            CHAR(6)      NOT NULL,
     data_geracao                TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    motivo_desconsideracao      TEXT,
-    timestamp_desconsideracao   TIMESTAMPTZ,
-    rep_matricula_desconsiderou VARCHAR(20),    -- quem desconsiderou (pode ser GD)
+    motivo_desconsideracao       TEXT,           -- valor fixo, ou "OUTROS: <texto>" (task 161830)
+    desconsiderado_por           VARCHAR(20),    -- matrícula de quem desconsiderou (pode ser GD)
+    data_desconsideracao         TIMESTAMPTZ,    -- gerada pelo backend, nunca aceita do cliente
+    qtd_vezes_desconsiderado     INTEGER      NOT NULL DEFAULT 0,
+    bloquear_novas_recomendacoes BOOLEAN,        -- NULL = sem decisão; TRUE/FALSE = decidido
     qtd_vezes_recomendado       INTEGER      NOT NULL DEFAULT 1,
     data_ultima_verificacao     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
 
@@ -156,7 +158,11 @@ COMMENT ON COLUMN tb_recomendacoes_painel.tipo_recomendacao    IS 'ENTRADA_PAINE
 COMMENT ON COLUMN tb_recomendacoes_painel.status_recomendacao  IS 'PENDENTE=aguardando ação; DESCONSIDERADA=ignorada pelo rep/GD; APLICADA=ação tomada; EXPIRADA=ciclo encerrado.';
 COMMENT ON COLUMN tb_recomendacoes_painel.motivo_revisao       IS 'Texto gerado pelo LLM explicando o motivo da revisão (ex: médico sem visita há X meses).';
 COMMENT ON COLUMN tb_recomendacoes_painel.qtd_vezes_recomendado IS 'Quantas vezes este médico foi recomendado ao rep no histórico.';
-COMMENT ON COLUMN tb_recomendacoes_painel.rep_matricula_desconsiderou IS 'Matrícula de quem desconsiderou (pode ser o próprio rep ou o GD).';
+COMMENT ON COLUMN tb_recomendacoes_painel.motivo_desconsideracao IS 'Motivo da desconsideração (lista fixa) ou "OUTROS: <texto informado>" — task 161830.';
+COMMENT ON COLUMN tb_recomendacoes_painel.desconsiderado_por IS 'Matrícula de quem desconsiderou (pode ser o próprio rep ou o GD).';
+COMMENT ON COLUMN tb_recomendacoes_painel.data_desconsideracao IS 'Timestamp da desconsideração, gerado pelo backend no momento da gravação.';
+COMMENT ON COLUMN tb_recomendacoes_painel.qtd_vezes_desconsiderado IS 'Quantas vezes esta combinação já foi desconsiderada ao longo do histórico.';
+COMMENT ON COLUMN tb_recomendacoes_painel.bloquear_novas_recomendacoes IS 'NULL = sem decisão. TRUE = não recomendar mais este médico a este rep; FALSE = pode voltar a ser recomendado em ciclo futuro se elegível.';
 
 CREATE INDEX IF NOT EXISTS idx_rec_rep_matricula  ON tb_recomendacoes_painel (rep_matricula);
 CREATE INDEX IF NOT EXISTS idx_rec_setor          ON tb_recomendacoes_painel (setor);

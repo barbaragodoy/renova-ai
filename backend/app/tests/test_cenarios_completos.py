@@ -136,28 +136,34 @@ def test_e2e_03_sem_pendencias():
 # E2E-04: desconsiderar → sai da lista
 # ---------------------------------------------------------------------------
 def test_e2e_04_desconsiderar_sai_da_lista():
-    # Passo 1: desconsiderar
-    row_pendente = MagicMock()
-    row_pendente.__getitem__ = lambda s, k: {"rep_matricula": REP_MAT, "status_recomendacao": "PENDENTE"}[k]
-
+    # Passo 1: desconsiderar (POST /recomendacoes/{id_recomendacao}/desconsiderar,
+    # ID no path — task 161830/163626, substitui o endpoint antigo com ID no corpo)
     eng1 = MagicMock()
     conn1 = MagicMock()
     conn1.__enter__ = lambda s: s
     conn1.__exit__ = MagicMock(return_value=False)
-    conn1.execute.return_value.mappings.return_value.fetchone.return_value = row_pendente
+
+    def _exec(query, params=None):
+        sql = str(query)
+        result = MagicMock()
+        if "SELECT" in sql:
+            result.mappings.return_value.fetchone.return_value = {
+                "rep_matricula": REP_MAT,
+                "status_recomendacao": "PENDENTE",
+            }
+        elif "UPDATE" in sql:
+            result.rowcount = 1
+        return result
+
+    conn1.execute.side_effect = _exec
     eng1.return_value.connect.return_value = conn1
 
-    body = {
-        "id_recomendacao": ID_REC,
-        "rep_matricula": REP_MAT,
-        "motivo": "Fora da área.",
-        "timestamp": datetime.utcnow().isoformat(),
-    }
+    body = {"motivo": "SEM_INTERESSE_COMERCIAL", "bloquear_novas_recomendacoes": False}
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", eng1):
-            resp = CLIENT.post("/recomendacoes/desconsiderar", json=body, params={"email": REP_EMAIL})
+            resp = CLIENT.post(f"/recomendacoes/{ID_REC}/desconsiderar", json=body, params={"email": REP_EMAIL})
     assert resp.status_code == 200
-    assert resp.json()["sucesso"] is True
+    assert resp.json()["success"] is True
 
     # Passo 2: lista deve estar vazia (DESCONSIDERADA filtrada pelo status=PENDENTE)
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):

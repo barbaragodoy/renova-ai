@@ -85,15 +85,16 @@ comportamento descrito para o modelo antigo em `tb_recomendacoes_painel`):
 - Motivo da recomendação passa a ter 4 valores possíveis, diferenciando
   revisão por ranking, por ausência de visita, ou por ambos.
 
-### Desconsiderar — CONGELADO
-`POST /recomendacoes/desconsiderar` (implementado, em produção em hmg) está
+### Desconsiderar — CONGELADO (histórico, ver resolução em 2026-08-06)
+`POST /recomendacoes/desconsiderar` (implementado, em produção em hmg) estava
 **CONGELADO** por decisão do George — não desativar, não investir manutenção
-nova. Motivo: ainda não decidido o canal/local final da solução; George avalia
-tornar o fluxo conversacional (linguagem natural, não botão/REST), o que
-mudaria a arquitetura do endpoint e envolveria a camada de LLM/intent.
+nova. Motivo: ainda não decidido o canal/local final da solução; George
+avaliava tornar o fluxo conversacional (linguagem natural, não botão/REST), o
+que mudaria a arquitetura do endpoint e envolveria a camada de LLM/intent.
 Campos de desconsideração (`motivo_desconsideracao`,
-`rep_matricula_desconsiderou`) não existem no novo schema histórico — ficam
-fora do contrato ativo até o redesenho ser aprovado.
+`rep_matricula_desconsiderou`) não existiam no novo schema histórico — ficaram
+fora do contrato ativo até o redesenho ser aprovado. **Superado pela entrada
+de 2026-08-06 abaixo.**
 
 ### Pendência em aberto com George
 Não resolvido: se determinados `MOTIVO_RECOMENDACAO` devem bloquear a mesma
@@ -154,6 +155,48 @@ tabela dedicada, criada especificamente para esse cenário, com massa própria
 `test_context_integration.py::test_identidade_ambigua_tabela_teste`. Esse
 teste pula (skip) se o SP ainda não tiver SELECT na tabela ou se a massa de
 teste ainda não tiver sido carregada.
+
+## 2026-08-06 — Desconsiderar Recomendação: reconciliação de 3 referências e descongelamento
+Implementação definitiva do fluxo de desconsiderar, reconciliando três
+referências que existiam em paralelo:
+
+1. **Endpoint antigo neste repositório** (`POST /recomendacoes/desconsiderar`,
+   ID no corpo) — CONGELADO desde 2026-07-23 (ver entrada acima), aguardando
+   definição de canal.
+2. **Notebook de referência da task 163626** (outro profissional) —
+   `POST /recomendacoes/{id_recomendacao}/desconsiderar`, ID no path,
+   `UPDATE ... WHERE STATUS_RECOMENDACAO='PENDENTE'` com `COALESCE` no
+   contador. Rodava contra `tb_recomendacoes_painel_clone` (tabela de
+   desenvolvimento do profissional, não a tabela do projeto), sem checagem de
+   dono da recomendação, sem `bloquear_novas_recomendacoes`, sem tratamento
+   de `OUTROS`, SQL não parametrizado, `SparkSession` direto.
+3. **Especificação oficial da task 161830** (George) — fonte de verdade das
+   regras de negócio. Registra explicitamente: *"Opção definida: Endpoint
+   controlado de atualização, implementado pela task 163626"* — ou seja, o
+   George já havia decidido o canal (REST, ID no path), resolvendo a
+   pendência que mantinha o item 1 congelado.
+
+**Decisão:** o endpoint do item 1 foi **descontinuado** (removido de
+`routers/recomendacoes.py`, `schemas/recomendacoes.py` e
+`test_desconsiderar.py`). A rota e abordagem do item 2 (ID no path) viraram a
+base, com todos os gaps corrigidos e as regras completas da 161830
+implementadas: identidade exclusivamente via `resolver_contexto()`,
+autorização de dono (403 sem vazar detalhe), `bloquear_novas_recomendacoes`
+obrigatório sem default, motivo `OUTROS` formatado como `"OUTROS: <texto>"`,
+SQL 100% parametrizado via SQLAlchemy, `get_engine()` (schema-agnóstico,
+mesmo padrão de `/entrada` e `/revisao`), UPDATE atômico com
+`WHERE status_recomendacao='PENDENTE'` cobrindo concorrência sem lock
+explícito.
+
+Desenvolvido primeiro contra o Postgres local (`tb_recomendacoes_painel`) —
+migração das colunas antigas (`timestamp_desconsideracao` →
+`data_desconsideracao`, `rep_matricula_desconsiderou` → `desconsiderado_por`)
+mais as 2 colunas novas (`qtd_vezes_desconsiderado`,
+`bloquear_novas_recomendacoes`) em
+`data/scripts/09_migrar_colunas_desconsideracao.sql`. A tabela real
+(`tb_recomendacoes_painel_historico`) **ainda não tem** essas 5 colunas —
+pendência formal com o Hugo antes de migrar, mesmo processo já usado em
+BARBARA-04/05 (ver `docs/context/known-issues.md`).
 
 ## Próximos passos técnicos (não iniciados)
 - Implementar `llm/genie_provider.py` com Databricks SDK (para promoção a

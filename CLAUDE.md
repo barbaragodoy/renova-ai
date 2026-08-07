@@ -62,16 +62,40 @@ rolar de novo — vale revisar esse default periodicamente ou considerar
 resolvê-lo dinamicamente (`MAX(CICLO_RECOMENDACAO)`, como já fazem os
 testes de integração) em vez de manter um valor estático.
 
-`POST /recomendacoes/desconsiderar` está **CONGELADO** por decisão do
-George desde 2026-07-23 — não investir manutenção nova nele (ver
-`docs/context/decisions-log.md`).
+## Status ativo — Desconsiderar Recomendação (task 161830/163626)
+
+Implementada **localmente** (Postgres) em 2026-08-06, reconciliando o
+endpoint antigo congelado (item 1), o notebook de referência da task 163626
+(item 2) e a especificação oficial da task 161830 do George (item 3, que
+formaliza a decisão de canal REST e resolve o congelamento) — detalhes
+completos em `docs/context/decisions-log.md` (entrada 2026-08-06).
+
+O antigo `POST /recomendacoes/desconsiderar` (ID no corpo) foi
+**descontinuado** — removido de `routers/recomendacoes.py`,
+`schemas/recomendacoes.py` e `test_desconsiderar.py`. Novo contrato:
+`POST /recomendacoes/{id_recomendacao}/desconsiderar`, ID no path,
+identidade exclusivamente via `resolver_contexto()`, autorização de dono da
+recomendação (403), `motivo` restrito a `MOTIVOS_DESCONSIDERACAO` (+
+`OUTROS` com `motivo_outros_texto`), `bloquear_novas_recomendacoes`
+obrigatório sem default, `data_desconsideracao` gerada pelo backend, UPDATE
+atômico (`WHERE status_recomendacao='PENDENTE'`) cobrindo concorrência.
+
+**Aguardando as 5 colunas na tabela real** (`tb_recomendacoes_painel_historico`)
+antes de migrar para Databricks — pendência já formalizada com o Hugo, mesmo
+processo de BARBARA-04/05: `MOTIVO_DESCONSIDERACAO`, `DESCONSIDERADO_POR`,
+`DATA_DESCONSIDERACAO`, `QTD_VEZES_DESCONSIDERADO`,
+`BLOQUEAR_NOVAS_RECOMENDACOES`. Mapeamento já pronto (dormente) em
+`_COLUNAS_POR_FONTE["databricks"]`, `routers/recomendacoes.py`. Fora de
+escopo por enquanto: aba "Arquivadas" e lógica de bloqueio no próximo ciclo
+(responsabilidade do notebook do Hugo).
 
 ## Índice — ler sob demanda conforme a tarefa
 
 - `docs/context/decisions-log.md` — decisões de negócio/arquitetura datadas
   (permissões do SP, warehouse correto, domínios de e-mail, TRUNCATE em
-  produção, Genie Room histórico, congelamento do desconsiderar, regras de
-  negócio baseline, pendências abertas com George/Hugo/Caio/Flávio).
+  produção, Genie Room histórico, reconciliação/descongelamento do
+  desconsiderar (2026-08-06), regras de negócio baseline, pendências abertas
+  com George/Hugo/Caio/Flávio).
 - `docs/context/databricks-schema-real.md` — mapeamento completo de colunas
   entre o schema local (Postgres) e o schema real confirmado no Databricks,
   para `tb_propagandistas` e `tb_recomendacoes_painel_historico`.

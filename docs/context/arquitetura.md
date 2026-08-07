@@ -37,11 +37,11 @@ necessário para o dia a dia de uma sessão pontual (ver comandos rápidos no
 
 ## Routers (`backend/app/routers/`)
 - `prescricoes.py` — `POST /prescricoes/consultar`: valida contexto, chama nl_to_sql, devolve `sql_gerado` apenas para `perfil_tecnico=True`.
-- `recomendacoes.py` — `GET /recomendacoes/entrada`, `GET /recomendacoes/revisao`, `POST /recomendacoes/desconsiderar` (CONGELADO, ver decisions-log.md). Validações: recomendação pertence ao rep, status PENDENTE, sem exclusão física. Status de migração ativo desses endpoints: ver `CLAUDE.md` raiz.
+- `recomendacoes.py` — `GET /recomendacoes/entrada`, `GET /recomendacoes/revisao`, `POST /recomendacoes/{id_recomendacao}/desconsiderar` (task 161830/163626, substitui o antigo `POST /recomendacoes/desconsiderar` com ID no corpo, descontinuado — ver decisions-log.md). Validações: identidade via `resolver_contexto()`, recomendação pertence ao rep (403 se não), status PENDENTE (400 se estado incompatível, 409 se já DESCONSIDERADA), UPDATE atômico com `WHERE status_recomendacao='PENDENTE'` para concorrência, sem exclusão física. Status de migração ativo desses endpoints: ver `CLAUDE.md` raiz.
 - `gerencial.py` — `GET /gerencial/indicadores`, `GET /gerencial/propagandistas`, `GET /gerencial/recomendacoes`. GD acessa apenas seu escopo via `tb_hierarquia_gd`. Nenhum endpoint aceita escrita.
 
 ## Schemas Pydantic (`backend/app/schemas/`)
-- `recomendacoes.py` — RecomendacaoItem, ListaRecomendacoesResponse, DesconsiderarRequest/Response.
+- `recomendacoes.py` — RecomendacaoItem, ListaRecomendacoesResponse, DesconsiderarRequest/Response (contrato novo: `motivo` + `motivo_outros_texto` + `bloquear_novas_recomendacoes`, sem `id_recomendacao`/matrícula no corpo — ver `MOTIVOS_DESCONSIDERACAO`).
 - `gerencial.py` — IndicadoresGD, PropagandistaSummary, RecomendacaoGerencial.
 
 ## Jobs (`backend/app/jobs/`)

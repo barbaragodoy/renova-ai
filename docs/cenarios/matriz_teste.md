@@ -50,16 +50,27 @@
 
 ---
 
-## Grupo 3 — Desconsiderar (`POST /recomendacoes/desconsiderar`)
+## Grupo 3 — Desconsiderar (`POST /recomendacoes/{id_recomendacao}/desconsiderar`)
+
+Contrato atual (task 161830/163626): ID no path, matrícula sempre via
+`resolver_contexto()`, `motivo` restrito a `MOTIVOS_DESCONSIDERACAO`
+(`OUTROS` exige `motivo_outros_texto`), `bloquear_novas_recomendacoes`
+obrigatório sem default, `data_desconsideracao` sempre gerada pelo backend.
+Substitui o antigo `POST /recomendacoes/desconsiderar` (ID no corpo),
+descontinuado — ver `docs/context/decisions-log.md`.
 
 | ID | Cenário | Dados de Entrada | Resultado Esperado | Status `tb_recomendacoes_painel` |
 |---|---|---|---|---|
-| C-DESC-01 | Desconsiderar com sucesso | `id_recomendacao` PENDENTE do próprio rep | `sucesso: true` | `PENDENTE` → `DESCONSIDERADA` |
-| C-DESC-02 | Recomendação não encontrada | UUID inexistente | HTTP 404 | — |
-| C-DESC-03 | Recomendação de outro propagandista | UUID de REP002 tentado por REP001 | HTTP 403 | inalterado |
+| C-DESC-01 | Desconsiderar com sucesso (bloquear=TRUE) | `id_recomendacao` PENDENTE do próprio rep | `success: true` | `PENDENTE` → `DESCONSIDERADA` |
+| C-DESC-01b | Desconsiderar com sucesso (bloquear=FALSE) | idem, `bloquear_novas_recomendacoes: false` | `success: true` | `PENDENTE` → `DESCONSIDERADA` |
+| C-DESC-02 | Recomendação não encontrada | UUID inexistente no path | HTTP 404 | — |
+| C-DESC-03 | Recomendação de outro propagandista | UUID de REP002 tentado por REP001 | HTTP 403 (mensagem genérica) | inalterado |
 | C-DESC-04 | Já desconsiderada | `id_recomendacao` com status `DESCONSIDERADA` | HTTP 409 | inalterado |
-| C-DESC-05 | Já aplicada | `id_recomendacao` com status `APLICADA` | HTTP 409 | inalterado |
-| C-DESC-06 | Sai da lista após desconsiderar | Desconsiderar + consultar lista | Médico não aparece mais na lista `PENDENTE` | `DESCONSIDERADA` |
+| C-DESC-05 | Estado incompatível | `id_recomendacao` com status `EXPIRADA`/`APLICADA` | HTTP 400 | inalterado |
+| C-DESC-06 | Sai da lista após desconsiderar | Desconsiderar + consultar `/entrada` e `/revisao` | Médico não aparece mais na lista `PENDENTE` | `DESCONSIDERADA` |
+| C-DESC-07 | `motivo = OUTROS` sem `motivo_outros_texto` | corpo sem o campo obrigatório | HTTP 422 | inalterado |
+| C-DESC-08 | `motivo = OUTROS` com texto | `motivo_outros_texto` preenchido | `motivo_desconsideracao = "OUTROS: <texto>"` | `PENDENTE` → `DESCONSIDERADA` |
+| C-DESC-09 | Duas chamadas concorrentes | mesma `id_recomendacao`, 2 requisições simultâneas | 1x HTTP 200, 1x HTTP 409 | `PENDENTE` → `DESCONSIDERADA` (uma vez só) |
 
 ---
 

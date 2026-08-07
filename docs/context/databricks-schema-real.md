@@ -41,9 +41,11 @@ histórico por ciclo mensal (ver `docs/context/decisions-log.md`, 2026-07-23).
 | `justificativa_texto`               | equivalente presente                        | |
 | `ciclo_referencia`                   | `CICLO_RECOMENDACAO`                       | chave de particionamento do histórico |
 | `data_geracao`                        | equivalente presente                      | |
-| `motivo_desconsideracao`             | **NÃO EXISTE** no novo schema             | fluxo `/desconsiderar` está CONGELADO — ver decisions-log.md |
-| `timestamp_desconsideracao`          | **NÃO EXISTE**                            | idem |
-| `rep_matricula_desconsiderou`        | **NÃO EXISTE**                            | idem |
+| `motivo_desconsideracao`             | `MOTIVO_DESCONSIDERACAO` — **AINDA NÃO EXISTE** | pendência formal com o Hugo p/ `POST /recomendacoes/{id}/desconsiderar` (task 161830/163626) — ver known-issues.md e decisions-log.md |
+| `desconsiderado_por` (renomeado de `rep_matricula_desconsiderou`) | `DESCONSIDERADO_POR` — **AINDA NÃO EXISTE** | idem |
+| `data_desconsideracao` (renomeado de `timestamp_desconsideracao`) | `DATA_DESCONSIDERACAO` — **AINDA NÃO EXISTE** | idem |
+| `qtd_vezes_desconsiderado` (novo)     | `QTD_VEZES_DESCONSIDERADO` — **AINDA NÃO EXISTE** | idem |
+| `bloquear_novas_recomendacoes` (novo) | `BLOQUEAR_NOVAS_RECOMENDACOES` — **AINDA NÃO EXISTE** | idem |
 | `qtd_vezes_recomendado`               | equivalente presente                     | |
 | `data_ultima_verificacao`             | equivalente presente                     | |
 | — (não existe local) | `QTD_MEDICOS_PAINEL_CICLO`                            | contagem de médicos no painel do rep no ciclo — usada para a trava de revisão (`> 400`). RESOLVIDO em 2026-07-28, ver known-issues.md |

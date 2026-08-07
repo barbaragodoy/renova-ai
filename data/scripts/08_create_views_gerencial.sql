@@ -23,7 +23,11 @@ COMMENT ON VIEW vw_hierarquia_gd IS
 
 
 -- 2. Visão gerencial de recomendações com contexto completo
-CREATE OR REPLACE VIEW vw_recomendacoes_gerencial AS
+-- DROP explícito: CREATE OR REPLACE VIEW não permite renomear/remover
+-- colunas de saída (ex.: timestamp_desconsideracao -> data_desconsideracao,
+-- task 161830/163626) — só troca a definição preservando os mesmos nomes.
+DROP VIEW IF EXISTS vw_recomendacoes_gerencial;
+CREATE VIEW vw_recomendacoes_gerencial AS
 SELECT
     rec.id_recomendacao,
     rec.ciclo_referencia,
@@ -36,8 +40,10 @@ SELECT
     rec.motivo_revisao,
     rec.justificativa_texto,
     rec.motivo_desconsideracao,
-    rec.timestamp_desconsideracao,
-    rec.rep_matricula_desconsiderou,
+    rec.data_desconsideracao,
+    rec.desconsiderado_por,
+    rec.qtd_vezes_desconsiderado,
+    rec.bloquear_novas_recomendacoes,
     rec.qtd_vezes_recomendado,
     rec.data_geracao,
     rec.data_ultima_verificacao,

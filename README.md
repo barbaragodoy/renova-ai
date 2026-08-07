@@ -331,7 +331,7 @@ Isso permite rodar a API localmente (`uvicorn` na sua máquina) apontando para o
 |---|---|---|
 | GET | `/recomendacoes/entrada?email={email}&ciclo={ciclo}` | Lista ENTRADA_PAINEL PENDENTE (≤ 5) |
 | GET | `/recomendacoes/revisao?email={email}&ciclo={ciclo}` | Lista REVISAO_PAINEL PENDENTE (≤ 5) |
-| POST | `/recomendacoes/desconsiderar?email={email}` | Desconsiderar recomendação com motivo — **CONGELADO** |
+| POST | `/recomendacoes/{id_recomendacao}/desconsiderar?email={email}` | Desconsiderar recomendação com motivo (task 161830/163626) |
 
 > `ciclo` é opcional e cai no default `CICLO_REFERENCIA` (`config.py`/`.env`),
 > hoje **desatualizado** (`202507`) em relação ao ciclo real mais recente na
@@ -339,21 +339,31 @@ Isso permite rodar a API localmente (`uvicorn` na sua máquina) apontando para o
 > `DATA_SOURCE=databricks` retornam lista vazia mesmo havendo dado
 > disponível — passe o ciclo explicitamente até o default ser corrigido.
 >
-> `POST /recomendacoes/desconsiderar` está **congelado por decisão do
-> George** desde 2026-07-23 (possível redesenho para fluxo conversacional em
-> vez de REST) — segue funcional apenas contra o schema local
-> (`tb_recomendacoes_painel`), sem manutenção nova prevista. Ver
+> O antigo `POST /recomendacoes/desconsiderar` (ID no corpo) esteve
+> **congelado por decisão do George** desde 2026-07-23, pendente de decisão
+> de canal (REST vs. conversacional). A especificação 161830 (George)
+> resolveu essa pendência optando pelo endpoint REST controlado da task
+> 163626 — o endpoint antigo foi **descontinuado** e substituído por
+> `POST /recomendacoes/{id_recomendacao}/desconsiderar` (ID no path), que
+> roda hoje contra o schema local (`tb_recomendacoes_painel`); migração para
+> `tb_recomendacoes_painel_historico` real depende de 5 colunas novas ainda
+> não criadas pelo Hugo. Ver
 > `docs/context/decisions-log.md`.
 
-**Body de desconsiderar:**
+**Body de `POST /recomendacoes/{id_recomendacao}/desconsiderar`** (ID vem do
+path, não do corpo; matrícula sempre via `resolver_contexto()`, nunca aceita
+do cliente; `data_desconsideracao` sempre gerada pelo backend):
 ```json
 {
-  "id_recomendacao": "uuid",
-  "rep_matricula": "REP001",
-  "motivo": "Médico fora da minha área de atuação.",
-  "timestamp": "2026-07-10T10:00:00"
+  "motivo": "MEDICO_APOSENTADO",
+  "motivo_outros_texto": null,
+  "bloquear_novas_recomendacoes": true
 }
 ```
+`motivo` é uma das constantes em `MOTIVOS_DESCONSIDERACAO`
+(`schemas/recomendacoes.py`): `MEDICO_NAO_ATUA_MAIS`, `MEDICO_APOSENTADO`,
+`MEDICO_FALECIDO`, `SEM_INTERESSE_COMERCIAL`, `OUTROS` (exige
+`motivo_outros_texto`, persistido como `"OUTROS: <texto>"`).
 
 ### Gerencial (exclusivo GD)
 
@@ -396,9 +406,11 @@ Isso permite rodar a API localmente (`uvicorn` na sua máquina) apontando para o
 > `RANKING_POSICAO_CICLO`, `MOTIVO_RECOMENDACAO`, `QTD_MEDICOS_PAINEL_CICLO`).
 > `tb_propagandistas` também difere (sem `cod_linha`/`ativo`, com campos
 > `GD_*` embutidos). Mapeamento completo coluna a coluna em
-> `docs/context/databricks-schema-real.md`. Hoje só `/recomendacoes/entrada`
-> e `/recomendacoes/revisao` já alternam por fonte — `gerencial.py` e
-> `/recomendacoes/desconsiderar` ainda assumem só o schema local.
+> `docs/context/databricks-schema-real.md`. Hoje `/recomendacoes/entrada`,
+> `/recomendacoes/revisao` e `/recomendacoes/{id}/desconsiderar` já
+> alternam por fonte via `_COLUNAS_POR_FONTE` — o mapeamento Databricks do
+> desconsiderar fica dormente até o Hugo criar as 5 colunas novas na tabela
+> real. `gerencial.py` ainda assume só o schema local.
 
 ### Views gerenciais
 
@@ -529,6 +541,8 @@ docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/05_pop
 docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/06_populate_hierarquia_gd.sql
 docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/07_simulate_recomendacoes.sql
 docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/08_create_views_gerencial.sql
+docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/09_migrar_colunas_desconsideracao.sql
+docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/10_popular_cenarios_desconsiderar.sql
 ```
 
 ### 4. Criar ambiente Python e instalar dependências
@@ -683,7 +697,7 @@ Levantadas durante a migração de `/recomendacoes/*` para o Databricks real (ve
 
 - Atualizar o default `CICLO_REFERENCIA` (`config.py`/`.env`), hoje `202507`, desatualizado em relação ao ciclo real mais recente na fonte (`202607`) — sem `?ciclo=` explícito, os endpoints retornam lista vazia mesmo com dado disponível.
 - Confirmar com **George/Bruno** se a ampliação do critério de `REVISAO_PAINEL` (incluir médicos com ranking ≤ 400 sem visita há 5+ meses) é regra de negócio intencional.
-- Decidir com **George** o redesenho de `/recomendacoes/desconsiderar` (fluxo conversacional vs. REST atual) antes de tirá-lo do congelamento.
+- Solicitar ao **Hugo** as 5 colunas novas em `tb_recomendacoes_painel_historico` (`MOTIVO_DESCONSIDERACAO`, `DESCONSIDERADO_POR`, `DATA_DESCONSIDERACAO`, `QTD_VEZES_DESCONSIDERADO`, `BLOQUEAR_NOVAS_RECOMENDACOES`) para migrar `/recomendacoes/{id}/desconsiderar` para o Databricks real — mesmo processo já usado em BARBARA-04/05.
 - Confirmar se `MOTIVO_RECOMENDACAO` deve bloquear a mesma recomendação de ser re-sugerida no ciclo seguinte, ou se é sempre re-sugerida — aberto com George, impacta `gerar_recomendacoes.py`.
 
 ### 10. Executar `gerar_recomendacoes` para o ciclo vigente em produção

@@ -52,18 +52,31 @@ profundidade PERMANENTE, não é workaround temporário a remover:**
   confirma que `nome_medico` nunca vem vazio/None e que a ordenação
   continua correta. Ajuste de teste, não regressão.
 
-**Achado paralelo (permissão, não relacionado à correção do Hugo):** SP
-`sp-renovai-genie-api-poc` **não tem `USE CATALOG`** em
+## RESOLVIDO POR VIA ALTERNATIVA — USE CATALOG em dmn_inteligencia_dados_prd — achado em 2026-08-12
+SP `sp-renovai-genie-api-poc` **não tem `USE CATALOG`** em
 `dmn_inteligencia_dados_prd` (testado via token OAuth M2M direto,
 `current_user()` confirmado como o próprio SP) — a query direta contra
 `dmn_inteligencia_dados_prd.gold.ranking_medicos_renovache_dim_medicos`
 falha com `INSUFFICIENT_PERMISSIONS` a nível de catálogo, antes mesmo de
-chegar a checar SELECT na tabela. Isso não bloqueia o pipeline do Hugo (que
-roda com identidade própria de job/notebook, não com o SP da API), mas
-registra que, se algum dia o backend precisar consultar essa tabela
-dimensional diretamente (hoje não precisa — só lê
-`tb_recomendacoes_painel_historico`, já com o COALESCE aplicado), vai
-precisar desse GRANT primeiro.
+chegar a checar SELECT na tabela. Não bloqueava o pipeline do Hugo (que
+roda com identidade própria de job/notebook, não com o SP da API).
+
+**Resolução, descoberta em 2026-08-12 na comparação com a branch
+`feature/aba-recomendacoes` do George (`AcheInfo_Apps/APP_RENOVAI`):** em
+vez de solicitar o GRANT cruzado de catálogo, o George criou
+`tb_dim_medicos` — uma **tabela espelho local**, dentro de
+`acheinfo_dev.renovai` (catálogo que o SP já lê), replicando os campos
+`especialidade`, `cidade` e `uf` da dimensão original. `RecomendacaoItem`
+ganhou esses 3 campos (mais `meses_sem_visita`, calculado no SQL ancorado
+no ciclo) via `LEFT JOIN tb_dim_medicos`. Comentário dele confirma o
+motivo: "o Service Principal do portal só lê acheinfo_dev.renovai e o
+catálogo da dimensão original é vetado para ele".
+
+**Estado em `renovai-local`/`APP_RENOVAI` nesta data: ainda não
+incorporado por mim** — é uma tabela nova, capacidade aditiva, sem
+conflito com nada existente. Fica registrado aqui como candidato a task
+separada, se fizer sentido para o roadmap (não é urgente, os endpoints
+funcionam sem esses campos hoje).
 
 **Estado atual:** `/recomendacoes/entrada` totalmente funcional com dado
 real — nomes verdadeiros, sem fallback nos dados de hoje. Nenhuma limitação
@@ -208,14 +221,43 @@ ver seção "RESOLVIDO NA ORIGEM" acima** — o endpoint responde 200 com nomes
 reais (fallback de defesa em profundidade continua no código, mas não é
 mais exercido pelos dados reais).
 
-**Achado adicional durante a revalidação (não é bug, é config
-desatualizada):** o default `CICLO_REFERENCIA` em `config.py`/`.env`
-(`202507`) não corresponde ao ciclo real mais recente na fonte (`202607`).
-Os testes de integração e os `curl`s desta validação passaram `?ciclo=`
-explicitamente / resolveram o ciclo real via `MAX(CICLO_RECOMENDACAO)` em
-vez de depender do default. Sem ajuste, chamadas aos endpoints sem `?ciclo=`
-explícito retornam lista vazia mesmo com dado real disponível — vale
-atualizar o default antes de qualquer demo/homologação sem esse parâmetro.
+## RESOLVIDO — default estático de CICLO_REFERENCIA — 2026-08-12
+Descoberto durante a revalidação de 2026-07-30: o default `CICLO_REFERENCIA`
+em `config.py`/`.env` (`202507`) não correspondia ao ciclo real mais recente
+na fonte, e ficava obsoleto a cada rollover mensal — sem `?ciclo=`
+explícito, os endpoints retornavam lista vazia mesmo com dado real
+disponível. Mitigado em 2026-08-06 só atualizando o valor estático
+manualmente (`202608`), o que não resolvia a causa raiz (voltaria a ficar
+obsoleto no rollover seguinte).
+
+**Resolvido de verdade em 2026-08-12** (`routers/recomendacoes.py`, função
+nova `_ciclo_mais_recente()`): `/entrada` e `/revisao` agora resolvem
+`SELECT MAX({ciclo_referencia}) FROM {tabela}` na própria fonte quando o
+chamador não passa `?ciclo=` explícito — nunca mais depende do valor
+estático de `settings.ciclo_referencia`. A capacidade de consultar um
+ciclo específico via `?ciclo=` foi **preservada** (não removida): há
+dependência real confirmada em `test_recomendacoes_integration.py` (3
+usos programáticos) e no contrato documentado no `README.md`, então a
+correção usa `MAX()` só como novo fallback, não substitui o parâmetro
+explícito. Coberto por 4 testes novos em `test_recomendacoes.py`
+(`test_entrada_sem_ciclo_usa_max_da_tabela`,
+`test_entrada_com_ciclo_explicito_nao_consulta_max`, e os equivalentes de
+`/revisao`).
+
+**Pendência separada, fora de escopo desta correção:** `routers/gerencial.py`
+tem exatamente o mesmo padrão (`ciclo = ciclo or settings.ciclo_referencia`)
+nos três endpoints (`/indicadores`, `/propagandistas`, `/recomendacoes`) —
+mesmo known-issue, mesma causa raiz, ainda não corrigido lá. Candidato a
+aplicar a mesma correção numa próxima task.
+
+**Nota de comportamento (2026-08-12):** `_ciclo_mais_recente()` retorna
+`None` se a tabela estiver vazia, resultando em lista vazia silenciosa
+(`WHERE ciclo_referencia = NULL` nunca casa em SQL). Não é regressão do
+comportamento anterior, mas é uma causa a descartar durante debug futuro
+se um propagandista reportar lista vazia inesperada. Custo adicional: toda
+chamada sem `?ciclo=` agora faz uma query extra (`MAX`) antes da
+principal — aceitável, mas registrado caso volume de uso torne isso
+relevante para otimização futura.
 
 ## RESOLVIDO — ampliação de escopo do REVISAO_PAINEL confirmada pelo George — 2026-08-06
 Não era bug. O Hugo ampliou o critério de `REVISAO_PAINEL` para incluir
@@ -270,21 +312,79 @@ próxima leitura do notebook.
 
 Nenhuma pendência de negócio remanescente neste item.
 
+## NOTA DE MANUTENÇÃO — interpolação de `tabela` em resolver_contexto() — 2026-08-12
+Não é bug. `auth/context.py`: `resolver_contexto()` interpola o parâmetro
+`tabela` diretamente na query via f-string (`FROM {tabela}`). Seguro hoje
+porque `_TABELAS_PERMITIDAS` (whitelist fixa: `tb_propagandistas`,
+`tb_propagandista_teste`) é validada antes da execução, e o único chamador
+que passa esse parâmetro é código de teste com valor fixo, nunca input de
+usuário.
+
+Se um futuro endpoint expuser esse parâmetro como entrada externa (query
+param, body, etc.), a validação de whitelist precisa ser
+mantida/reforçada antes disso — não trocar para SQL parametrizado
+tradicional sem também preservar essa checagem, já que o nome de tabela
+não pode ser parametrizado da forma usual (placeholder de valor) no
+SQLAlchemy.
+
+## ABERTO — Frontend Recomendacoes.tsx (branch do George) escrito contra contrato antigo — 2026-08-12
+Não bloqueante, só registro para rastreabilidade futura. `frontend/src/pages/Recomendacoes.tsx`
+(523 linhas) existe apenas na branch `feature/aba-recomendacoes` do George —
+não incorporado ainda à árvore principal (`dev`/`APP_RENOVAI`). Foi escrito
+contra o contrato do backend **dele** nessa branch: sem `LIMIT` (lista
+completa), possivelmente com filtro de setor, contrato antigo de
+`/desconsiderar` (resposta 501).
+
+A decisão final da comparação (ver `docs/context/decisions-log.md`,
+2026-08-12) manteve o contrato de `renovai-local` nos 3 pontos divergentes
+(filtro de setor não adotado, `LIMIT 5` mantido no backend,
+`/desconsiderar` com implementação completa em vez de 501) — não o do
+George. Consequência: essa página **provavelmente precisará de ajuste**
+quando for trazida para a árvore principal, para consumir o backend como
+está hoje (com `LIMIT`, sem filtro de setor, contrato novo de
+desconsiderar). Não é ação necessária agora — só registrar para quando a
+incorporação do frontend for priorizada.
+
+## ABERTO — bug no job gerar_recomendacoes (test_e2e_05_novo_ciclo_recorrencia) — achado durante sync com AcheInfo_Apps/APP_RENOVAI, 2026-08-12
+`test_e2e_05_novo_ciclo_recorrencia` (`backend/app/tests/test_cenarios_completos.py`)
+falha de forma determinística com `assert 0 >= 1` em
+`resultado["entrada_incrementados"]` — o mock de `gerar_recomendacoes`
+(job de recorrência de recomendação no novo ciclo) não está incrementando
+o contador esperado. Confirmado como **pré-existente e sem relação** com
+o trabalho de BARBARA-04/05, desconsiderar (161830/163626) ou registro de
+envio do piloto: nenhum desses tocou `jobs/gerar_recomendacoes.py` nem
+este teste, e o teste é 100% mockado (`patch(...create_engine...)`), sem
+dependência de Postgres real.
+
+**Achado adicional, ao mesclar os headers de sessão (`CABECALHO`) do
+repositório `AcheInfo_Apps/APP_RENOVAI` de volta neste sandbox:** a versão
+de `dev` desse mesmo teste tem `@pytest.mark.requer_banco` — marcador que,
+via `conftest.py` de lá, faz skip automático quando o Postgres local não
+está no ar. Como o teste é inteiramente mockado, esse marcador não deveria
+ser necessário — a suspeita é que ele esteja mascarando esta mesma falha
+pré-existente (skip silencioso em vez de vermelho visível), não resolvendo
+a causa raiz no job. Mantido como está no merge de 2026-08-12 (fora do
+escopo daquela sincronização, que era só sobre headers de auth) — comentário
+inline deixado em `test_cenarios_completos.py` apontando para esta entrada.
+Sugestão para quando alguém for corrigir o job: remover o marcador junto
+com a correção, para o teste voltar a falhar visivelmente até o bug do job
+ser corrigido de verdade.
+
 ## Próxima ação
 1. ~~`NOME_MEDICO` nulo em `ENTRADA_PAINEL`~~ — **RESOLVIDO NA ORIGEM em
    2026-07-31**, ver seção acima. Nenhuma ação pendente neste item; o
    fallback de backend fica como defesa em profundidade permanente.
-2. ~~Atualizar o default `CICLO_REFERENCIA`~~ — **RESOLVIDO em 2026-08-06**:
-   `config.py` atualizado de `202507` para `202608` (ciclo real na fonte
-   no momento). Esse default volta a ficar desatualizado a cada rollover
-   mensal — considerar resolvê-lo dinamicamente (`MAX(CICLO_RECOMENDACAO)`)
-   em vez de manter um valor estático, para não repetir esse ajuste manual
-   todo mês.
+2. ~~Atualizar o default `CICLO_REFERENCIA`~~ — **RESOLVIDO DE VERDADE em
+   2026-08-12** via `MAX(ciclo_referencia)` dinâmico, ver seção acima.
+   Não é mais um valor estático que precisa de ajuste manual mensal.
 3. ~~Levar a ampliação de escopo do `REVISAO_PAINEL` para confirmação com
    George/Bruno~~ — **RESOLVIDO em 2026-08-06**, ver seção acima. George
    confirmou a regra e aplicou a correção dos 5 ciclos consecutivos.
-4. Se algum dia o backend precisar consultar
+4. ~~Se algum dia o backend precisar consultar
    `dmn_inteligencia_dados_prd.gold.ranking_medicos_renovache_dim_medicos`
-   diretamente: solicitar `USE CATALOG` em `dmn_inteligencia_dados_prd`
-   para o SP `sp-renovai-genie-api-poc` (hoje sem esse grant — ver achado
-   paralelo na seção acima). Não bloqueia nada hoje.
+   diretamente: solicitar `USE CATALOG`~~ — **RESOLVIDO POR VIA
+   ALTERNATIVA em 2026-08-12**, ver seção acima. George contornou com
+   `tb_dim_medicos` (espelho local), sem precisar do GRANT cruzado.
+5. Aplicar a mesma correção do item 2 (`MAX()` dinâmico) em
+   `routers/gerencial.py` — mesmo known-issue, ainda não corrigido lá
+   (ver seção "RESOLVIDO — default estático de CICLO_REFERENCIA" acima).

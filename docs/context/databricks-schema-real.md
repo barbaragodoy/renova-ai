@@ -50,6 +50,42 @@ histórico por ciclo mensal (ver `docs/context/decisions-log.md`, 2026-07-23).
 | `data_ultima_verificacao`             | equivalente presente                     | |
 | — (não existe local) | `QTD_MEDICOS_PAINEL_CICLO`                            | contagem de médicos no painel do rep no ciclo — usada para a trava de revisão (`> 400`). RESOLVIDO em 2026-07-28, ver known-issues.md |
 
+## tb_envios_recomendacoes_piloto (local) — Sprint 5, piloto WhatsApp/E-mail/Controle
+
+**Diferente de todas as tabelas acima: tabela nova, sem dependência de
+correção externa.** Propriedade e criação da própria Bárbara, não do Hugo —
+não há bloqueio de dado, só implementação. **Ainda não existe no Databricks
+real** — criação lá está planejada para uma sessão separada, em paralelo;
+até lá, esta tabela só existe no Postgres local
+(`data/scripts/11_create_tb_envios_recomendacoes_piloto.sql`).
+
+Grão: uma linha por combinação (envio, recomendação). Registra o histórico
+de envio de recomendações aos propagandistas durante o piloto, para
+comparar os grupos `WHATSAPP`, `EMAIL` e `CONTROLE`. O grupo `CONTROLE`
+também gera registro, com `CANAL_ENVIO = 'NENHUM'` — decisão de design que
+garante comparação de timing entre os três grupos sem depender de outra
+fonte.
+
+| Coluna | Tipo local (Postgres) | Observação |
+|---|---|---|
+| `id_envio` | UUID, NOT NULL | agrupa recomendações do mesmo disparo; parte da PK composta |
+| `id_recomendacao` | UUID, NOT NULL | FK lógica (não enforced) para `tb_recomendacoes_painel`/`tb_recomendacoes_painel_historico`; parte da PK composta |
+| `rep_matricula` | VARCHAR(20), NOT NULL | FK física para `tb_propagandistas` |
+| `grupo_piloto` | VARCHAR(20), NOT NULL | `WHATSAPP` \| `EMAIL` \| `CONTROLE` (CHECK) |
+| `canal_envio` | VARCHAR(20), NOT NULL | `WHATSAPP` \| `EMAIL` \| `NENHUM` (CHECK) |
+| `data_hora_envio` | TIMESTAMPTZ, NOT NULL | gerado pelo backend, nunca aceito do chamador |
+| `ciclo_recomendacao` | CHAR(6) | denormalizado, evita join |
+| `tipo_recomendacao` | VARCHAR(20) | denormalizado (`ENTRADA_PAINEL`/`REVISAO_PAINEL`) |
+
+Índices: `(rep_matricula, data_hora_envio)` e `(id_envio)` — pensados para
+consultas de análise do piloto. Sem soft-delete/expiração: histórico
+permanente.
+
+Implementada como função de serviço (`registrar_envio_recomendacoes()` em
+`backend/app/services/registro_envio.py`), não endpoint REST — sem
+job/integração de disparo real ainda. Independente de Twilio, templates
+Meta ou números de telefone dos propagandistas.
+
 ## Views auxiliares (só existem no Databricks)
 
 - `vw_ranking_setor` — `ROW_NUMBER() OVER (PARTITION BY SETOR ORDER BY SOMA_PONTUACAO DESC)`, sem UFCRM como desempate.

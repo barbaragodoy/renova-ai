@@ -10,10 +10,13 @@ from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.config import get_settings
 from backend.app.db.databricks_connection import get_engine
 from backend.app.schemas.recomendacoes import (
+    DesconsideradaItem,
     DesconsiderarRequest,
     DesconsiderarResponse,
+    ListaDesconsideradasResponse,
     ListaRecomendacoesResponse,
     RecomendacaoItem,
+    ReverterResponse,
 )
 
 router = APIRouter()
@@ -85,6 +88,21 @@ def _engine():
     return get_engine()
 
 
+def _ciclo_mais_recente(col: dict) -> str:
+    """Resolve o ciclo mais recente disponível na própria tabela via
+    MAX(ciclo_referencia), substituindo o default estático
+    settings.ciclo_referencia — que fica obsoleto a cada rollover mensal de
+    ciclo (ver docs/context/known-issues.md). Só é chamada quando o
+    chamador não passa ?ciclo= explícito; a consulta a um ciclo específico
+    (usada por test_recomendacoes_integration.py e documentada no README)
+    continua funcionando normalmente."""
+    with _engine().connect() as conn:
+        row = conn.execute(
+            text(f"SELECT MAX({col['ciclo_referencia']}) AS ciclo FROM {col['tabela']}")
+        ).fetchone()
+    return row.ciclo
+
+
 def _aplicar_fallback_nome_medico(row) -> dict:
     """NOME_MEDICO vem nulo da fonte para 100% dos candidatos a ENTRADA_PAINEL
     hoje — médico ainda fora do painel não tem cadastro em nenhuma fonte usada
@@ -118,9 +136,9 @@ def listar_entrada(
 ):
     ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
-    ciclo = ciclo or settings.ciclo_referencia
     limite = settings.limite_sugestoes
     col = _schema(settings.data_source)
+    ciclo = ciclo or _ciclo_mais_recente(col)
 
     query = text(f"""
         SELECT {col['id_recomendacao']}  AS id_recomendacao,
@@ -155,9 +173,9 @@ def listar_revisao(
 ):
     ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
-    ciclo = ciclo or settings.ciclo_referencia
     limite = settings.limite_sugestoes
     col = _schema(settings.data_source)
+    ciclo = ciclo or _ciclo_mais_recente(col)
 
     # Defesa em profundidade (known-issues.md): só aplicável na fonte que tem
     # a coluna. Continua no backend mesmo com a fonte já corrigida, como
@@ -285,4 +303,127 @@ def desconsiderar(
         id_recomendacao=id_str,
         status_recomendacao="DESCONSIDERADA",
         data_desconsideracao=agora.isoformat(),
+    )
+
+
+@router.get("/desconsideradas", response_model=ListaDesconsideradasResponse)
+def listar_desconsideradas(
+    email: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """GET /recomendacoes/desconsideradas — aba Arquivadas (consulta).
+
+    Histórico completo (sem LIMIT, diferente de /entrada e /revisao, que
+    limitam a `settings.limite_sugestoes` por serem sugestões priorizadas)
+    das recomendações que o propagandista autenticado já desconsiderou,
+    mais recente primeiro.
+    """
+    ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
+    settings = get_settings()
+    col = _schema(settings.data_source)
+
+    query = text(f"""
+        SELECT {col['id_recomendacao']}              AS id_recomendacao,
+               {col['nome_medico']}                   AS nome_medico,
+               {col['ufcrm']}                         AS ufcrm,
+               {col['tipo_recomendacao']}              AS tipo_recomendacao,
+               {col['motivo_revisao']}                  AS motivo_recomendacao,
+               {col['motivo_desconsideracao']}           AS motivo_desconsideracao,
+               {col['bloquear_novas_recomendacoes']}     AS bloquear_novas_recomendacoes,
+               {col['data_desconsideracao']}             AS data_desconsideracao,
+               {col['ciclo_referencia']}                 AS ciclo_recomendacao
+        FROM {col['tabela']}
+        WHERE {col['rep_matricula']} = :mat
+          AND {col['status_recomendacao']} = 'DESCONSIDERADA'
+        ORDER BY {col['data_desconsideracao']} DESC
+    """)
+
+    with _engine().connect() as conn:
+        rows = conn.execute(query, {"mat": ctx.matricula}).mappings().fetchall()
+
+    items = [DesconsideradaItem(**_aplicar_fallback_nome_medico(r)) for r in rows]
+    return ListaDesconsideradasResponse(total=len(items), recomendacoes=items)
+
+
+@router.post("/{id_recomendacao}/reverter", response_model=ReverterResponse)
+def reverter(
+    id_recomendacao: UUID,
+    email: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """POST /recomendacoes/{id_recomendacao}/reverter — aba Arquivadas (reversão).
+
+    Sem payload no corpo. Reverte uma recomendação DESCONSIDERADA: volta a
+    PENDENTE se o ciclo da recomendação ainda é o mais recente
+    (_ciclo_mais_recente(), mesma lógica de /entrada e /revisao), ou EXPIRADA
+    se já é de um ciclo anterior. Limpa motivo_desconsideracao,
+    desconsiderado_por, bloquear_novas_recomendacoes e data_desconsideracao
+    (voltam a NULL) — mas mantém qtd_vezes_desconsiderado como histórico
+    acumulado, mesmo após a reversão.
+    """
+    ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
+    settings = get_settings()
+    col = _schema(settings.data_source)
+    id_str = str(id_recomendacao)
+
+    with _engine().connect() as conn:
+        row = conn.execute(
+            text(f"""
+                SELECT {col['rep_matricula']}       AS rep_matricula,
+                       {col['status_recomendacao']} AS status_recomendacao,
+                       {col['ciclo_referencia']}     AS ciclo_referencia
+                FROM {col['tabela']}
+                WHERE {col['id_recomendacao']} = :id
+            """),
+            {"id": id_str},
+        ).mappings().fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Recomendação não encontrada.")
+
+    # Mensagem genérica: não revela status/detalhe de recomendação de terceiro.
+    if row["rep_matricula"] != ctx.matricula:
+        raise HTTPException(status_code=403, detail="Não autorizado a reverter esta recomendação.")
+
+    if row["status_recomendacao"] != "DESCONSIDERADA":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Recomendação em estado incompatível para reversão: '{row['status_recomendacao']}'.",
+        )
+
+    ciclo_atual = _ciclo_mais_recente(col)
+    novo_status = "PENDENTE" if row["ciclo_referencia"] == ciclo_atual else "EXPIRADA"
+
+    # UPDATE atômico: o WHERE repete status_recomendacao = 'DESCONSIDERADA'
+    # (mesma condição já checada acima) para garantir que, sob concorrência,
+    # só uma das requisições simultâneas efetivamente grava — a outra recebe
+    # rowcount == 0 e é tratada como 400 abaixo, sem precisar de lock
+    # explícito. qtd_vezes_desconsiderado propositalmente NÃO é tocado.
+    with _engine().connect() as conn:
+        resultado = conn.execute(
+            text(f"""
+                UPDATE {col['tabela']}
+                SET {col['status_recomendacao']}         = :novo_status,
+                    {col['motivo_desconsideracao']}       = NULL,
+                    {col['desconsiderado_por']}           = NULL,
+                    {col['bloquear_novas_recomendacoes']} = NULL,
+                    {col['data_desconsideracao']}         = NULL
+                WHERE {col['id_recomendacao']} = :id
+                  AND {col['status_recomendacao']} = 'DESCONSIDERADA'
+            """),
+            {"novo_status": novo_status, "id": id_str},
+        )
+        conn.commit()
+
+    if resultado.rowcount == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Recomendação não está mais em estado 'DESCONSIDERADA' (alterada por outra requisição).",
+        )
+
+    return ReverterResponse(
+        success=True,
+        message=f"Recomendação {id_str} revertida com sucesso.",
+        id_recomendacao=id_str,
+        status_recomendacao=novo_status,
     )

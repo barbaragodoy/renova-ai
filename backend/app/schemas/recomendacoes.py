@@ -2,6 +2,7 @@
 Schemas Pydantic para os endpoints de recomendações.
 Este arquivo é o contrato oficial entre backend e frontend.
 """
+from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
@@ -74,3 +75,32 @@ class DesconsiderarResponse(BaseModel):
     id_recomendacao: str
     status_recomendacao: str
     data_desconsideracao: str
+
+
+class DesconsideradaItem(BaseModel):
+    id_recomendacao: UUID
+    # Mesmo fallback de /entrada e /revisao (_aplicar_fallback_nome_medico) —
+    # ver known-issues.md.
+    nome_medico: Optional[str] = None
+    ufcrm: str
+    tipo_recomendacao: str
+    # Motivo original da recomendação (não o motivo da desconsideração) —
+    # coluna `motivo_revisao` no mapeamento de schema, nula para
+    # ENTRADA_PAINEL histórico.
+    motivo_recomendacao: Optional[str] = None
+    motivo_desconsideracao: str
+    bloquear_novas_recomendacoes: bool
+    data_desconsideracao: datetime
+    ciclo_recomendacao: str
+
+
+class ListaDesconsideradasResponse(BaseModel):
+    total: int
+    recomendacoes: list[DesconsideradaItem]
+
+
+class ReverterResponse(BaseModel):
+    success: bool
+    message: str
+    id_recomendacao: str
+    status_recomendacao: str

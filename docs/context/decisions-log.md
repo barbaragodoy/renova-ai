@@ -198,6 +198,131 @@ mais as 2 colunas novas (`qtd_vezes_desconsiderado`,
 pendência formal com o Hugo antes de migrar, mesmo processo já usado em
 BARBARA-04/05 (ver `docs/context/known-issues.md`).
 
+**Reforço de risco (2026-08-12, encontrado na revisão de
+`routers/recomendacoes.py`):** se `DATA_SOURCE=databricks` for ativado em
+`APP_RENOVAI` antes das 5 colunas de desconsideração existirem na tabela
+real, o `UPDATE` do endpoint `/desconsiderar` vai gerar erro SQL cru do
+Databricks (coluna inexistente), não um erro tratado. Diferente do
+comportamento da branch do George, que retornava 501 (mensagem clara de
+indisponibilidade) para o mesmo cenário. Considerar adicionar uma
+verificação defensiva (try/except específico, ou checagem de schema no
+startup) antes de habilitar Databricks em produção para este endpoint,
+para evitar expor erro cru ao usuário final.
+
+## 2026-08-10 — Registro de Envio do Piloto (Sprint 5): tabela nova, sem bloqueio externo
+`tb_envios_recomendacoes_piloto` registra o histórico de envio de
+recomendações aos propagandistas durante o piloto, para comparar os grupos
+`WHATSAPP`, `EMAIL` e `CONTROLE`. **Diferente de todas as tarefas
+anteriores envolvendo `tb_recomendacoes_painel*`: esta é uma tabela nova,
+sem dependência de correção externa** — propriedade e criação da própria
+Bárbara, não do Hugo. Sem bloqueio de dado, só implementação.
+
+Decisão de design confirmada: o grupo `CONTROLE` também gera registro de
+envio, com `CANAL_ENVIO = 'NENHUM'` — representa "recomendação estava
+disponível para este propagandista, sem push ativo". Garante que a tabela
+sozinha permita comparar timing entre os três grupos sem depender de outra
+fonte (ex.: não precisa cruzar com log de disparo do Twilio para saber
+quando o grupo Controle "teria" recebido).
+
+Implementada primeiro no Postgres local
+(`data/scripts/11_create_tb_envios_recomendacoes_piloto.sql` +
+`12_popular_cenarios_envios_recomendacoes_piloto.sql`), como função de
+serviço (`registrar_envio_recomendacoes()`,
+`backend/app/services/registro_envio.py`) — não endpoint REST, já que ainda
+não existe job/integração de disparo real (Twilio/WhatsApp, templates Meta,
+e-mail) que a chame. Desenvolvida de forma totalmente independente dessas
+integrações. `ID_ENVIO` e `DATA_HORA_ENVIO` sempre gerados pelo backend.
+
+Ainda **não existe no Databricks real** — criação lá planejada para sessão
+separada, em paralelo. Ver `docs/context/databricks-schema-real.md`.
+
+## 2026-08-12 — Comparação com feature/aba-recomendacoes (George): decisão final por item
+Comparação técnica da branch `feature/aba-recomendacoes` (PR 22544, George)
+contra o estado de `APP_RENOVAI` pós-sincronização (Grupos A/B/D). George
+confirmou: nos pontos de divergência real, a implementação de `renovai-local`
+prevalece, exceto um item de mérito técnico independente. Decisão item a
+item:
+
+1. **Filtro por setor** — NÃO adotado. A versão do George filtra
+   `WHERE ... AND setor = :setor`, mas isso contradiz uma auditoria anterior
+   (relação SETOR × COD_LINHA confirmada 1:1 via query direta no ranking) e
+   tem uma inconsistência interna própria: `resolver_contexto()` (que ele
+   não alterou) trata `len(rows) > 1` para o mesmo e-mail como
+   `IDENTIDADE_AMBIGUA` (bloqueio 403) — ou seja, um propagandista com
+   duas linhas em `tb_propagandistas` (uma por setor) nunca chegaria a
+   acionar esse filtro, porque a resolução de identidade já teria barrado
+   antes. Mantido sem filtro de setor, só `rep_matricula`.
+2. **Remoção do `LIMIT 5`** — NÃO adotada. Divergência de arquitetura
+   (backend limita vs. frontend limita) com implicação real de contrato
+   (tamanho do payload) e performance (lista completa sempre trafegando).
+   Mantido `LIMIT :limite` no backend.
+3. **`POST /desconsiderar` retornando 501** — NÃO adotado. A implementação
+   de `renovai-local` (task 161830/163626 reconciliada) já é completa e
+   testada contra Postgres local, com mapeamento Databricks pronto e
+   dormente aguardando as 5 colunas do Hugo — trata os cenários reais
+   (404/403/409/400/200), não bloqueia com 501. Mantida a implementação
+   completa.
+4. **Ciclo via `MAX(ciclo_recomendacao)`** — **ADOTADO**, por mérito técnico
+   próprio: resolve o known-issue documentado do default estático de ciclo
+   ficando obsoleto a cada rollover mensal (ver
+   `docs/context/known-issues.md`). Implementado preservando `?ciclo=`
+   explícito (dependência real confirmada em
+   `test_recomendacoes_integration.py` e no contrato do `README.md`) — o
+   `MAX()` só substitui o fallback estático, não remove a consulta a
+   ciclos específicos. Aplicado em `/entrada` e `/revisao`.
+5. **Teste de introspecção estática** (`test_sql_usa_tabela_e_colunas_do_contrato`,
+   verifica via `inspect.getsource` que nomes do contrato antigo só
+   aparecem como `AS alias`) — NÃO adotado como está. Incompatível com a
+   arquitetura dual-source (`_schema()`/`_COLUNAS_POR_FONTE`): esses mesmos
+   nomes são colunas literais e corretas no Postgres local, não "contrato
+   antigo" nesse contexto. Precisaria de adaptação para conviver com a
+   abstração, não copiado.
+
+**Achado colateral, não relacionado a nenhuma divergência:** a comparação
+revelou que o George resolveu a pendência de `USE CATALOG` em
+`dmn_inteligencia_dados_prd` (SP sem esse grant) por via alternativa —
+criou `tb_dim_medicos`, espelho local dentro de `acheinfo_dev.renovai`, em
+vez de solicitar o GRANT cruzado. Ver `docs/context/known-issues.md`. Não
+incorporado nesta data — capacidade aditiva, candidata a task separada.
+
+Branch do George confirmada como atualizada em relação a `dev`
+(`git log origin/feature/aba-recomendacoes..dev` = 0 commits, ou seja, tudo
+que existe em `dev` hoje já está na ancestralidade da branch dele) — risco
+de conflito por desatualização de sessão/auth era baixo, e se confirmou
+baixo nos diffs de arquivo (`auth/context.py`, `db/databricks_connection.py`,
+`config.py`, `gerencial.py` idênticos ao estado pós-sync).
+
+## 2026-08-13 — Aba Arquivadas (consulta + reversão de desconsideradas)
+Implementados `GET /recomendacoes/desconsideradas` e
+`POST /recomendacoes/{id_recomendacao}/reverter` **localmente** (Postgres),
+sobre a mesma base do Desconsiderar Recomendação (2026-08-06 acima). As 5
+colunas de desconsideração já existiam no schema local desde aquela task —
+sem pendência de dado nova, só implementação.
+
+Decisões de design assumidas nesta implementação (sem alinhamento formal
+prévio, mas sem conflito identificado com nada já existente no código ou
+neste log):
+- **4 campos limpos na reversão** (`motivo_desconsideracao`,
+  `desconsiderado_por`, `bloquear_novas_recomendacoes`,
+  `data_desconsideracao` voltam a `NULL`); `qtd_vezes_desconsiderado`
+  **não** é zerado — mantém o histórico acumulado de quantas vezes aquela
+  recomendação já foi desconsiderada ao longo do tempo, mesmo após
+  reversões.
+- **Sem `LIMIT`** na consulta de `/desconsideradas` — diferente de
+  `/entrada` e `/revisao` (que limitam a `settings.limite_sugestoes` por
+  serem sugestões priorizadas), esta é uma tela de histórico completo.
+- **Ordenação `DATA_DESCONSIDERACAO DESC`** (mais recente primeiro) — mais
+  natural para uma tela de arquivo/histórico.
+- Novo status da reversão: `PENDENTE` se `CICLO_RECOMENDACAO` da
+  recomendação é igual ao ciclo mais recente (`_ciclo_mais_recente()`,
+  reaproveitado sem alteração), `EXPIRADA` caso contrário (ciclo passado).
+- `POST /reverter` não recebe payload no corpo — só `id_recomendacao` no
+  path, mesmo padrão de ação simples sem parâmetros adicionais.
+
+Mapeamento para Databricks continua dormente em
+`_COLUNAS_POR_FONTE["databricks"]`, aguardando as mesmas 5 colunas do Hugo
+já formalizadas como pendência na entrada de 2026-08-06.
+
 ## Próximos passos técnicos (não iniciados)
 - Implementar `llm/genie_provider.py` com Databricks SDK (para promoção a
   produção) — ver `docs/promocao_producao.md`.

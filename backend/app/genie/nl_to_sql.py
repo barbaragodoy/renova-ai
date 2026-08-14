@@ -71,6 +71,23 @@ def _build_period_clause(periodo_str: Optional[str]) -> str:
     return f"-- Período: YTD (ano corrente). Use data_prescricao >= '{ano}-01-01' ou data_visita >= '{ano}-01-01' conforme contexto."
 
 
+def _ciclo_mais_recente(settings) -> str:
+    """Resolve o ciclo mais recente via MAX(ciclo_referencia) em
+    tb_recomendacoes_painel, substituindo o default estático
+    settings.ciclo_referencia — que fica obsoleto a cada rollover mensal de
+    ciclo (ver docs/context/known-issues.md, mesmo bug já corrigido em
+    routers/recomendacoes.py:_ciclo_mais_recente()). Adaptado ao padrão
+    deste módulo: nl_to_sql é uma simulação local do Genie (ver docstring
+    do arquivo) e sempre conecta via settings.database_url, sem a
+    abstração dual-source (_schema()/col) usada em recomendacoes.py."""
+    engine = create_engine(settings.database_url)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT MAX(ciclo_referencia) AS ciclo FROM tb_recomendacoes_painel")
+        ).fetchone()
+    return row.ciclo
+
+
 def _build_system_prompt(intent: str, setor: Optional[str], period_clause: str, ciclo: str) -> str:
     filtro_setor = (
         f"-- Filtro de setor OBRIGATÓRIO: WHERE setor = '{setor}'" if intent == "OPERACIONAL" and setor else ""
@@ -130,7 +147,7 @@ async def consultar(
     intent = _classify_intent(pergunta, rules)
     periodo_detectado = periodo or _extract_period(pergunta, rules)
     period_clause = _build_period_clause(periodo_detectado)
-    ciclo = settings.ciclo_referencia
+    ciclo = _ciclo_mais_recente(settings)
 
     system_prompt = _build_system_prompt(intent, setor, period_clause, ciclo)
 

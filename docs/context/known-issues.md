@@ -244,11 +244,41 @@ explícito. Coberto por 4 testes novos em `test_recomendacoes.py`
 `test_entrada_com_ciclo_explicito_nao_consulta_max`, e os equivalentes de
 `/revisao`).
 
-**Pendência separada, fora de escopo desta correção:** `routers/gerencial.py`
-tem exatamente o mesmo padrão (`ciclo = ciclo or settings.ciclo_referencia`)
-nos três endpoints (`/indicadores`, `/propagandistas`, `/recomendacoes`) —
-mesmo known-issue, mesma causa raiz, ainda não corrigido lá. Candidato a
-aplicar a mesma correção numa próxima task.
+**Escopo real do problema, mapeado em 2026-08-14: 4 lugares, não 1.**
+Investigação de sincronização `renovai-local` ↔ `dev` encontrou mais 3
+consumidores diretos de `settings.ciclo_referencia`, além de
+`gerencial.py` (já sabido):
+
+- **`genie/nl_to_sql.py:133` (`ciclo = settings.ciclo_referencia`, sem
+  `or`, sem parâmetro de override nenhum) — era o mais grave: bug ativo,
+  afetando todo usuário que interage com o Genie/chat, sempre, sem
+  contorno possível.** Sozinho entre os 4, era o único sem nenhuma forma
+  de mitigação — os outros aceitam `?ciclo=`/`--ciclo` explícito.
+  **RESOLVIDO em 2026-08-14** — corrigido primeiro em `dev`
+  (`AcheInfo_Apps/APP_RENOVAI`, o código que roda em homologação de
+  verdade) e replicado para `renovai-local`, função nova
+  `_ciclo_mais_recente(settings)` adaptada ao padrão deste módulo
+  (Genie é simulação local, sempre via `create_engine(settings.database_url)`,
+  sem a abstração dual-source `_schema()`/`col` de `recomendacoes.py`).
+  Coberto por `test_nl_to_sql.py` (2 testes novos, nos dois ambientes):
+  confirma que o ciclo no prompt reflete `MAX(ciclo_referencia)` de
+  `tb_recomendacoes_painel`, não mais o valor estático, e que reflete
+  mudança de ciclo entre chamadas (não fica cacheado/fixo).
+
+- **`routers/gerencial.py`** — mesmo padrão (`ciclo = ciclo or
+  settings.ciclo_referencia`) nos três endpoints (`/indicadores`,
+  `/propagandistas`, `/recomendacoes`). **Ainda não corrigido**, fora de
+  escopo da correção urgente de 2026-08-14 (não bloqueia em tempo real
+  como o Genie bloqueava). Candidato a aplicar a mesma correção numa
+  próxima task.
+
+- **3 jobs em background** (`jobs/novo_ciclo.py`, `jobs/atualizar_status.py`,
+  `jobs/gerar_recomendacoes.py`) — mesmo padrão, mas com `ciclo or`
+  (aceitam `--ciclo` explícito na chamada manual, conforme os próprios
+  docstrings de cada job documentam). **Ainda não corrigidos.** Gravidade
+  real depende de como a automação de produção efetivamente dispara esses
+  jobs (com ou sem `--ciclo` explícito) — não verificável só por leitura
+  de código, precisa checar a configuração real do agendamento.
 
 **Nota de comportamento (2026-08-12):** `_ciclo_mais_recente()` retorna
 `None` se a tabela estiver vazia, resultando em lista vazia silenciosa

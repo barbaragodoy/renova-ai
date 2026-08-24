@@ -200,6 +200,16 @@ def test_e2e_05_novo_ciclo_recorrencia():
     def _exec(query, params=None):
         sql = str(query)
         result = MagicMock()
+        # Sprint 6: gerar_recomendacoes consulta tb_perfil_portal (limite por
+        # propagandista) e o tamanho do painel antes de decidir revisão —
+        # resposta fixa para não alterar o comportamento (já falho, ver nota
+        # acima) que este teste cobria antes desta mudança.
+        if "tb_perfil_portal" in sql:
+            result.mappings.return_value.fetchone.return_value = {"limite": 318}
+            return result
+        if "tb_painel_medico" in sql and "COUNT(*)" in sql:
+            result.scalar.return_value = 0
+            return result
         if "ativo = TRUE" in sql and "rep_matricula" not in sql:
             result.mappings.return_value.fetchall.return_value = [prop]
         elif "LEFT JOIN tb_painel_medico" in sql:

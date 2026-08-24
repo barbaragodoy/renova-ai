@@ -29,10 +29,11 @@ class _LLMFake:
         return "Resposta simulada."
 
 
-def _mock_create_engine(ciclo_max: str):
-    """Substitui create_engine (usado tanto por _ciclo_mais_recente() quanto
-    pela execução do SQL gerado, linha 151) — distingue as duas consultas
-    por string matching no SQL, mesmo padrão de test_recomendacoes.py."""
+def _mock_create_engine(ciclo_max: str, limite_painel: int = 318):
+    """Substitui create_engine (usado por _ciclo_mais_recente(),
+    _limite_painel() e pela execução do SQL gerado, linha 151) — distingue
+    as três consultas por string matching no SQL, mesmo padrão de
+    test_recomendacoes.py."""
 
     def _factory(*args, **kwargs):
         mock_eng = MagicMock()
@@ -43,7 +44,9 @@ def _mock_create_engine(ciclo_max: str):
         def _exec(query, params=None):
             sql = str(query)
             result = MagicMock()
-            if "MAX(" in sql:
+            if "tb_perfil_portal" in sql:
+                result.fetchone.return_value = MagicMock(limite=limite_painel)
+            elif "MAX(" in sql:
                 result.fetchone.return_value = MagicMock(ciclo=ciclo_max)
             else:
                 result.mappings.return_value.fetchall.return_value = []
@@ -86,3 +89,70 @@ async def test_consultar_reflete_mudanca_de_ciclo_entre_chamadas():
     with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608")):
         await nl_to_sql.consultar("Quantas recomendações tenho pendentes?", llm=llm2)
     assert "Ciclo de referência padrão: 202608" in llm2.chamadas[0]
+
+
+# ---------------------------------------------------------------------------
+# Sprint 6 — limite de painel e janela de visita dinâmicos (Fase 0 confirmou
+# valores fixos em texto livre no prompt: "posicao_ranking <= 100 (simula <=
+# 400 em produção)" e "sem visita efetiva há > 5 meses" — REGRAS_CONTEXTO
+# agora usa {limite_painel}/{sem_visita_meses} interpolados, nunca mais
+# literais).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_consultar_injeta_limite_painel_do_propagandista_autenticado():
+    """Propagandista com limite personalizado (450, ver tb_perfil_portal) —
+    o prompt deve refletir esse valor, não 100 nem 400 fixos."""
+    llm = _LLMFake()
+    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608", limite_painel=450)):
+        resultado = await nl_to_sql.consultar(
+            "Quantas recomendações tenho pendentes?", matricula="REP002", llm=llm
+        )
+    assert resultado["status"] == "OK"
+    prompt = llm.chamadas[0]
+    assert "posicao_ranking <= 450" in prompt
+    assert "posicao_ranking > 450" in prompt
+    assert "<= 100" not in prompt
+    assert "<= 400" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_consultar_dois_propagandistas_limites_diferentes_geram_prompts_diferentes():
+    """Comparativo: matrículas diferentes, limites diferentes, prompts
+    diferentes entre si — confirma que não há valor fixo compartilhado."""
+    llm1 = _LLMFake()
+    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608", limite_painel=250)):
+        await nl_to_sql.consultar("Quantas recomendações tenho pendentes?", matricula="REP001", llm=llm1)
+
+    llm2 = _LLMFake()
+    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608", limite_painel=450)):
+        await nl_to_sql.consultar("Quantas recomendações tenho pendentes?", matricula="REP002", llm=llm2)
+
+    assert "posicao_ranking <= 250" in llm1.chamadas[0]
+    assert "posicao_ranking <= 450" in llm2.chamadas[0]
+    assert llm1.chamadas[0] != llm2.chamadas[0]
+
+
+@pytest.mark.asyncio
+async def test_consultar_sem_matricula_usa_default_318_sem_consultar_banco():
+    """Sem matricula (não deveria ocorrer em uso normal — prescricoes.py
+    sempre resolve contexto antes de chamar consultar() — mas o helper não
+    deve quebrar), cai no default 318 sem round-trip ao banco."""
+    llm = _LLMFake()
+    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608")) as mock_ce:
+        resultado = await nl_to_sql.consultar("Quantas recomendações tenho pendentes?", llm=llm)
+    assert resultado["status"] == "OK"
+    assert "posicao_ranking <= 318" in llm.chamadas[0]
+
+
+@pytest.mark.asyncio
+async def test_consultar_janela_de_visita_reflete_settings_sem_visita_meses():
+    """A janela de visita no prompt deve refletir settings.sem_visita_meses
+    (3, Sprint 6) — nunca mais o valor antigo de 5 meses fixo no texto."""
+    llm = _LLMFake()
+    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608")):
+        resultado = await nl_to_sql.consultar("Quantas recomendações tenho pendentes?", llm=llm)
+    assert resultado["status"] == "OK"
+    prompt = llm.chamadas[0]
+    assert "há > 3 meses" in prompt
+    assert "há > 5 meses" not in prompt

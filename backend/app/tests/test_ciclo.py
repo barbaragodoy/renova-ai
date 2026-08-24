@@ -17,6 +17,27 @@ UFCRM = "SP00001"
 # Helpers de mock
 # ---------------------------------------------------------------------------
 
+def _mock_limite_e_painel_size(sql: str):
+    """Sprint 6: gerar_recomendacoes agora consulta tb_perfil_portal (limite
+    por propagandista) e o tamanho do painel antes de decidir revisão — duas
+    queries novas que os mocks pré-existentes deste arquivo não previam.
+    Resposta fixa (limite=318, painel vazio) para não interferir na lógica
+    original que estes testes já cobriam (ENTRADA_PAINEL/recorrência), já
+    que painel=0 nunca é > limite, então a guarda de revisão simplesmente
+    não dispara — mesmo comportamento de antes desta mudança para esses
+    cenários, que nunca tiveram intenção de exercitar REVISAO_PAINEL.
+    Retorna None se `sql` não for nenhuma das duas queries novas."""
+    if "tb_perfil_portal" in sql:
+        result = MagicMock()
+        result.mappings.return_value.fetchone.return_value = {"limite": 318}
+        return result
+    if "tb_painel_medico" in sql and "COUNT(*)" in sql:
+        result = MagicMock()
+        result.scalar.return_value = 0
+        return result
+    return None
+
+
 def _make_conn(rows_map: dict):
     """rows_map: {query_fragment: [list_of_mappings]}"""
     conn = MagicMock()
@@ -25,6 +46,9 @@ def _make_conn(rows_map: dict):
 
     def _execute(query, params=None):
         sql = str(query.text) if hasattr(query, "text") else str(query)
+        especial = _mock_limite_e_painel_size(sql)
+        if especial is not None:
+            return especial
         for fragment, rows in rows_map.items():
             if fragment in sql:
                 result = MagicMock()
@@ -92,6 +116,9 @@ def test_recomendacao_recorrente_incrementa_contador():
 
     def _exec(query, params=None):
         sql = str(query)
+        especial = _mock_limite_e_painel_size(sql)
+        if especial is not None:
+            return especial
         result = MagicMock()
         if "tb_propagandistas" in sql:
             result.mappings.return_value.fetchall.return_value = [prop]
@@ -193,6 +220,9 @@ def test_desconsiderada_no_ciclo_anterior_volta_como_pendente():
 
     def _exec(query, params=None):
         sql = str(query)
+        especial = _mock_limite_e_painel_size(sql)
+        if especial is not None:
+            return especial
         result = MagicMock()
         if "tb_propagandistas" in sql:
             result.mappings.return_value.fetchall.return_value = [prop]

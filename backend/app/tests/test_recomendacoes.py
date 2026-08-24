@@ -101,9 +101,12 @@ def test_entrada_nome_medico_nulo_aplica_fallback():
 
 def _mock_engine_ciclo(ciclo_max: str, capturados: list):
     """Mocka _engine() distinguindo a query MAX(...) (resolução do ciclo
-    mais recente) da query principal de listagem — permite verificar qual
-    ciclo foi efetivamente usado no bind param, e se a query MAX chegou a
-    ser executada."""
+    mais recente) e a query de limite de painel (Sprint 6, só executada em
+    /revisao) da query principal de listagem — permite verificar qual ciclo
+    foi efetivamente usado no bind param, e se a query MAX chegou a ser
+    executada. A query de limite responde um valor fixo (318) e nunca entra
+    em `capturados`, mesmo tratamento da MAX(...) — só a query principal de
+    listagem é capturada."""
     mock_eng = MagicMock()
     conn = MagicMock()
     conn.__enter__ = lambda s: s
@@ -112,7 +115,9 @@ def _mock_engine_ciclo(ciclo_max: str, capturados: list):
     def _exec(query, params=None):
         sql = str(query)
         result = MagicMock()
-        if "MAX(" in sql:
+        if "perfil_portal" in sql.lower():
+            result.fetchone.return_value = MagicMock(limite=318)
+        elif "MAX(" in sql:
             result.fetchone.return_value = MagicMock(ciclo=ciclo_max)
         else:
             capturados.append(params)
@@ -192,9 +197,12 @@ def test_revisao_com_ciclo_explicito_nao_consulta_max():
 
             def _exec(query, params=None):
                 sql = str(query)
+                result = MagicMock()
+                if "perfil_portal" in sql.lower():
+                    result.fetchone.return_value = MagicMock(limite=318)
+                    return result
                 if "MAX(" in sql:
                     chamadas_max.append(True)
-                result = MagicMock()
                 capturados.append(params)
                 result.mappings.return_value.fetchall.return_value = []
                 return result
@@ -384,6 +392,177 @@ def _mock_engine_capturando(capturados: list):
     conn.execute.side_effect = _exec
     mock_eng.return_value.connect.return_value = conn
     return mock_eng
+
+
+# ---------------------------------------------------------------------------
+# Sprint 6 — limite de painel por propagandista (substitui o corte fixo 400)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.requer_banco
+def test_limite_painel_integracao_real_local():
+    """Integração real contra a seed de data/scripts/13_create_tb_perfil_portal.sql:
+    REP001 tem limite customizado (250), REP002 tem limite customizado acima
+    de 400 (450, cobre o caso que o corte fixo antigo rejeitaria e o limite
+    novo aceita), REP003 tem limite explicitamente NULL e REP004 não tem
+    nenhuma linha em tb_perfil_portal — os dois últimos caem no mesmo
+    default 318 via COALESCE. Também confirma, na mesma consulta, que dois
+    propagandistas com limite customizado recebem valores diferentes entre
+    si (250 != 450)."""
+    from backend.app.routers.recomendacoes import _limite_painel, _schema
+
+    col = _schema("local")
+    limite_rep001 = _limite_painel("REP001", col)
+    limite_rep002 = _limite_painel("REP002", col)
+
+    assert limite_rep001 == 250
+    assert limite_rep002 == 450
+    assert limite_rep001 != limite_rep002
+    assert _limite_painel("REP003", col) == 318
+    assert _limite_painel("REP004", col) == 318
+
+
+def _mock_engine_limite(limite_por_matricula: dict, capturados: list):
+    """Mocka _engine() respondendo à query de limite (tb_perfil_portal) com o
+    valor configurado por matrícula, resolvendo o ciclo via MAX(...) e
+    capturando os parâmetros da query principal de listagem — mesmo estilo
+    de _mock_engine_ciclo, com um terceiro tipo de query distinguido pelo
+    texto SQL."""
+    mock_eng = MagicMock()
+    conn = MagicMock()
+    conn.__enter__ = lambda s: s
+    conn.__exit__ = MagicMock(return_value=False)
+
+    def _exec(query, params=None):
+        sql = str(query)
+        result = MagicMock()
+        if "perfil_portal" in sql.lower():
+            mat = params["mat"]
+            result.fetchone.return_value = MagicMock(limite=limite_por_matricula[mat])
+        elif "MAX(" in sql:
+            result.fetchone.return_value = MagicMock(ciclo="202608")
+        else:
+            capturados.append(params)
+            result.mappings.return_value.fetchall.return_value = []
+        return result
+
+    conn.execute.side_effect = _exec
+    mock_eng.return_value.connect.return_value = conn
+    return mock_eng
+
+
+def test_revisao_usa_limite_personalizado_no_filtro(monkeypatch):
+    """Databricks é a fonte que tem QTD_MEDICOS_PAINEL_CICLO — o filtro de
+    defesa em profundidade só existe nela (ver _schema()['local']). Propagandista
+    com limite personalizado (450) deve ter esse valor, não 318 nem 400,
+    passado como bind param :limite_painel."""
+    monkeypatch.setenv("DATA_SOURCE", "databricks")
+    get_settings.cache_clear()
+    ctx_rep002 = ContextoResponse(
+        status=StatusContexto.SETOR_RESOLVIDO, matricula="REP002",
+        setor="SP_INTERIOR", cod_linha="CARDIO", nome="Bruno Melo",
+    )
+    capturados = []
+    try:
+        with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=ctx_rep002):
+            with patch(
+                "backend.app.routers.recomendacoes._engine",
+                _mock_engine_limite({"REP002": 450}, capturados),
+            ):
+                resp = CLIENT.get(
+                    "/recomendacoes/revisao",
+                    params={"email": "bruno.melo@ache.com.br", "ciclo": "202608"},
+                    headers=CABECALHO,
+                )
+    finally:
+        get_settings.cache_clear()
+    assert resp.status_code == 200
+    assert capturados[0]["limite_painel"] == 450
+
+
+def test_revisao_sem_personalizacao_usa_default_318(monkeypatch):
+    """Propagandista sem linha em tb_perfil_portal (ou com limite_painel
+    NULL) cai no default 318 — mesmo valor que o notebook de geração usa na
+    fonte real via COALESCE."""
+    monkeypatch.setenv("DATA_SOURCE", "databricks")
+    get_settings.cache_clear()
+    ctx_rep004 = ContextoResponse(
+        status=StatusContexto.SETOR_RESOLVIDO, matricula="REP004",
+        setor="RJ_CAPITAL", cod_linha="CARDIO", nome="Diego Costa",
+    )
+    capturados = []
+    try:
+        with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=ctx_rep004):
+            with patch(
+                "backend.app.routers.recomendacoes._engine",
+                _mock_engine_limite({"REP004": 318}, capturados),
+            ):
+                resp = CLIENT.get(
+                    "/recomendacoes/revisao",
+                    params={"email": "diego.costa@ache.com.br", "ciclo": "202608"},
+                    headers=CABECALHO,
+                )
+    finally:
+        get_settings.cache_clear()
+    assert resp.status_code == 200
+    assert capturados[0]["limite_painel"] == 318
+
+
+def test_revisao_dois_propagandistas_limites_diferentes_geram_filtros_diferentes(monkeypatch):
+    """Teste comparativo: dois propagandistas com limites diferentes (250 e
+    450) devem gerar bind params :limite_painel diferentes entre si na
+    mesma execução — confirma que o filtro não está fixo em nenhum valor
+    único (nem 400, nem 318), e sim resolvido por matrícula a cada chamada."""
+    monkeypatch.setenv("DATA_SOURCE", "databricks")
+    get_settings.cache_clear()
+    ctx_rep001 = ContextoResponse(
+        status=StatusContexto.SETOR_RESOLVIDO, matricula="REP001",
+        setor="SP_INTERIOR", cod_linha="CARDIO", nome="Ana Lima",
+    )
+    ctx_rep002 = ContextoResponse(
+        status=StatusContexto.SETOR_RESOLVIDO, matricula="REP002",
+        setor="SP_INTERIOR", cod_linha="CARDIO", nome="Bruno Melo",
+    )
+    limites = {"REP001": 250, "REP002": 450}
+    resultados = {}
+    try:
+        for mat, ctx in (("REP001", ctx_rep001), ("REP002", ctx_rep002)):
+            capturados = []
+            with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=ctx):
+                with patch(
+                    "backend.app.routers.recomendacoes._engine",
+                    _mock_engine_limite(limites, capturados),
+                ):
+                    resp = CLIENT.get(
+                        "/recomendacoes/revisao",
+                        params={"email": "x@ache.com.br", "ciclo": "202608"},
+                        headers=CABECALHO,
+                    )
+            assert resp.status_code == 200
+            resultados[mat] = capturados[0]["limite_painel"]
+    finally:
+        get_settings.cache_clear()
+    assert resultados["REP001"] == 250
+    assert resultados["REP002"] == 450
+    assert resultados["REP001"] != resultados["REP002"]
+
+
+def test_entrada_nao_tem_filtro_de_limite_painel():
+    """/entrada não ganhou filtro de limite (Fase 0 não indicou necessidade
+    — sempre foi assim, mesmo antes do corte fixo 400 existir só em
+    /revisao). Confirma que a query de /entrada não referencia
+    limite_painel nem tb_perfil_portal."""
+    capturados = []
+    with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
+        with patch("backend.app.routers.recomendacoes._engine", _mock_engine_capturando(capturados)):
+            resp = CLIENT.get(
+                "/recomendacoes/entrada",
+                params={"email": "ana.silva@ache.com.br", "ciclo": "202608"},
+                headers=CABECALHO,
+            )
+    assert resp.status_code == 200
+    sql_entrada = "\n".join(capturados)
+    assert "limite_painel" not in sql_entrada
+    assert "perfil_portal" not in sql_entrada.lower()
 
 
 def test_meses_sem_visita_so_aparece_em_revisao_e_desconsideradas(monkeypatch):

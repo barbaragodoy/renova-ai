@@ -17,7 +17,12 @@ from backend.app.auth.jwt_auth import resolver_email_autenticado
 
 
 def _settings(**overrides):
+    # `auth_mode` entrou no contrato em 04/08/2026, quando o modo `senha` passou
+    # a ser o único caminho válido no ambiente publicado. Este arquivo cobre os
+    # outros dois modos, então o mock precisa dizer explicitamente que não é o
+    # `senha`. O modo `senha` é coberto em `test_sessao.py`.
     base = dict(
+        auth_mode="local",
         auth_require_jwt=False,
         auth_email_claim="preferred_username",
         auth0_domain="renovai.auth0.com",

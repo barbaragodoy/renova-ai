@@ -66,17 +66,47 @@ roda com identidade própria de job/notebook, não com o SP da API).
 vez de solicitar o GRANT cruzado de catálogo, o George criou
 `tb_dim_medicos` — uma **tabela espelho local**, dentro de
 `acheinfo_dev.renovai` (catálogo que o SP já lê), replicando os campos
-`especialidade`, `cidade` e `uf` da dimensão original. `RecomendacaoItem`
-ganhou esses 3 campos (mais `meses_sem_visita`, calculado no SQL ancorado
-no ciclo) via `LEFT JOIN tb_dim_medicos`. Comentário dele confirma o
+`especialidade` e `cidade` da dimensão original (correção de 2026-08-14:
+**`uf` não vem dessa tabela** — `DESCRIBE EXTENDED` confirmou que
+`tb_dim_medicos` só tem 4 colunas, `UFCRM`/`MEDICO`/`ESPECIALIDADE`/`CIDADE`;
+`uf` é calculado como `LEFT(ufcrm, 2)` direto na query do George, sem
+depender do espelho). `RecomendacaoItem` ganhou esses campos (mais
+`meses_sem_visita`, calculado via `DATA_ULTIMA_VISITA_CONSIDERADA`, também
+confirmada real) via `LEFT JOIN tb_dim_medicos`. Comentário dele confirma o
 motivo: "o Service Principal do portal só lê acheinfo_dev.renovai e o
 catálogo da dimensão original é vetado para ele".
 
-**Estado em `renovai-local`/`APP_RENOVAI` nesta data: ainda não
-incorporado por mim** — é uma tabela nova, capacidade aditiva, sem
-conflito com nada existente. Fica registrado aqui como candidato a task
-separada, se fizer sentido para o roadmap (não é urgente, os endpoints
-funcionam sem esses campos hoje).
+**Incorporado em `renovai-local` em 2026-08-14** (`routers/recomendacoes.py`,
+helpers `_fragmentos_dim_medicos()`/`_fragmento_meses_sem_visita()`) —
+condicional por fonte via `_COLUNAS_POR_FONTE`: só o Databricks tem
+`tb_dim_medicos`/`DATA_ULTIMA_VISITA_CONSIDERADA`, o Postgres local não tem
+tabela nem coluna equivalente, então `especialidade`/`cidade`/`meses_sem_visita`
+ficam sempre `None` lá (`uf` funciona nos dois lados, é só cálculo sobre
+`ufcrm`). Aplicado em `/entrada`, `/revisao` e `/desconsideradas`. Testado
+com integração real confirmando que o `LEFT JOIN` casa de verdade
+(`test_especialidade_cidade_vem_preenchidos_para_pelo_menos_um_registro_real`).
+Ainda não replicado em `dev`/`APP_RENOVAI` — decisão de quando fica para
+depois.
+
+**Ressalva de atualidade do dado, registrada em 2026-08-14:** o comentário
+da própria tabela real confirma que a fonte original
+(`dmn_inteligencia_dados_prd.gold.ranking_medicos_renovache_dim_medicos`)
+está **parada desde 08/06/2026**, sem atualização automática agendada —
+`tb_dim_medicos` é um espelho estático, feito uma vez em 11/08/2026. Médicos
+que entrarem no ranking depois dessa data terão `especialidade`/`cidade`
+vazios (`LEFT JOIN` sem match) — não é bug, é característica do dado atual,
+mas vale acompanhar se isso afeta a experiência do piloto (ex.: se boa parte
+dos candidatos a `ENTRADA_PAINEL` de ciclos futuros vier sem esses campos).
+
+**Achado colateral, ao confirmar `DATA_ULTIMA_VISITA_CONSIDERADA` em
+`tb_recomendacoes_painel_historico` (2026-08-14):** a tabela real já tem 3
+das 5 colunas de desconsideração esperadas do Hugo —
+`MOTIVO_DESCONSIDERACAO`, `BLOQUEAR_NOVAS_RECOMENDACOES` e
+`DATA_DESCONSIDERACAO` já existem de verdade. Ainda faltam
+`DESCONSIDERADO_POR` e `QTD_VEZES_DESCONSIDERADO`. Não investigado a fundo
+agora — candidato a confirmação própria futura, fora do escopo desta
+sincronização (pode significar que a migração do Hugo está parcialmente
+em andamento).
 
 **Estado atual:** `/recomendacoes/entrada` totalmente funcional com dado
 real — nomes verdadeiros, sem fallback nos dados de hoje. Nenhuma limitação
@@ -399,6 +429,109 @@ inline deixado em `test_cenarios_completos.py` apontando para esta entrada.
 Sugestão para quando alguém for corrigir o job: remover o marcador junto
 com a correção, para o teste voltar a falhar visivelmente até o bug do job
 ser corrigido de verdade.
+
+## RESOLVIDO — regressão em test_prescricoes.py de dev — achada em 2026-08-14, corrigida em 2026-08-13
+Ao trazer os módulos de sessão/perfil do George (`AcheInfo_Apps/APP_RENOVAI`)
+para `renovai-local`, o diff de `test_prescricoes.py` em `dev` revertia
+`EMAIL_VALIDO` de `"ana.lima@ache.com.br"` para `"ana.silva@ache.com.br"` e
+removia o `pytestmark = pytest.mark.usefixtures("forcar_data_source_local")`
+(junto do comentário que explica o motivo). `"ana.silva@ache.com.br"` nunca
+existiu na seed local (`02_populate_propagandistas.sql`) — `resolver_contexto()`
+roda de verdade nesse arquivo (não é mockado), então isso reintroduzia o
+mesmo bug que motivou a correção original em `renovai-local`.
+
+**Decisão inicial (2026-08-14): não replicado em `renovai-local`** — manteve
+`EMAIL_VALIDO="ana.lima@ache.com.br"` e `forcar_data_source_local` como
+estavam, trazendo só o que era necessário para o merge de CABECALHO/
+requer_banco. Divergência intencional entre os dois ambientes nesse momento,
+não um esquecimento.
+
+**Corrigido em `dev` na Fase 3 da sincronização (2026-08-13):** aplicada a
+mesma correção completa já validada em `renovai-local` — não bastava trocar
+o valor de `EMAIL_VALIDO`, já que com `auth_mode=senha` a identidade vem
+exclusivamente do token de sessão (`CABECALHO`), e o e-mail do corpo da
+requisição é ignorado por `resolver_email_autenticado()`. A correção real
+foi gerar um `CABECALHO` próprio do arquivo com `cabecalho(email=EMAIL_VALIDO)`
+em vez do `CABECALHO` padrão compartilhado de `apoio_sessao.py`.
+
+**Segundo achado, descoberto ao validar a correção acima contra `dev`:**
+o padrão `new_callable=lambda: lambda: X()` usado nos 5 testes mockados de
+`dev` está incorreto — `new_callable` precisa ser algo que, chamado sem
+argumentos, devolve o substituto; aqui devolvia uma função que não aceita
+os `kwargs` (`pergunta=`, `setor=`, etc.) que o router realmente passa,
+causando `TypeError` em 5 dos 6 testes mesmo depois da correção de
+identidade. Isso **confirma, com evidência concreta, a decisão tomada na
+sincronização anterior de não adotar esse estilo de mock em
+`renovai-local`** — não era diferença de convenção sem impacto, era um
+`TypeError` ativo. Corrigido em `dev` na mesma correção do `EMAIL_VALIDO`
+(2026-08-13), revertendo para `new=X()`, mesmo padrão já usado no resto do
+projeto. `test_prescricoes.py` de `dev` confirmado 6/6 passando após as
+duas correções.
+
+## ABERTO — Segfault em test_recomendacoes_integration.py — agravado (2026-08-13)
+Já documentado antes como intermitente; nesta sessão passou a ocorrer de
+forma consistente no endpoint `/entrada`, mesmo com a correção de
+identidade (`CABECALHO` dinâmico) aplicada corretamente. Não foi possível
+confirmar empiricamente que a correção funciona neste arquivo por causa do
+crash nativo (Arrow→pandas, `databricks-sql-connector`/`pyarrow`). Vale
+investigar se houve mudança de versão de biblioteca ou ambiente (memória
+disponível) desde a última vez que este teste rodou sem crash — antes de
+depender dele para validação de regressão futura. Requer sessão de
+investigação própria, fora do escopo de qualquer sincronização.
+
+## NOTA DE AMBIENTE — Node.js instalado neste WSL — 2026-08-13
+Node.js 20 LTS instalado via `apt`/NodeSource neste WSL (2026-08-13), não
+via `nvm` como inicialmente planejado — decisão tomada durante a
+sincronização, afeta o ambiente todo, não só este projeto. `npm audit`
+reportou 1 vulnerabilidade "high" nas dependências do frontend (herdado de
+`dev`, não introduzido agora) — não corrigido, fora de escopo desta
+sincronização, vale revisar depois com `npm audit fix` ou análise manual.
+
+## RESOLVIDO — 2 bugs reais achados em teste de ponta a ponta — 2026-08-14
+Primeiro teste visual completo de `Recomendacoes.tsx` + backend, com
+navegador de verdade (Playwright, instalado nesta sessão — não havia
+nenhuma ferramenta de browser disponível antes). Achou 4 pontos fora do
+esperado; 1 já documentado (ver entrada em `decisions-log.md`, 2026-08-12,
+"Confirmado na prática"), 2 eram bugs reais de código (corrigidos abaixo),
+1 não precisou de ação.
+
+**Bug 1 — `DesconsideradaItem.bloquear_novas_recomendacoes` quebrava
+`GET /desconsideradas` com 500.** Estava tipado como `bool` obrigatório,
+mas a coluna real permite `NULL` de propósito ("NULL = sem decisão", ver
+comentário da coluna). Reproduzido com 2 registros reais e antigos no
+Postgres local (`motivo_desconsideracao = 'teste swagger'`, de
+15/07/2026 — resíduo de teste manual anterior a este trabalho, sem
+relação com nenhuma sincronização recente) que têm esse campo `NULL`.
+Um único registro legado quebrava a listagem inteira para o usuário, sem
+degradar graciosamente. **Corrigido:** campo virou
+`Optional[bool] = None` em `schemas/recomendacoes.py`. Coberto por
+`test_lista_desconsideradas_com_bloqueio_nulo_nao_quebra` (novo).
+`DesconsiderarRequest.bloquear_novas_recomendacoes` (o campo do *corpo*
+de `POST /desconsiderar`) não muda — esse continua `bool` obrigatório de
+propósito, é regra de negócio diferente (entrada nova, não leitura de
+dado histórico).
+
+**Bug 2 — lista de Entrada/Exclusão não atualizava depois de "Reverter"
+bem-sucedido.** O item sumia de Arquivadas corretamente e o backend
+gravava certo (`status_recomendacao = PENDENTE`, confirmado direto no
+banco), mas `entrada`/`exclusao` no frontend só eram buscadas uma vez no
+carregamento inicial da tela — o item só reaparecia depois de recarregar
+a página inteira (novo login). **Corrigido:** `reverterItem()` agora
+chama `recarregarListasAtivas()` (função extraída, reaproveitada do
+carregamento inicial) depois de um reverter bem-sucedido, em vez de
+assumir que "o backend já garante" sem nenhuma ação do frontend — essa
+premissa original estava errada. Decisão de design: recarregar via nova
+chamada de API, não atualização otimista do estado local — evita
+duplicar no frontend a regra de qual ciclo conta como vigente
+(`_ciclo_mais_recente()`, que decide `PENDENTE` vs `EXPIRADA` no
+backend).
+
+**Achado 4 — toggle "Não recomendar novamente" parecia visualmente
+desligado num screenshot logo após o clique — sem ação.** O valor salvo
+no banco (`bloquear_novas_recomendacoes = true`) e o badge exibido depois
+em Arquivadas confirmaram que o dado estava correto; provável só atraso
+de renderização no instante exato do screenshot, não reproduzido como
+problema funcional.
 
 ## Próxima ação
 1. ~~`NOME_MEDICO` nulo em `ENTRADA_PAINEL`~~ — **RESOLVIDO NA ORIGEM em

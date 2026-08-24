@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.app.tests.apoio_sessao import cabecalho
 
 CLIENT = TestClient(app)
 
@@ -22,18 +23,32 @@ pytestmark = pytest.mark.usefixtures("forcar_data_source_local")
 # em outros arquivos de teste porque eles mockam resolver_contexto() direto.
 EMAIL_VALIDO = "ana.lima@ache.com.br"
 
+# Token de sessão próprio deste arquivo, com o e-mail de EMAIL_VALIDO —
+# diferente do CABECALHO padrão de apoio_sessao.py (email fixo
+# "ana.silva@ache.com.br"). Necessário aqui porque este é o único arquivo
+# de teste que NÃO mocka resolver_contexto(): a consulta ao Postgres local
+# é real, então a identidade da sessão precisa bater com a seed de verdade
+# (nos outros arquivos, o mock de resolver_contexto() absorve a diferença).
+CABECALHO = cabecalho(email=EMAIL_VALIDO)
+
 
 def _mock_nl_to_sql(status="OK", sql="SELECT 1", texto="Resposta simulada."):
     return AsyncMock(return_value={"resposta_texto": texto, "sql_gerado": sql, "status": status})
 
 
-def _post(pergunta: str, email: str = EMAIL_VALIDO, periodo: str = None, tecnico: bool = False):
+def _post(pergunta: str, email: str = EMAIL_VALIDO, periodo: str = None, tecnico: bool = False, headers=None):
+    # `email` no corpo é só documentação do contrato: com auth_mode=senha a
+    # identidade vem exclusivamente do cabeçalho de sessão (`headers`), o
+    # corpo é ignorado por resolver_email_autenticado(). Para testar um
+    # e-mail diferente de EMAIL_VALIDO, é preciso passar `headers` com uma
+    # sessão própria (ver test_propagandista_nao_encontrado).
     body = {"pergunta": pergunta, "email": email, "perfil_tecnico": tecnico}
     if periodo:
         body["periodo"] = periodo
-    return CLIENT.post("/prescricoes/consultar", json=body)
+    return CLIENT.post("/prescricoes/consultar", json=body, headers=headers or CABECALHO)
 
 
+@pytest.mark.requer_banco
 @patch("backend.app.routers.prescricoes.nl_to_sql.consultar", new=_mock_nl_to_sql())
 def test_pergunta_operacional_com_setor():
     resp = _post("Quais são os médicos com mais prescrições no meu setor?")
@@ -43,6 +58,7 @@ def test_pergunta_operacional_com_setor():
     assert data["resposta_texto"]
 
 
+@pytest.mark.requer_banco
 @patch("backend.app.routers.prescricoes.nl_to_sql.consultar", new=_mock_nl_to_sql())
 def test_pergunta_total_geral():
     resp = _post("Qual o total geral de prescrições de Venlaxin no Brasil?")
@@ -53,6 +69,7 @@ def test_pergunta_total_geral():
     "backend.app.routers.prescricoes.nl_to_sql.consultar",
     new=_mock_nl_to_sql(texto="No 1º trimestre foram 200 prescrições."),
 )
+@pytest.mark.requer_banco
 def test_pergunta_com_periodo_especifico():
     resp = _post("Quantas prescrições no 1º trimestre?", periodo="1° trimestre")
     assert resp.status_code == 200
@@ -63,11 +80,13 @@ def test_pergunta_com_periodo_especifico():
     "backend.app.routers.prescricoes.nl_to_sql.consultar",
     new=_mock_nl_to_sql(status="GENIE_ERROR"),
 )
+@pytest.mark.requer_banco
 def test_pergunta_fora_de_escopo():
     resp = _post("Qual é a previsão do tempo em São Paulo?")
     assert resp.status_code == 502
 
 
+@pytest.mark.requer_banco
 @patch("backend.app.routers.prescricoes.nl_to_sql.consultar", new=_mock_nl_to_sql())
 def test_pergunta_sem_periodo_aplica_ytd():
     """Sem período informado, YTD deve ser aplicado pelo nl_to_sql."""
@@ -76,5 +95,9 @@ def test_pergunta_sem_periodo_aplica_ytd():
 
 
 def test_propagandista_nao_encontrado():
-    resp = _post("Alguma pergunta", email="nao.existe@ache.com.br")
+    resp = _post(
+        "Alguma pergunta",
+        email="nao.existe@ache.com.br",
+        headers=cabecalho(email="nao.existe@ache.com.br"),
+    )
     assert resp.status_code == 403

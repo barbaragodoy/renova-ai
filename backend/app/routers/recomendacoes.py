@@ -55,6 +55,13 @@ _COLUNAS_POR_FONTE = {
         "data_desconsideracao": "DATA_DESCONSIDERACAO",
         "qtd_vezes_desconsiderado": "QTD_VEZES_DESCONSIDERADO",
         "bloquear_novas_recomendacoes": "BLOQUEAR_NOVAS_RECOMENDACOES",
+        # LEFT JOIN com tb_dim_medicos (espelho local do Databricks, ver
+        # known-issues.md — "RESOLVIDO POR VIA ALTERNATIVA") — só existe
+        # nesta fonte, sem equivalente no Postgres local.
+        "tabela_dim_medicos": "tb_dim_medicos",
+        "especialidade": "dm.especialidade",
+        "cidade": "dm.cidade",
+        "data_ultima_visita_considerada": "DATA_ULTIMA_VISITA_CONSIDERADA",
     },
     "local": {
         "tabela": "tb_recomendacoes_painel",
@@ -76,6 +83,13 @@ _COLUNAS_POR_FONTE = {
         "data_desconsideracao": "data_desconsideracao",
         "qtd_vezes_desconsiderado": "qtd_vezes_desconsiderado",
         "bloquear_novas_recomendacoes": "bloquear_novas_recomendacoes",
+        # Sem tabela equivalente a tb_dim_medicos nem coluna equivalente a
+        # DATA_ULTIMA_VISITA_CONSIDERADA no Postgres local — especialidade,
+        # cidade e meses_sem_visita ficam sempre None nessa fonte.
+        "tabela_dim_medicos": None,
+        "especialidade": None,
+        "cidade": None,
+        "data_ultima_visita_considerada": None,
     },
 }
 
@@ -101,6 +115,71 @@ def _ciclo_mais_recente(col: dict) -> str:
             text(f"SELECT MAX({col['ciclo_referencia']}) AS ciclo FROM {col['tabela']}")
         ).fetchone()
     return row.ciclo
+
+
+def _fragmentos_dim_medicos(col: dict) -> dict:
+    """Monta os fragmentos SQL condicionais do LEFT JOIN com
+    tb_dim_medicos (só existe no Databricks — espelho local criado pelo
+    George para contornar bloqueio de USE CATALOG cruzado, ver
+    known-issues.md, "RESOLVIDO POR VIA ALTERNATIVA"). Retorna strings
+    vazias quando a fonte não suporta (Postgres local), para o SQL
+    continuar válido sem o JOIN nem as colunas.
+
+    uf não faz parte daqui: é calculado como LEFT(ufcrm, 2) direto na
+    query, funciona nas duas fontes sem depender do espelho.
+    """
+    return {
+        "join": (
+            f"LEFT JOIN {col['tabela_dim_medicos']} dm "
+            f"ON {col['tabela']}.{col['ufcrm']} = dm.ufcrm"
+            if col.get("tabela_dim_medicos")
+            else ""
+        ),
+        "especialidade": (
+            f", {col['especialidade']} AS especialidade"
+            if col.get("especialidade")
+            else ""
+        ),
+        "cidade": (
+            f", {col['cidade']} AS cidade"
+            if col.get("cidade")
+            else ""
+        ),
+    }
+
+
+def _fragmento_meses_sem_visita(col: dict, condicional: bool) -> str:
+    """Fragmento SQL do cálculo de meses_sem_visita — só existe no
+    Databricks, via DATA_ULTIMA_VISITA_CONSIDERADA (confirmada na tabela
+    real). A forma muda conforme o endpoint, porque a regra de negócio é
+    genuinamente diferente entre eles:
+
+    - condicional=False (usado em /revisao): cálculo direto, sem CASE — o
+      endpoint já filtra tipo_recomendacao = 'REVISAO_PAINEL' para a query
+      inteira, então toda linha retornada já é elegível.
+    - condicional=True (usado em /desconsideradas): envolve em
+      CASE WHEN tipo_recomendacao = 'REVISAO_PAINEL', porque essa lista
+      mistura ENTRADA_PAINEL e REVISAO_PAINEL na mesma consulta.
+
+    Nunca chamado em /entrada: lá o tipo é sempre ENTRADA_PAINEL, para o
+    qual meses_sem_visita não tem sentido semântico — médico que nunca
+    esteve no painel não ter visita não é sinal de negligência, é o estado
+    normal de quem nunca esteve lá.
+    """
+    if not col.get("data_ultima_visita_considerada"):
+        return ""
+    calculo = (
+        f"CAST(months_between("
+        f"to_date({col['ciclo_referencia']}, 'yyyyMM'), "
+        f"trunc({col['data_ultima_visita_considerada']}, 'MM')"
+        f") AS INT)"
+    )
+    if condicional:
+        return (
+            f", CASE WHEN {col['tipo_recomendacao']} = 'REVISAO_PAINEL' "
+            f"THEN {calculo} ELSE NULL END AS meses_sem_visita"
+        )
+    return f", {calculo} AS meses_sem_visita"
 
 
 def _aplicar_fallback_nome_medico(row) -> dict:
@@ -139,15 +218,20 @@ def listar_entrada(
     limite = settings.limite_sugestoes
     col = _schema(settings.data_source)
     ciclo = ciclo or _ciclo_mais_recente(col)
+    dm = _fragmentos_dim_medicos(col)
 
     query = text(f"""
         SELECT {col['id_recomendacao']}  AS id_recomendacao,
                {col['nome_medico']}       AS nome_medico,
-               {col['ufcrm']}             AS ufcrm,
+               {col['tabela']}.{col['ufcrm']} AS ufcrm,
                {col['posicao_ranking']}   AS posicao_ranking,
                {col['soma_pontuacao']}    AS soma_pontuacao,
-               {col['ciclo_referencia']}  AS ciclo_referencia
+               {col['ciclo_referencia']}  AS ciclo_referencia,
+               LEFT({col['tabela']}.{col['ufcrm']}, 2) AS uf
+               {dm['especialidade']}
+               {dm['cidade']}
         FROM {col['tabela']}
+        {dm['join']}
         WHERE {col['rep_matricula']} = :mat
           AND {col['tipo_recomendacao']} = 'ENTRADA_PAINEL'
           AND {col['status_recomendacao']} = 'PENDENTE'
@@ -176,6 +260,8 @@ def listar_revisao(
     limite = settings.limite_sugestoes
     col = _schema(settings.data_source)
     ciclo = ciclo or _ciclo_mais_recente(col)
+    dm = _fragmentos_dim_medicos(col)
+    meses_sem_visita = _fragmento_meses_sem_visita(col, condicional=False)
 
     # Defesa em profundidade (known-issues.md): só aplicável na fonte que tem
     # a coluna. Continua no backend mesmo com a fonte já corrigida, como
@@ -189,12 +275,17 @@ def listar_revisao(
     query = text(f"""
         SELECT {col['id_recomendacao']}  AS id_recomendacao,
                {col['nome_medico']}       AS nome_medico,
-               {col['ufcrm']}             AS ufcrm,
+               {col['tabela']}.{col['ufcrm']} AS ufcrm,
                {col['posicao_ranking']}   AS posicao_ranking,
                {col['soma_pontuacao']}    AS soma_pontuacao,
                {col['ciclo_referencia']}  AS ciclo_referencia,
-               {col['motivo_revisao']}    AS motivo_revisao
+               {col['motivo_revisao']}    AS motivo_revisao,
+               LEFT({col['tabela']}.{col['ufcrm']}, 2) AS uf
+               {dm['especialidade']}
+               {dm['cidade']}
+               {meses_sem_visita}
         FROM {col['tabela']}
+        {dm['join']}
         WHERE {col['rep_matricula']} = :mat
           AND {col['tipo_recomendacao']} = 'REVISAO_PAINEL'
           AND {col['status_recomendacao']} = 'PENDENTE'
@@ -321,18 +412,25 @@ def listar_desconsideradas(
     ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
     col = _schema(settings.data_source)
+    dm = _fragmentos_dim_medicos(col)
+    meses_sem_visita = _fragmento_meses_sem_visita(col, condicional=True)
 
     query = text(f"""
         SELECT {col['id_recomendacao']}              AS id_recomendacao,
                {col['nome_medico']}                   AS nome_medico,
-               {col['ufcrm']}                         AS ufcrm,
+               {col['tabela']}.{col['ufcrm']}          AS ufcrm,
                {col['tipo_recomendacao']}              AS tipo_recomendacao,
                {col['motivo_revisao']}                  AS motivo_recomendacao,
                {col['motivo_desconsideracao']}           AS motivo_desconsideracao,
                {col['bloquear_novas_recomendacoes']}     AS bloquear_novas_recomendacoes,
                {col['data_desconsideracao']}             AS data_desconsideracao,
-               {col['ciclo_referencia']}                 AS ciclo_recomendacao
+               {col['ciclo_referencia']}                 AS ciclo_recomendacao,
+               LEFT({col['tabela']}.{col['ufcrm']}, 2) AS uf
+               {dm['especialidade']}
+               {dm['cidade']}
+               {meses_sem_visita}
         FROM {col['tabela']}
+        {dm['join']}
         WHERE {col['rep_matricula']} = :mat
           AND {col['status_recomendacao']} = 'DESCONSIDERADA'
         ORDER BY {col['data_desconsideracao']} DESC

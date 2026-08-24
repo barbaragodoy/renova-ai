@@ -7,7 +7,9 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.app.tests.apoio_sessao import CABECALHO
 from backend.app.auth.context import ContextoResponse, StatusContexto
+from backend.app.config import get_settings
 
 CLIENT = TestClient(app)
 
@@ -32,10 +34,11 @@ _CTX_NAO_ENCONTRADO = ContextoResponse(
 )
 
 
+@pytest.mark.requer_banco
 def test_lista_entrada_com_pendencias():
     """Integração real: busca recomendações de entrada (pode retornar vazio se tabela vazia)."""
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
-        resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"})
+        resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO)
     assert resp.status_code == 200
     data = resp.json()
     assert data["tipo"] == "ENTRADA_PAINEL"
@@ -51,21 +54,22 @@ def test_lista_entrada_vazia():
             mock_conn.__exit__ = MagicMock(return_value=False)
             mock_conn.execute.return_value.mappings.return_value.fetchall.return_value = []
             mock_eng.return_value.connect.return_value = mock_conn
-            resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"})
+            resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO)
     assert resp.status_code == 200
     assert resp.json()["total"] == 0
 
 
 def test_propagandista_nao_encontrado():
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_NAO_ENCONTRADO):
-        resp = CLIENT.get("/recomendacoes/entrada", params={"email": "x@x.com"})
+        resp = CLIENT.get("/recomendacoes/entrada", params={"email": "x@x.com"}, headers=CABECALHO)
     assert resp.status_code == 403
 
 
+@pytest.mark.requer_banco
 def test_limite_5_registros():
     """Nunca deve retornar mais de 5 recomendações."""
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
-        resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"})
+        resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO)
     assert resp.status_code == 200
     assert len(resp.json()["recomendacoes"]) <= 5
 
@@ -89,7 +93,7 @@ def test_entrada_nome_medico_nulo_aplica_fallback():
             mock_conn.__exit__ = MagicMock(return_value=False)
             mock_conn.execute.return_value.mappings.return_value.fetchall.return_value = [row]
             mock_eng.return_value.connect.return_value = mock_conn
-            resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"})
+            resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO)
     assert resp.status_code == 200
     item = resp.json()["recomendacoes"][0]
     assert item["nome_medico"] == "Médico ainda não identificado (UFCRM SP00099)"
@@ -127,7 +131,7 @@ def test_entrada_sem_ciclo_usa_max_da_tabela():
     capturados = []
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", _mock_engine_ciclo("202699", capturados)):
-            resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"})
+            resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO)
     assert resp.status_code == 200
     assert capturados[0]["ciclo"] == "202699"
 
@@ -158,6 +162,7 @@ def test_entrada_com_ciclo_explicito_nao_consulta_max():
             resp = CLIENT.get(
                 "/recomendacoes/entrada",
                 params={"email": "ana.silva@ache.com.br", "ciclo": "202501"},
+                headers=CABECALHO,
             )
     assert resp.status_code == 200
     assert chamadas_max == []
@@ -171,7 +176,7 @@ def test_revisao_sem_ciclo_usa_max_da_tabela():
     capturados = []
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", _mock_engine_ciclo("202699", capturados)):
-            resp = CLIENT.get("/recomendacoes/revisao", params={"email": "ana.silva@ache.com.br"})
+            resp = CLIENT.get("/recomendacoes/revisao", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO)
     assert resp.status_code == 200
     assert capturados[0]["ciclo"] == "202699"
 
@@ -199,6 +204,7 @@ def test_revisao_com_ciclo_explicito_nao_consulta_max():
             resp = CLIENT.get(
                 "/recomendacoes/revisao",
                 params={"email": "ana.silva@ache.com.br", "ciclo": "202501"},
+                headers=CABECALHO,
             )
     assert resp.status_code == 200
     assert chamadas_max == []
@@ -247,13 +253,37 @@ def test_lista_desconsideradas_retorna_status_desconsiderada():
             "backend.app.routers.recomendacoes._engine",
             _mock_engine_desconsideradas(rows=[_ROW_DESCONSIDERADA]),
         ):
-            resp = CLIENT.get("/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"})
+            resp = CLIENT.get(
+                "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
+            )
     assert resp.status_code == 200
     data = resp.json()
     assert data["total"] == 1
     item = data["recomendacoes"][0]
     assert item["motivo_desconsideracao"] == "MEDICO_APOSENTADO"
     assert item["bloquear_novas_recomendacoes"] is True
+
+
+def test_lista_desconsideradas_com_bloqueio_nulo_nao_quebra():
+    """Achado em teste de ponta a ponta (14/08/2026): registros legados
+    (anteriores à obrigatoriedade de bloquear_novas_recomendacoes no
+    contrato de POST /desconsiderar) têm esse campo NULL no banco — estado
+    válido segundo o próprio comentário da coluna ("NULL = sem decisão").
+    DesconsideradaItem.bloquear_novas_recomendacoes precisa ser Optional
+    para não derrubar a listagem inteira com 500 por causa de uma única
+    linha antiga."""
+    row_com_bloqueio_nulo = dict(_ROW_DESCONSIDERADA, bloquear_novas_recomendacoes=None)
+    with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
+        with patch(
+            "backend.app.routers.recomendacoes._engine",
+            _mock_engine_desconsideradas(rows=[row_com_bloqueio_nulo]),
+        ):
+            resp = CLIENT.get(
+                "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
+            )
+    assert resp.status_code == 200
+    item = resp.json()["recomendacoes"][0]
+    assert item["bloquear_novas_recomendacoes"] is None
 
 
 def test_lista_desconsideradas_filtra_por_status_e_matricula_autenticada():
@@ -263,7 +293,9 @@ def test_lista_desconsideradas_filtra_por_status_e_matricula_autenticada():
     capturados = []
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(captured=capturados)):
-            resp = CLIENT.get("/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"})
+            resp = CLIENT.get(
+                "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
+            )
     assert resp.status_code == 200
     sql = capturados[0]["sql"]
     assert "DESCONSIDERADA" in sql
@@ -274,7 +306,9 @@ def test_lista_desconsideradas_ordenacao_desc_por_data():
     capturados = []
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(captured=capturados)):
-            resp = CLIENT.get("/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"})
+            resp = CLIENT.get(
+                "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
+            )
     assert resp.status_code == 200
     sql = capturados[0]["sql"]
     assert "ORDER BY data_desconsideracao DESC" in sql
@@ -283,7 +317,9 @@ def test_lista_desconsideradas_ordenacao_desc_por_data():
 def test_lista_desconsideradas_vazia_nao_da_erro():
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(rows=[])):
-            resp = CLIENT.get("/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"})
+            resp = CLIENT.get(
+                "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
+            )
     assert resp.status_code == 200
     assert resp.json() == {"total": 0, "recomendacoes": []}
 
@@ -294,11 +330,14 @@ def test_lista_desconsideradas_sem_limit():
     capturados = []
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(captured=capturados)):
-            resp = CLIENT.get("/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"})
+            resp = CLIENT.get(
+                "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
+            )
     assert resp.status_code == 200
     assert "LIMIT" not in capturados[0]["sql"]
 
 
+@pytest.mark.requer_banco
 def test_desconsideradas_integracao_real_nao_retorna_de_outro_propagandista():
     """Integração real: REP002 (bruno.melo@ache.com.br) não deve ver a
     recomendação desconsiderada do cenário fixo pertencente a REP001
@@ -311,7 +350,71 @@ def test_desconsideradas_integracao_real_nao_retorna_de_outro_propagandista():
         nome="Bruno Melo",
     )
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=ctx_rep002):
-        resp = CLIENT.get("/recomendacoes/desconsideradas", params={"email": "bruno.melo@ache.com.br"})
+        resp = CLIENT.get(
+            "/recomendacoes/desconsideradas", params={"email": "bruno.melo@ache.com.br"}, headers=CABECALHO
+        )
     assert resp.status_code == 200
     ids = [item["id_recomendacao"] for item in resp.json()["recomendacoes"]]
     assert "10000000-0000-0000-0000-000000000002" not in ids
+
+
+# ---------------------------------------------------------------------------
+# LEFT JOIN com tb_dim_medicos (especialidade/cidade/uf/meses_sem_visita)
+# ---------------------------------------------------------------------------
+
+def _mock_engine_capturando(capturados: list):
+    """Mocka _engine() registrando o texto de toda query executada — usado
+    para inspecionar se um fragmento SQL específico foi ou não solicitado,
+    sem depender do resultado retornado (sempre lista vazia)."""
+    mock_eng = MagicMock()
+    conn = MagicMock()
+    conn.__enter__ = lambda s: s
+    conn.__exit__ = MagicMock(return_value=False)
+
+    def _exec(query, params=None):
+        sql = str(query)
+        capturados.append(sql)
+        result = MagicMock()
+        if "MAX(" in sql:
+            result.fetchone.return_value = MagicMock(ciclo="202507")
+        else:
+            result.mappings.return_value.fetchall.return_value = []
+        return result
+
+    conn.execute.side_effect = _exec
+    mock_eng.return_value.connect.return_value = conn
+    return mock_eng
+
+
+def test_meses_sem_visita_so_aparece_em_revisao_e_desconsideradas(monkeypatch):
+    """meses_sem_visita nunca é solicitado em /entrada (sem sentido
+    semântico para ENTRADA_PAINEL — ver known-issues.md e o docstring de
+    _fragmento_meses_sem_visita) — só em /revisao (cálculo direto, sem
+    CASE, já que o endpoint só lista REVISAO_PAINEL) e /desconsideradas
+    (com CASE, já que essa lista mistura os dois tipos). Força
+    DATA_SOURCE=databricks (mockado — nunca conecta de verdade) para
+    exercitar o fragmento condicional, que fica vazio no Postgres local
+    (onde a suíte normalmente roda, via forcar_data_source_local)."""
+    monkeypatch.setenv("DATA_SOURCE", "databricks")
+    get_settings.cache_clear()
+
+    capturas = {}
+    for nome, caminho in (
+        ("entrada", "/recomendacoes/entrada"),
+        ("revisao", "/recomendacoes/revisao"),
+        ("desconsideradas", "/recomendacoes/desconsideradas"),
+    ):
+        capturados = []
+        with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
+            with patch("backend.app.routers.recomendacoes._engine", _mock_engine_capturando(capturados)):
+                resp = CLIENT.get(caminho, params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO)
+        assert resp.status_code == 200
+        capturas[nome] = "\n".join(capturados)
+
+    assert "meses_sem_visita" not in capturas["entrada"]
+
+    assert "meses_sem_visita" in capturas["revisao"]
+    assert "CASE WHEN" not in capturas["revisao"]
+
+    assert "meses_sem_visita" in capturas["desconsideradas"]
+    assert "CASE WHEN" in capturas["desconsideradas"]

@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.app.tests.apoio_sessao import CABECALHO
 from backend.app.auth.context import ContextoResponse, StatusContexto
 from backend.app.schemas.recomendacoes import DesconsiderarRequest
 
@@ -78,7 +79,12 @@ def _mock_engine(status="PENDENTE", matricula="REP001", found=True, rowcount=1, 
 def _post(body, engine=None):
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
         with patch("backend.app.routers.recomendacoes._engine", engine or _mock_engine()):
-            return CLIENT.post(f"/recomendacoes/{_ID}/desconsiderar", json=body, params={"email": "ana@ache.com.br"})
+            return CLIENT.post(
+                f"/recomendacoes/{_ID}/desconsiderar",
+                json=body,
+                params={"email": "ana@ache.com.br"},
+                headers=CABECALHO,
+            )
 
 
 def test_desconsiderar_sucesso_bloquear_true():
@@ -175,7 +181,10 @@ def test_desconsiderar_concorrencia_duas_chamadas_simultaneas():
 
     def _chamar():
         resp = CLIENT.post(
-            f"/recomendacoes/{_ID}/desconsiderar", json=_BODY_BLOQUEAR_TRUE, params={"email": "ana@ache.com.br"}
+            f"/recomendacoes/{_ID}/desconsiderar",
+            json=_BODY_BLOQUEAR_TRUE,
+            params={"email": "ana@ache.com.br"},
+            headers=CABECALHO,
         )
         resultados.append(resp.status_code)
 
@@ -258,12 +267,15 @@ def test_desconsiderar_integracao_real_some_da_lista_entrada():
             f"/recomendacoes/{_ID_CENARIO_ENTRADA}/desconsiderar",
             json=_BODY_BLOQUEAR_TRUE,
             params={"email": "ana.lima@ache.com.br"},
+            headers=CABECALHO,
         )
     assert resp.status_code == 200
 
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
         resp_lista = CLIENT.get(
-            "/recomendacoes/entrada", params={"email": "ana.lima@ache.com.br", "ciclo": "202507"}
+            "/recomendacoes/entrada",
+            params={"email": "ana.lima@ache.com.br", "ciclo": "202507"},
+            headers=CABECALHO,
         )
     assert resp_lista.status_code == 200
     ids = [item["id_recomendacao"] for item in resp_lista.json()["recomendacoes"]]
@@ -278,12 +290,15 @@ def test_desconsiderar_integracao_real_some_da_lista_revisao():
             f"/recomendacoes/{_ID_CENARIO_REVISAO}/desconsiderar",
             json=_BODY_BLOQUEAR_FALSE,
             params={"email": "ana.lima@ache.com.br"},
+            headers=CABECALHO,
         )
     assert resp.status_code == 200
 
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
         resp_lista = CLIENT.get(
-            "/recomendacoes/revisao", params={"email": "ana.lima@ache.com.br", "ciclo": "202507"}
+            "/recomendacoes/revisao",
+            params={"email": "ana.lima@ache.com.br", "ciclo": "202507"},
+            headers=CABECALHO,
         )
     assert resp_lista.status_code == 200
     ids = [item["id_recomendacao"] for item in resp_lista.json()["recomendacoes"]]

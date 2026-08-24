@@ -209,6 +209,22 @@ verificação defensiva (try/except específico, ou checagem de schema no
 startup) antes de habilitar Databricks em produção para este endpoint,
 para evitar expor erro cru ao usuário final.
 
+**Confirmado na prática (2026-08-14, teste de ponta a ponta):** deixou de
+ser risco teórico. Rodando `renovai-local` com `DATA_SOURCE=databricks`
+contra dado real, `POST /recomendacoes/{id}/desconsiderar` falhou com 500
+de verdade — `DESCONSIDERADO_POR` e `QTD_VEZES_DESCONSIDERADO` confirmadas
+ausentes na tabela real (via `DESCRIBE`/erro do próprio Databricks:
+`UNRESOLVED_COLUMN.WITH_SUGGESTION`). As outras 3 das 5 colunas
+(`MOTIVO_DESCONSIDERACAO`, `BLOQUEAR_NOVAS_RECOMENDACOES`,
+`DATA_DESCONSIDERACAO`) já existem — achado colateral também confirmado
+nesse mesmo teste. O frontend tratou o erro corretamente (alerta genérico,
+sem vazar SQL, item não removido da lista) — o problema é
+exclusivamente a tabela real, não o código. Detalhe completo do teste em
+`docs/context/known-issues.md`. **Reforça a prioridade de resolver as 2
+colunas pendentes com o Hugo antes de qualquer deploy que inclua
+desconsiderar contra Databricks** — o try/except defensivo sugerido acima
+continua uma mitigação válida, mas não substitui a correção na origem.
+
 ## 2026-08-10 — Registro de Envio do Piloto (Sprint 5): tabela nova, sem bloqueio externo
 `tb_envios_recomendacoes_piloto` registra o histórico de envio de
 recomendações aos propagandistas durante o piloto, para comparar os grupos
@@ -291,6 +307,53 @@ que existe em `dev` hoje já está na ancestralidade da branch dele) — risco
 de conflito por desatualização de sessão/auth era baixo, e se confirmou
 baixo nos diffs de arquivo (`auth/context.py`, `db/databricks_connection.py`,
 `config.py`, `gerencial.py` idênticos ao estado pós-sync).
+
+## 2026-08-20 — SP tem permissão de escrita confirmada; as 5 colunas de desconsideração já existem na tabela real
+Investigando um 500 relatado em produção no `/desconsiderar`, testado se o
+Service Principal `sp-renovai-genie-api-poc` (ClientID
+`1831a9d4-97cd-4b56-8243-83a777dde138`) tem `MODIFY`/`UPDATE` na tabela real
+(só `SELECT` estava confirmado antes). Metodologia: `get_engine()` do
+próprio projeto com `DATA_SOURCE=databricks` (mesmo mecanismo do backend,
+sem PAT) — `SELECT current_user()` confirmou a sessão autenticada como o
+ClientID do SP, não usuário humano.
+
+Executado o UPDATE exato do endpoint `/desconsiderar` contra uma linha
+`PENDENTE` real (`ID_RECOMENDACAO = a55774fb-ad65-49c3-b6bf-f5d70f09c0ff`),
+com `WHERE STATUS_RECOMENDACAO = 'PENDENTE'` de guarda de concorrência —
+**sucesso**, confirmado por `SELECT` de volta (status virou
+`DESCONSIDERADA`, todos os campos gravados corretamente). Revertido
+imediatamente com o mesmo padrão do endpoint `/reverter` (4 campos voltam a
+`NULL`, `QTD_VEZES_DESCONSIDERADO` mantido em 1 propositalmente, mesma regra
+já documentada na Aba Arquivadas abaixo) — linha confirmada de volta ao
+estado original. **O SP tem permissão de escrita completa nesta tabela.**
+
+**Achado que muda o diagnóstico:** `DESCRIBE TABLE` na mesma sessão mostrou
+que as 5 colunas de desconsideração
+(`MOTIVO_DESCONSIDERACAO`, `DESCONSIDERADO_POR`, `DATA_DESCONSIDERACAO`,
+`QTD_VEZES_DESCONSIDERADO`, `BLOQUEAR_NOVAS_RECOMENDACOES`) **já existem
+todas** na tabela real, incluindo `DESCONSIDERADO_POR` e
+`QTD_VEZES_DESCONSIDERADO` — as 2 que a entrada de 2026-08-14 acima
+("Confirmado na prática") havia confirmado **ausentes**, causando
+`UNRESOLVED_COLUMN.WITH_SUGGESTION` e o 500 daquele teste. Ou seja, entre
+2026-08-14 e hoje o Hugo aparentemente concluiu a migração pendente — as
+duas colunas que faltavam agora têm inclusive comentário de coluna
+(`DESCONSIDERADO_POR`: "Matricula do propagandista que desconsiderou a
+recomendacao"; `QTD_VEZES_DESCONSIDERADO`: "Quantas vezes a recomendacao ja
+foi desconsiderada"), sinal de que foi um trabalho intencional, não
+acidental.
+
+**Conclusão sobre o 500 relatado em produção:** com escrita liberada para o
+SP e as 5 colunas presentes, nem permissão nem coluna ausente explicam um
+500 *novo*. As duas causas historicamente documentadas para esse endpoint
+(`UNRESOLVED_COLUMN` de 2026-08-14 acima, congelamento antigo do George —
+ver `docs/context/decisions-log.md` entrada de 2026-07-23 e memória
+`projeto_desconsiderar_congelado`) já não se aplicam ao estado atual da
+tabela. Se o 500 relatado for recente, a causa raiz está em outro lugar —
+candidatos a checar primeiro: `resolver_contexto()` (nota de manutenção em
+`known-issues.md`, 2026-08-12), payload/validação do request
+(`DesconsiderarRequest`), ou se o 500 relatado é datado de antes de
+2026-08-14/hoje e já está obsoleto. Ver `docs/context/databricks-schema-real.md`
+(linhas das 5 colunas, atualizadas nesta mesma data).
 
 ## 2026-08-13 — Aba Arquivadas (consulta + reversão de desconsideradas)
 Implementados `GET /recomendacoes/desconsideradas` e

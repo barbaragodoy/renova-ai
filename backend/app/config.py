@@ -54,6 +54,25 @@ class Settings(BaseSettings):
     # por que o match direto contra tb_propagandistas já é suficiente.
     dominios_email_aceitos: str = "ache.com.br,biosintetica.com.br"
 
+    # Modo de autenticação do portal (ver backend/app/auth/sessao.py):
+    #   senha    -> e-mail corporativo + senha gerada pelo time, conferida
+    #               contra o hash em tb_portal_acesso. Modo do piloto.
+    #   entra_id -> autenticação delegada ao Microsoft Entra ID. Usar junto
+    #               com auth_require_jwt=true; POST /auth/login passa a
+    #               responder 404.
+    auth_mode: str = "senha"
+
+    # Segredo de assinatura do token de sessão. Obrigatório no modo senha,
+    # mínimo de 32 caracteres, injetado pelo ambiente. Em HMG e produção vem
+    # do Azure Key Vault via Managed Identity, nunca do código nem de um valor
+    # padrão. Sem ele, POST /auth/login devolve 503 em vez de assinar com um
+    # segredo previsível.
+    sessao_jwt_secret: str = ""
+    sessao_token_minutos: int = 60
+
+    # Caminho dos arquivos estáticos do frontend dentro da imagem.
+    frontend_dist: str = "frontend_dist"
+
     # App
     app_env: str = "local"
     debug: bool = False

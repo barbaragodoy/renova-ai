@@ -80,13 +80,20 @@ recomendação (403), `motivo` restrito a `MOTIVOS_DESCONSIDERACAO` (+
 obrigatório sem default, `data_desconsideracao` gerada pelo backend, UPDATE
 atômico (`WHERE status_recomendacao='PENDENTE'`) cobrindo concorrência.
 
-**Aguardando as 5 colunas na tabela real** (`tb_recomendacoes_painel_historico`)
-antes de migrar para Databricks — pendência já formalizada com o Hugo, mesmo
-processo de BARBARA-04/05: `MOTIVO_DESCONSIDERACAO`, `DESCONSIDERADO_POR`,
-`DATA_DESCONSIDERACAO`, `QTD_VEZES_DESCONSIDERADO`,
-`BLOQUEAR_NOVAS_RECOMENDACOES`. Mapeamento já pronto (dormente) em
-`_COLUNAS_POR_FONTE["databricks"]`, `routers/recomendacoes.py`. Fora de
-escopo por enquanto: lógica de bloqueio no próximo ciclo (responsabilidade
+**Pendência das 5 colunas na tabela real RESOLVIDA em 2026-08-20** —
+`DESCRIBE TABLE` confirmou as 5 presentes (`MOTIVO_DESCONSIDERACAO`,
+`DESCONSIDERADO_POR`, `DATA_DESCONSIDERACAO`, `QTD_VEZES_DESCONSIDERADO`,
+`BLOQUEAR_NOVAS_RECOMENDACOES`), e um teste real de UPDATE + reversão nessa
+mesma data confirmou que o Service Principal `sp-renovai-genie-api-poc` tem
+permissão de escrita (`MODIFY`) na tabela — não só `SELECT` como antes.
+Detalhes completos em `docs/context/decisions-log.md` (entrada 2026-08-20).
+Mapeamento em `_COLUNAS_POR_FONTE["databricks"]`, `routers/recomendacoes.py`
+já está pronto e não é mais dormente — dado e permissão deixaram de ser
+bloqueio para ativar este endpoint contra Databricks. Um erro 500 relatado
+em produção nesse endpoint **não é explicado** por nenhuma dessas duas
+causas no estado atual da tabela; se ainda ocorrer, a causa raiz está em
+outro lugar (ver candidatos na entrada 2026-08-20 do decisions-log). Fora
+de escopo por enquanto: lógica de bloqueio no próximo ciclo (responsabilidade
 do notebook do Hugo) — a aba "Arquivadas" (consulta + reversão) já foi
 implementada, ver seção abaixo.
 

@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.app.tests.apoio_sessao import CABECALHO
 
 CLIENT = TestClient(app)
 
@@ -80,7 +81,7 @@ def test_indicadores_gd_no_escopo():
     with patch("backend.app.routers.gerencial._engine") as mock_eng:
         conn = _make_conn({"gd_email": _dict_row(**_GD_ROW), "ciclo_referencia": [indicador]})
         mock_eng.return_value.connect.return_value = conn
-        resp = CLIENT.get("/gerencial/indicadores", params={"gd_email": GD_EMAIL, "ciclo": CICLO})
+        resp = CLIENT.get("/gerencial/indicadores", params={"gd_email": GD_EMAIL, "ciclo": CICLO}, headers=CABECALHO)
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data, list)
@@ -90,7 +91,7 @@ def test_indicadores_gd_nao_encontrado():
     with patch("backend.app.routers.gerencial._engine") as mock_eng:
         conn = _make_conn({"gd_email": None})
         mock_eng.return_value.connect.return_value = conn
-        resp = CLIENT.get("/gerencial/indicadores", params={"gd_email": "nao@existe.com", "ciclo": CICLO})
+        resp = CLIENT.get("/gerencial/indicadores", params={"gd_email": "nao@existe.com", "ciclo": CICLO}, headers=CABECALHO)
     assert resp.status_code == 403
 
 
@@ -106,7 +107,7 @@ def test_lista_propagandistas_no_escopo():
     with patch("backend.app.routers.gerencial._engine") as mock_eng:
         conn = _make_conn({"gd_email": _dict_row(**_GD_ROW), "rep_matricula": [rep]})
         mock_eng.return_value.connect.return_value = conn
-        resp = CLIENT.get("/gerencial/propagandistas", params={"gd_email": GD_EMAIL, "ciclo": CICLO})
+        resp = CLIENT.get("/gerencial/propagandistas", params={"gd_email": GD_EMAIL, "ciclo": CICLO}, headers=CABECALHO)
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
@@ -137,6 +138,7 @@ def test_recomendacoes_gerencial_no_escopo():
         resp = CLIENT.get(
             "/gerencial/recomendacoes",
             params={"gd_email": GD_EMAIL, "matricula": REP_MAT, "ciclo": CICLO},
+            headers=CABECALHO,
         )
     assert resp.status_code == 200
 
@@ -151,6 +153,7 @@ def test_recomendacoes_gerencial_fora_do_escopo():
         resp = CLIENT.get(
             "/gerencial/recomendacoes",
             params={"gd_email": GD_EMAIL, "matricula": "REP999", "ciclo": CICLO},
+            headers=CABECALHO,
         )
     assert resp.status_code == 403
 
@@ -167,6 +170,7 @@ def test_recomendacoes_filtro_tipo():
         resp = CLIENT.get(
             "/gerencial/recomendacoes",
             params={"gd_email": GD_EMAIL, "matricula": REP_MAT, "ciclo": CICLO, "tipo": "REVISAO_PAINEL"},
+            headers=CABECALHO,
         )
     assert resp.status_code == 200
     assert resp.json() == []

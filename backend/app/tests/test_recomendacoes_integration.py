@@ -34,6 +34,7 @@ from sqlalchemy import text
 from backend.app.config import get_settings
 from backend.app.db.databricks_connection import get_engine
 from backend.app.main import app
+from backend.app.tests.apoio_sessao import CABECALHO, cabecalho
 
 pytestmark = pytest.mark.skipif(
     get_settings().data_source.lower() != "databricks",
@@ -110,20 +111,20 @@ def _qtd_medicos_painel(id_recomendacao: str):
 
 
 def test_propagandista_nao_encontrado_entrada():
-    resp = CLIENT.get("/recomendacoes/entrada", params={"email": EMAIL_INEXISTENTE})
+    resp = CLIENT.get("/recomendacoes/entrada", params={"email": EMAIL_INEXISTENTE}, headers=CABECALHO)
     assert resp.status_code == 403
     assert resp.json()["detail"]["status"] == "PROPAGANDISTA_NAO_ENCONTRADO"
 
 
 def test_propagandista_nao_encontrado_revisao():
-    resp = CLIENT.get("/recomendacoes/revisao", params={"email": EMAIL_INEXISTENTE})
+    resp = CLIENT.get("/recomendacoes/revisao", params={"email": EMAIL_INEXISTENTE}, headers=CABECALHO)
     assert resp.status_code == 403
     assert resp.json()["detail"]["status"] == "PROPAGANDISTA_NAO_ENCONTRADO"
 
 
 def test_entrada_email_real_lista_coerente():
     email = _um_email_real()
-    resp = CLIENT.get("/recomendacoes/entrada", params={"email": email})
+    resp = CLIENT.get("/recomendacoes/entrada", params={"email": email}, headers=cabecalho(email=email))
     assert resp.status_code == 200
     data = resp.json()
     assert data["tipo"] == "ENTRADA_PAINEL"
@@ -149,7 +150,9 @@ def test_entrada_ordenada_por_soma_pontuacao_desc():
     continue correta."""
     ciclo = _ciclo_atual()
     email = _rep_elegivel("ENTRADA_PAINEL", ciclo)
-    resp = CLIENT.get("/recomendacoes/entrada", params={"email": email, "ciclo": ciclo})
+    resp = CLIENT.get(
+        "/recomendacoes/entrada", params={"email": email, "ciclo": ciclo}, headers=cabecalho(email=email)
+    )
     assert resp.status_code == 200
     itens = resp.json()["recomendacoes"]
     assert itens, "Rep elegível via query direta à fonte, mas o endpoint devolveu lista vazia."
@@ -161,7 +164,7 @@ def test_entrada_ordenada_por_soma_pontuacao_desc():
 
 def test_revisao_email_real_lista_coerente():
     email = _um_email_real()
-    resp = CLIENT.get("/recomendacoes/revisao", params={"email": email})
+    resp = CLIENT.get("/recomendacoes/revisao", params={"email": email}, headers=cabecalho(email=email))
     assert resp.status_code == 200
     data = resp.json()
     assert data["tipo"] == "REVISAO_PAINEL"
@@ -173,7 +176,9 @@ def test_revisao_email_real_lista_coerente():
 def test_revisao_ordenada_por_posicao_ranking_desc():
     ciclo = _ciclo_atual()
     email = _rep_elegivel("REVISAO_PAINEL", ciclo)
-    resp = CLIENT.get("/recomendacoes/revisao", params={"email": email, "ciclo": ciclo})
+    resp = CLIENT.get(
+        "/recomendacoes/revisao", params={"email": email, "ciclo": ciclo}, headers=cabecalho(email=email)
+    )
     assert resp.status_code == 200
     itens = resp.json()["recomendacoes"]
     assert itens, "Rep elegível via query direta à fonte, mas o endpoint devolveu lista vazia."
@@ -187,7 +192,9 @@ def test_revisao_respeita_guarda_painel_maior_que_400():
     no payload de resposta (ver mapeamento em routers/recomendacoes.py)."""
     ciclo = _ciclo_atual()
     email = _rep_elegivel("REVISAO_PAINEL", ciclo)
-    resp = CLIENT.get("/recomendacoes/revisao", params={"email": email, "ciclo": ciclo})
+    resp = CLIENT.get(
+        "/recomendacoes/revisao", params={"email": email, "ciclo": ciclo}, headers=cabecalho(email=email)
+    )
     assert resp.status_code == 200
     itens = resp.json()["recomendacoes"]
     assert itens, "Rep elegível via query direta à fonte, mas o endpoint devolveu lista vazia."
@@ -195,3 +202,32 @@ def test_revisao_respeita_guarda_painel_maior_que_400():
         qtd = _qtd_medicos_painel(item["id_recomendacao"])
         assert qtd is not None
         assert qtd > 400
+
+
+def test_especialidade_cidade_vem_preenchidos_para_pelo_menos_um_registro_real():
+    """Confirma que o LEFT JOIN com tb_dim_medicos (espelho local do
+    Databricks criado pelo George, ver known-issues.md) realmente casa
+    para dado real — não só que a tabela existe (já confirmado por fora)
+    ou que a query não quebra (coberto pelos testes mockados). Monta a
+    mesma query condicional de routers.recomendacoes, sem filtro de
+    propagandista, e confirma que pelo menos uma linha tem
+    especialidade/cidade não nulos."""
+    from backend.app.routers.recomendacoes import _fragmentos_dim_medicos, _schema
+
+    col = _schema("databricks")
+    dm = _fragmentos_dim_medicos(col)
+    with get_engine().connect() as conn:
+        row = conn.execute(
+            text(f"""
+                SELECT {col['tabela']}.{col['ufcrm']} AS ufcrm
+                       {dm['especialidade']}
+                       {dm['cidade']}
+                FROM {col['tabela']}
+                {dm['join']}
+                WHERE {col['especialidade']} IS NOT NULL
+                LIMIT 1
+            """)
+        ).fetchone()
+    assert row is not None, "Nenhuma linha de tb_recomendacoes_painel_historico casou com tb_dim_medicos."
+    assert row.especialidade is not None
+    assert row.cidade is not None

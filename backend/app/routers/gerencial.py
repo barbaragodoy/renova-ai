@@ -8,9 +8,10 @@ Regras de acesso (BARBARA-10):
 """
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import create_engine, text
 
+from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.config import get_settings
 from backend.app.schemas.gerencial import (
     IndicadoresGD,
@@ -23,6 +24,17 @@ router = APIRouter()
 
 def _engine():
     return create_engine(get_settings().database_url)
+
+
+def _gd_autenticado(authorization: Optional[str], gd_email: Optional[str]) -> str:
+    """E-mail do GD, resolvido pela identidade autenticada.
+
+    Antes, o e-mail vinha apenas por query string e nenhum token era exigido:
+    bastava informar o e-mail de outro GD para ver o escopo dele. A resolução
+    passa pela mesma função das demais rotas, então o modo de autenticação
+    configurado vale aqui também.
+    """
+    return resolver_email_autenticado(authorization, gd_email)
 
 
 def _resolver_gd(gd_email: str) -> dict:
@@ -58,10 +70,11 @@ def _validar_rep_no_escopo(gd_matricula: str, rep_matricula: str):
 
 @router.get("/indicadores", response_model=list[IndicadoresGD])
 def indicadores(
-    gd_email: str = Query(..., description="E-mail do GD autenticado"),
+    gd_email: Optional[str] = Query(None, description="Ignorado quando há sessão"),
     ciclo: str = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
-    gd = _resolver_gd(gd_email)
+    gd = _resolver_gd(_gd_autenticado(authorization, gd_email))
     ciclo = ciclo or get_settings().ciclo_referencia
 
     with _engine().connect() as conn:
@@ -95,10 +108,11 @@ def indicadores(
 
 @router.get("/propagandistas", response_model=list[PropagandistaSummary])
 def propagandistas(
-    gd_email: str = Query(...),
+    gd_email: Optional[str] = Query(None, description="Ignorado quando há sessão"),
     ciclo: str = Query(None),
+    authorization: Optional[str] = Header(None),
 ):
-    gd = _resolver_gd(gd_email)
+    gd = _resolver_gd(_gd_autenticado(authorization, gd_email))
     ciclo = ciclo or get_settings().ciclo_referencia
 
     with _engine().connect() as conn:
@@ -130,13 +144,14 @@ def propagandistas(
 
 @router.get("/recomendacoes", response_model=list[RecomendacaoGerencial])
 def recomendacoes_gerencial(
-    gd_email: str = Query(...),
+    gd_email: Optional[str] = Query(None, description="Ignorado quando há sessão"),
     matricula: str = Query(..., description="Matrícula do propagandista a consultar"),
     ciclo: str = Query(None),
     tipo: Optional[str] = Query(None, description="ENTRADA_PAINEL | REVISAO_PAINEL"),
     status: Optional[str] = Query(None, description="PENDENTE | APLICADA | DESCONSIDERADA | EXPIRADA"),
+    authorization: Optional[str] = Header(None),
 ):
-    gd = _resolver_gd(gd_email)
+    gd = _resolver_gd(_gd_autenticado(authorization, gd_email))
     _validar_rep_no_escopo(gd["gd_matricula"], matricula)
     ciclo = ciclo or get_settings().ciclo_referencia
 

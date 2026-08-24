@@ -54,10 +54,36 @@ def resolver_email_autenticado(
     email_param: Optional[str],
     settings: Optional["Settings"] = None,
 ) -> str:
+    """Devolve o e-mail de quem está chamando, conforme o modo configurado.
+
+    Ordem de precedência:
+
+    1. `AUTH_MODE=senha`: o token de sessão do portal é a única fonte. O e-mail
+       recebido por query ou body é ignorado. Sem token válido, 401.
+    2. `AUTH_REQUIRE_JWT=true`: token corporativo validado por JWKS.
+    3. Caso contrário: aceita o e-mail cru de query/body. Esse caminho existe
+       para desenvolvimento local e NÃO deve valer em ambiente publicado, pois
+       permite que qualquer solicitante escolha a identidade que quiser.
+    """
     if settings is None:
         from backend.app.config import get_settings
 
         settings = get_settings()
+
+    if settings.auth_mode.lower() == "senha":
+        # Importado aqui para evitar dependência circular: sessao importa este
+        # módulo indiretamente pela cadeia de configuração.
+        from backend.app.auth.sessao import ler_token
+
+        if not authorization or not authorization.lower().startswith("bearer "):
+            raise HTTPException(
+                status_code=401, detail="Sessão ausente. Faça login no portal."
+            )
+        claims = ler_token(authorization.split(" ", 1)[1].strip(), settings)
+        email = claims.get("email") or claims.get("sub")
+        if not email:
+            raise HTTPException(status_code=401, detail="Sessão sem identidade.")
+        return email
 
     if not settings.auth_require_jwt:
         if not email_param:

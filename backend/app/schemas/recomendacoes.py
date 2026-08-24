@@ -21,6 +21,18 @@ class RecomendacaoItem(BaseModel):
     soma_pontuacao: Optional[float]
     ciclo_referencia: str
     motivo_revisao: Optional[str] = None
+    # Via LEFT JOIN com tb_dim_medicos (só existe no Databricks — sem
+    # equivalente no Postgres local, ver known-issues.md). uf é calculado
+    # nos dois lados (LEFT(ufcrm, 2)), sem depender do espelho. Optional
+    # porque: no local sempre é None; mesmo no Databricks o LEFT JOIN pode
+    # não casar para todo ufcrm.
+    especialidade: Optional[str] = None
+    cidade: Optional[str] = None
+    uf: Optional[str] = None
+    # Só calculado quando tipo_recomendacao == REVISAO_PAINEL (não faz
+    # sentido semântico para ENTRADA_PAINEL). None no Postgres local (sem
+    # coluna equivalente a DATA_ULTIMA_VISITA_CONSIDERADA).
+    meses_sem_visita: Optional[int] = None
 
 
 class ListaRecomendacoesResponse(BaseModel):
@@ -89,9 +101,20 @@ class DesconsideradaItem(BaseModel):
     # ENTRADA_PAINEL histórico.
     motivo_recomendacao: Optional[str] = None
     motivo_desconsideracao: str
-    bloquear_novas_recomendacoes: bool
+    # Optional: a coluna real permite NULL de propósito ("NULL = sem
+    # decisão", ver comentário da coluna em data/scripts/01_create_tables.sql
+    # e databricks-schema-real.md) — confirmado em teste de ponta a ponta
+    # (14/08/2026) que registros legados (anteriores à obrigatoriedade deste
+    # campo no contrato de POST /desconsiderar) têm esse valor NULL, e
+    # quebravam GET /desconsideradas com 500 quando o schema exigia bool.
+    bloquear_novas_recomendacoes: Optional[bool] = None
     data_desconsideracao: datetime
     ciclo_recomendacao: str
+    # Mesmo tratamento de RecomendacaoItem — ver comentário lá.
+    especialidade: Optional[str] = None
+    cidade: Optional[str] = None
+    uf: Optional[str] = None
+    meses_sem_visita: Optional[int] = None
 
 
 class ListaDesconsideradasResponse(BaseModel):

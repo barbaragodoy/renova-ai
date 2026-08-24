@@ -25,6 +25,7 @@ EMAIL_ACHE = "ana.lima@ache.com.br"
 EMAIL_INEXISTENTE = "fulano.naoexiste@ache.com.br"
 
 
+@pytest.mark.requer_banco
 def test_setor_resolvido_dominio_ache():
     ctx = resolver_contexto(EMAIL_ACHE)
     assert ctx.status == StatusContexto.SETOR_RESOLVIDO
@@ -68,6 +69,7 @@ def test_setor_resolvido_dominio_biosintetica(monkeypatch):
     assert ctx.nome == "Carlos Bio"
 
 
+@pytest.mark.requer_banco
 def test_propagandista_nao_encontrado():
     ctx = resolver_contexto(EMAIL_INEXISTENTE)
     assert ctx.status == StatusContexto.PROPAGANDISTA_NAO_ENCONTRADO

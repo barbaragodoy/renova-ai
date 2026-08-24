@@ -11,6 +11,7 @@ from sqlalchemy import text as _text
 from fastapi.testclient import TestClient
 
 from backend.app.main import app
+from backend.app.tests.apoio_sessao import CABECALHO
 from backend.app.auth.context import ContextoResponse, StatusContexto
 from backend.app.db.databricks_connection import get_engine
 
@@ -75,7 +76,9 @@ def _mock_engine(
 def _post(engine=None):
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
         with patch("backend.app.routers.recomendacoes._engine", engine or _mock_engine()):
-            return CLIENT.post(f"/recomendacoes/{_ID}/reverter", params={"email": "ana@ache.com.br"})
+            return CLIENT.post(
+                f"/recomendacoes/{_ID}/reverter", params={"email": "ana@ache.com.br"}, headers=CABECALHO
+            )
 
 
 def test_reverter_ciclo_atual_retorna_pendente():
@@ -175,17 +178,25 @@ def test_reverter_concorrencia_duas_chamadas_simultaneas():
     resultados = []
 
     def _chamar():
-        with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
-            with patch("backend.app.routers.recomendacoes._engine", mock_eng):
-                resp = CLIENT.post(f"/recomendacoes/{_ID}/reverter", params={"email": "ana@ache.com.br"})
+        resp = CLIENT.post(
+            f"/recomendacoes/{_ID}/reverter", params={"email": "ana@ache.com.br"}, headers=CABECALHO
+        )
         resultados.append(resp.status_code)
 
-    t1 = threading.Thread(target=_chamar)
-    t2 = threading.Thread(target=_chamar)
-    t1.start()
-    t2.start()
-    t1.join()
-    t2.join()
+    # patch() como context manager não é thread-safe para enter/exit
+    # concorrentes no mesmo alvo: duas threads entrando/saindo do mesmo
+    # `with patch(...)` podem restaurar o valor errado ao sair, deixando
+    # `_engine`/`resolver_contexto` permanentemente substituídos para os
+    # testes seguintes do arquivo. Um único enter/exit aqui na thread
+    # principal, envolvendo as duas threads, evita a corrida.
+    with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
+        with patch("backend.app.routers.recomendacoes._engine", mock_eng):
+            t1 = threading.Thread(target=_chamar)
+            t2 = threading.Thread(target=_chamar)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
 
     assert sorted(resultados) == [200, 400]
 
@@ -235,11 +246,14 @@ def _ler_cenario(id_recomendacao: str):
         ).mappings().fetchone()
 
 
+@pytest.mark.requer_banco
 def test_reverter_integracao_real_limpa_campos_mantem_contador():
     _resetar_para_desconsiderada(_ID_CENARIO, qtd=3)
 
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
-        resp = CLIENT.post(f"/recomendacoes/{_ID_CENARIO}/reverter", params={"email": "ana.lima@ache.com.br"})
+        resp = CLIENT.post(
+            f"/recomendacoes/{_ID_CENARIO}/reverter", params={"email": "ana.lima@ache.com.br"}, headers=CABECALHO
+        )
     assert resp.status_code == 200
 
     row = _ler_cenario(_ID_CENARIO)
@@ -251,17 +265,21 @@ def test_reverter_integracao_real_limpa_campos_mantem_contador():
     assert row["qtd_vezes_desconsiderado"] == 3
 
 
+@pytest.mark.requer_banco
 def test_reverter_integracao_real_nao_exclui_fisicamente():
     _resetar_para_desconsiderada(_ID_CENARIO)
 
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
-        resp = CLIENT.post(f"/recomendacoes/{_ID_CENARIO}/reverter", params={"email": "ana.lima@ache.com.br"})
+        resp = CLIENT.post(
+            f"/recomendacoes/{_ID_CENARIO}/reverter", params={"email": "ana.lima@ache.com.br"}, headers=CABECALHO
+        )
     assert resp.status_code == 200
 
     row = _ler_cenario(_ID_CENARIO)
     assert row is not None
 
 
+@pytest.mark.requer_banco
 def test_reverter_integracao_real_pendente_reaparece_na_lista_entrada():
     """Efeito natural: recomendação revertida para PENDENTE deve voltar a
     aparecer em GET /recomendacoes/entrada sem nenhuma alteração em
@@ -270,13 +288,17 @@ def test_reverter_integracao_real_pendente_reaparece_na_lista_entrada():
     _resetar_para_desconsiderada(_ID_CENARIO)
 
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
-        resp = CLIENT.post(f"/recomendacoes/{_ID_CENARIO}/reverter", params={"email": "ana.lima@ache.com.br"})
+        resp = CLIENT.post(
+            f"/recomendacoes/{_ID_CENARIO}/reverter", params={"email": "ana.lima@ache.com.br"}, headers=CABECALHO
+        )
     assert resp.status_code == 200
     novo_status = resp.json()["status_recomendacao"]
 
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX):
         resp_lista = CLIENT.get(
-            "/recomendacoes/entrada", params={"email": "ana.lima@ache.com.br", "ciclo": "202507"}
+            "/recomendacoes/entrada",
+            params={"email": "ana.lima@ache.com.br", "ciclo": "202507"},
+            headers=CABECALHO,
         )
     assert resp_lista.status_code == 200
     ids = [item["id_recomendacao"] for item in resp_lista.json()["recomendacoes"]]

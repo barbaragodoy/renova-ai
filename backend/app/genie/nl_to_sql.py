@@ -33,9 +33,9 @@ SCHEMA_RESUMIDO = """
 
 REGRAS_CONTEXTO = """
 Regras de negócio obrigatórias:
-- Corte de entrada: posicao_ranking <= 100 (simula <= 400 em produção)
-- Corte de revisão: posicao_ranking > 100
-- Médico sem visita efetiva há > 5 meses = critério de revisão
+- Corte de entrada: posicao_ranking <= {limite_painel} (limite do painel do propagandista autenticado — Sprint 6, substitui o corte fixo antigo)
+- Corte de revisão: posicao_ranking > {limite_painel}
+- Médico sem visita efetiva há > {sem_visita_meses} meses = critério de revisão
 - Nunca expor dados da tabela tb_propagandistas nas respostas
 - Limite de 5 sugestões por retorno
 - Ciclo de referência padrão: {ciclo}
@@ -71,6 +71,31 @@ def _build_period_clause(periodo_str: Optional[str]) -> str:
     return f"-- Período: YTD (ano corrente). Use data_prescricao >= '{ano}-01-01' ou data_visita >= '{ano}-01-01' conforme contexto."
 
 
+def _limite_painel(settings, matricula: Optional[str]) -> int:
+    """Resolve o limite de painel do propagandista autenticado (Sprint 6:
+    substitui o corte fixo 100 local/400 produção que estava hardcoded em
+    texto livre no prompt do LLM — REGRAS_CONTEXTO acima). Mesmo padrão de
+    _ciclo_mais_recente(settings) logo abaixo: sempre via
+    create_engine(settings.database_url), sem a abstração dual-source
+    (_schema()/col) usada em routers/recomendacoes.py — nl_to_sql é
+    simulação local do Genie, conecta sempre no Postgres local.
+
+    Sem matricula (não deveria acontecer em uso normal: routers/prescricoes.py
+    sempre resolve o contexto via resolver_contexto() antes de chamar
+    consultar(), seguindo o mesmo padrão de resolução de contexto já
+    estabelecido no projeto), cai direto no default 318 sem consultar o
+    banco."""
+    if not matricula:
+        return 318
+    engine = create_engine(settings.database_url)
+    with engine.connect() as conn:
+        row = conn.execute(
+            text("SELECT COALESCE(limite_painel, 318) AS limite FROM tb_perfil_portal WHERE rep_matricula = :mat"),
+            {"mat": matricula},
+        ).fetchone()
+    return row.limite if row is not None else 318
+
+
 def _ciclo_mais_recente(settings) -> str:
     """Resolve o ciclo mais recente via MAX(ciclo_referencia) em
     tb_recomendacoes_painel, substituindo o default estático
@@ -88,11 +113,14 @@ def _ciclo_mais_recente(settings) -> str:
     return row.ciclo
 
 
-def _build_system_prompt(intent: str, setor: Optional[str], period_clause: str, ciclo: str) -> str:
+def _build_system_prompt(
+    intent: str, setor: Optional[str], period_clause: str, ciclo: str,
+    limite_painel: int, sem_visita_meses: int,
+) -> str:
     filtro_setor = (
         f"-- Filtro de setor OBRIGATÓRIO: WHERE setor = '{setor}'" if intent == "OPERACIONAL" and setor else ""
     )
-    regras = REGRAS_CONTEXTO.format(ciclo=ciclo)
+    regras = REGRAS_CONTEXTO.format(ciclo=ciclo, limite_painel=limite_painel, sem_visita_meses=sem_visita_meses)
     return f"""Você é um assistente de análise de dados farmacêuticos da Aché.
 Gere apenas SQL válido para PostgreSQL com base no schema abaixo.
 Retorne SOMENTE o SQL, sem explicações, sem markdown, sem blocos de código.
@@ -148,8 +176,11 @@ async def consultar(
     periodo_detectado = periodo or _extract_period(pergunta, rules)
     period_clause = _build_period_clause(periodo_detectado)
     ciclo = _ciclo_mais_recente(settings)
+    limite_painel = _limite_painel(settings, matricula)
 
-    system_prompt = _build_system_prompt(intent, setor, period_clause, ciclo)
+    system_prompt = _build_system_prompt(
+        intent, setor, period_clause, ciclo, limite_painel, settings.sem_visita_meses
+    )
 
     # Etapa 1: gerar SQL
     try:

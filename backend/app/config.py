@@ -78,10 +78,16 @@ class Settings(BaseSettings):
     debug: bool = False
 
     # Negócio
+    #
+    # corte_ranking/corte_ranking_local removidos na Sprint 6: o corte fixo
+    # (400 prod / 100 local) foi substituído pelo limite por propagandista
+    # (LIMITE_PAINEL em tb_perfil_portal, COALESCE(..., 318) — o 318 vive só
+    # como literal SQL em quem consome, não como setting Python, porque o
+    # valor não é uma escolha do portal: é o mesmo que o notebook de geração
+    # do Hugo aplica na fonte real). Ver routers/recomendacoes.py e
+    # jobs/gerar_recomendacoes.py.
     ciclo_referencia: str = "202608"
-    corte_ranking: int = 400
-    corte_ranking_local: int = 100
-    sem_visita_meses: int = 5
+    sem_visita_meses: int = 3
     limite_sugestoes: int = 5
 
     @property

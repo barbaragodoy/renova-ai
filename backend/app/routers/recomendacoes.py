@@ -45,6 +45,13 @@ _COLUNAS_POR_FONTE = {
         "ciclo_referencia": "CICLO_RECOMENDACAO",
         "motivo_revisao": "MOTIVO_RECOMENDACAO",
         "qtd_medicos_painel_ciclo": "QTD_MEDICOS_PAINEL_CICLO",
+        # Sprint 6 — limite por propagandista (substitui o corte fixo de
+        # 400). tb_perfil_portal já existe na fonte real (usada por
+        # auth/perfil.py para NOME_EXIBICAO/FOTO_PATH desde antes desta
+        # task); aqui só o de-para das colunas de limite, mesmo padrão
+        # LEFT JOIN ON REP_MATRICULA confirmado pelo Hugo.
+        "tabela_perfil_portal": "tb_perfil_portal",
+        "limite_painel": "LIMITE_PAINEL",
         # Colunas de desconsideração (task 161830/163626) — AINDA NÃO existem
         # na tabela real, pendência formal com o Hugo (ver
         # docs/context/known-issues.md). Mapeadas aqui como de-para de nomes
@@ -76,8 +83,13 @@ _COLUNAS_POR_FONTE = {
         "ciclo_referencia": "ciclo_referencia",
         "motivo_revisao": "motivo_revisao",
         # Não existe no schema local — filtro de defesa em profundidade
-        # (painel > 400) fica desativado nessa fonte, ver listar_revisao().
+        # (painel > limite) fica desativado nessa fonte, ver listar_revisao().
         "qtd_medicos_painel_ciclo": None,
+        # Sprint 6 — tb_perfil_portal criada localmente em
+        # data/scripts/13_create_tb_perfil_portal.sql, mesmo de-para de
+        # nomes (minúsculo) usado no resto do schema local.
+        "tabela_perfil_portal": "tb_perfil_portal",
+        "limite_painel": "limite_painel",
         "motivo_desconsideracao": "motivo_desconsideracao",
         "desconsiderado_por": "desconsiderado_por",
         "data_desconsideracao": "data_desconsideracao",
@@ -115,6 +127,32 @@ def _ciclo_mais_recente(col: dict) -> str:
             text(f"SELECT MAX({col['ciclo_referencia']}) AS ciclo FROM {col['tabela']}")
         ).fetchone()
     return row.ciclo
+
+
+def _limite_painel(matricula: str, col: dict) -> int:
+    """Resolve o limite de painel em vigor para o propagandista (Sprint 6:
+    substitui o corte fixo de 400 médicos no painel pelo limite
+    personalizável por propagandista). LEFT JOIN ON REP_MATRICULA com
+    COALESCE(LIMITE_PAINEL, 318) — padrão confirmado pelo Hugo, validado com
+    dado real no Databricks (ver docs/context/decisions-log.md). 318 é
+    literal aqui (não settings.limite_painel_padrao) de propósito: não é
+    escolha do portal, é o mesmo valor que o notebook de geração aplica na
+    fonte real — não deveria ser configurável por ambiente.
+
+    Ausência de linha em tb_perfil_portal (ninguém personalizou ainda, caso
+    mais comum hoje) e limite_painel NULL (personalizou e depois voltou ao
+    padrão) caem no mesmo default 318 — LEFT JOIN sem match também produz
+    NULL, que o COALESCE resolve igual."""
+    with _engine().connect() as conn:
+        row = conn.execute(
+            text(f"""
+                SELECT COALESCE({col['limite_painel']}, 318) AS limite
+                FROM {col['tabela_perfil_portal']}
+                WHERE {col['rep_matricula']} = :mat
+            """),
+            {"mat": matricula},
+        ).fetchone()
+    return row.limite if row is not None else 318
 
 
 def _fragmentos_dim_medicos(col: dict) -> dict:
@@ -262,12 +300,15 @@ def listar_revisao(
     ciclo = ciclo or _ciclo_mais_recente(col)
     dm = _fragmentos_dim_medicos(col)
     meses_sem_visita = _fragmento_meses_sem_visita(col, condicional=False)
+    limite_painel = _limite_painel(ctx.matricula, col)
 
     # Defesa em profundidade (known-issues.md): só aplicável na fonte que tem
     # a coluna. Continua no backend mesmo com a fonte já corrigida, como
-    # proteção contra regressão futura.
-    filtro_painel_400 = (
-        f"AND {col['qtd_medicos_painel_ciclo']} > 400"
+    # proteção contra regressão futura. Sprint 6: o corte fixo (400) virou o
+    # limite por propagandista (:limite_painel, resolvido acima via
+    # _limite_painel — COALESCE(LIMITE_PAINEL, 318) em tb_perfil_portal).
+    filtro_painel_limite = (
+        f"AND {col['qtd_medicos_painel_ciclo']} > :limite_painel"
         if col["qtd_medicos_painel_ciclo"]
         else ""
     )
@@ -290,14 +331,15 @@ def listar_revisao(
           AND {col['tipo_recomendacao']} = 'REVISAO_PAINEL'
           AND {col['status_recomendacao']} = 'PENDENTE'
           AND {col['ciclo_referencia']} = :ciclo
-          {filtro_painel_400}
+          {filtro_painel_limite}
         ORDER BY posicao_ranking DESC NULLS LAST
         LIMIT :limite
     """)
 
     with _engine().connect() as conn:
         rows = conn.execute(
-            query, {"mat": ctx.matricula, "ciclo": ciclo, "limite": limite}
+            query,
+            {"mat": ctx.matricula, "ciclo": ciclo, "limite": limite, "limite_painel": limite_painel},
         ).mappings().fetchall()
 
     items = [RecomendacaoItem(**_aplicar_fallback_nome_medico(r)) for r in rows]

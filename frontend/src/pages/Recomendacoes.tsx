@@ -67,9 +67,12 @@ type Aba = TipoAba | "arquivadas";
  * frase completa do chat, com o nome como sujeito. Visita sem registro é caso
  * diferente de visita antiga e tem frase própria, como no chat. */
 
-const MOTIVO_RANKING = "REVISAO_RANKING_SETOR_ACIMA_400";
-const MOTIVO_VISITA = "REVISAO_SEM_VISITA_5_MESES";
-const MOTIVO_AMBOS = "REVISAO_RANKING_SETOR_ACIMA_400_E_SEM_VISITA_5_MESES";
+// Sprint 6: corte fixo (400) virou limite por propagandista, janela de
+// visita foi de 5 para 3 meses — os 3 valores abaixo são os confirmados
+// por query real contra o Databricks (ver docs/context/decisions-log.md).
+const MOTIVO_RANKING = "REVISAO_RANKING_SETOR_ACIMA_LIMITE";
+const MOTIVO_VISITA = "REVISAO_SEM_VISITA_3_MESES";
+const MOTIVO_AMBOS = "REVISAO_RANKING_SETOR_ACIMA_LIMITE_E_SEM_VISITA_3_MESES";
 
 function fraseDaVisita(meses?: number | null): string {
   return meses ? `não recebe visita há ${meses} meses` : "não tem visita registrada";

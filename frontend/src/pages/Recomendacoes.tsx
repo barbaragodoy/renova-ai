@@ -16,7 +16,7 @@ import {
 import { Alert } from "@/components/ui/alert";
 
 /**
- * Aba Recomendações do Portal RenovAI.
+ * Aba Recomendações do PedAI.
  *
  * Base trazida da branch `feature/aba-recomendacoes` do George (commit
  * `9c672f0`, 11/08/2026), que espelha o protótipo `RecommendationsScreen`

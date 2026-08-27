@@ -52,6 +52,12 @@ _COLUNAS_POR_FONTE = {
         # LEFT JOIN ON REP_MATRICULA confirmado pelo Hugo.
         "tabela_perfil_portal": "tb_perfil_portal",
         "limite_painel": "LIMITE_PAINEL",
+        # tb_renovai_parametros — criada pelo George em 26/08/2026, fonte
+        # única do LIMITE_PAINEL_PADRAO (318 confirmado via DESCRIBE/SELECT
+        # reais). Substitui o literal 318 hardcoded que existia aqui antes
+        # (ver docs/context/decisions-log.md, entrada de 26/08/2026).
+        "tabela_parametros": "tb_renovai_parametros",
+        "limite_painel_padrao": "LIMITE_PAINEL_PADRAO",
         # Colunas de desconsideração (task 161830/163626) — AINDA NÃO existem
         # na tabela real, pendência formal com o Hugo (ver
         # docs/context/known-issues.md). Mapeadas aqui como de-para de nomes
@@ -90,6 +96,11 @@ _COLUNAS_POR_FONTE = {
         # nomes (minúsculo) usado no resto do schema local.
         "tabela_perfil_portal": "tb_perfil_portal",
         "limite_painel": "limite_painel",
+        # tb_renovai_parametros criada localmente em
+        # data/scripts/14_create_tabelas_chat_ranking_agente.sql, mesmo
+        # de-para de nomes (minúsculo) usado no resto do schema local.
+        "tabela_parametros": "tb_renovai_parametros",
+        "limite_painel_padrao": "limite_painel_padrao",
         "motivo_desconsideracao": "motivo_desconsideracao",
         "desconsiderado_por": "desconsiderado_por",
         "data_desconsideracao": "data_desconsideracao",
@@ -132,27 +143,41 @@ def _ciclo_mais_recente(col: dict) -> str:
 def _limite_painel(matricula: str, col: dict) -> int:
     """Resolve o limite de painel em vigor para o propagandista (Sprint 6:
     substitui o corte fixo de 400 médicos no painel pelo limite
-    personalizável por propagandista). LEFT JOIN ON REP_MATRICULA com
-    COALESCE(LIMITE_PAINEL, 318) — padrão confirmado pelo Hugo, validado com
-    dado real no Databricks (ver docs/context/decisions-log.md). 318 é
-    literal aqui (não settings.limite_painel_padrao) de propósito: não é
-    escolha do portal, é o mesmo valor que o notebook de geração aplica na
-    fonte real — não deveria ser configurável por ambiente.
+    personalizável por propagandista).
 
-    Ausência de linha em tb_perfil_portal (ninguém personalizou ainda, caso
-    mais comum hoje) e limite_painel NULL (personalizou e depois voltou ao
-    padrão) caem no mesmo default 318 — LEFT JOIN sem match também produz
-    NULL, que o COALESCE resolve igual."""
+    COALESCE(LIMITE_PAINEL, (SELECT LIMITE_PAINEL_PADRAO FROM
+    tb_renovai_parametros WHERE ID=1)) — o literal 318 que vivia direto no
+    SQL foi substituído pela tabela de parâmetros que o George criou em
+    26/08/2026 (fonte única, confirmada com o mesmo valor 318 via
+    DESCRIBE/SELECT reais — ver docs/context/decisions-log.md). Não é
+    settings.limite_painel_padrao (config local do portal): é dado, muda
+    sem deploy, igual ao notebook de geração que lê a mesma tabela.
+
+    Nota de hardening registrada em docs/context/known-issues.md: esta
+    fórmula falha de verdade (exceção) se tb_renovai_parametros estiver
+    inacessível, mas devolve NULL em silêncio se a tabela existir sem a
+    linha ID=1 — o comentário real da coluna sinaliza intenção de erro
+    declarado nesse segundo caso, não implementada aqui por decisão
+    explícita (fórmula mantida exatamente como especificada)."""
     with _engine().connect() as conn:
         row = conn.execute(
             text(f"""
-                SELECT COALESCE({col['limite_painel']}, 318) AS limite
+                SELECT COALESCE(
+                    {col['limite_painel']},
+                    (SELECT {col['limite_painel_padrao']} FROM {col['tabela_parametros']} WHERE id = 1)
+                ) AS limite
                 FROM {col['tabela_perfil_portal']}
                 WHERE {col['rep_matricula']} = :mat
             """),
             {"mat": matricula},
         ).fetchone()
-    return row.limite if row is not None else 318
+        if row is not None:
+            return row.limite
+        # Ninguém personalizou (sem linha em tb_perfil_portal, caso mais
+        # comum hoje) — mesmo default, buscado da mesma fonte única.
+        return conn.execute(
+            text(f"SELECT {col['limite_painel_padrao']} FROM {col['tabela_parametros']} WHERE id = 1")
+        ).scalar()
 
 
 def _fragmentos_dim_medicos(col: dict) -> dict:

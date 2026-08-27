@@ -10,8 +10,11 @@ Configurável via variáveis de ambiente (config.py):
 
 Sprint 6 — o corte fixo de ranking (CORTE_RANKING, 400 prod / 100 local) foi
 substituído pelo limite de painel por propagandista (LIMITE_PAINEL em
-tb_perfil_portal, COALESCE(..., 318) — mesmo padrão confirmado pelo Hugo no
-notebook real, ver docs/context/decisions-log.md). Este job é a simulação
+tb_perfil_portal, COALESCE(..., LIMITE_PAINEL_PADRAO de tb_renovai_parametros)
+— mesmo padrão confirmado pelo Hugo no notebook real, ver
+docs/context/decisions-log.md; 318 deixou de ser literal no código em
+26/08/2026, quando o George criou tb_renovai_parametros como fonte única).
+Este job é a simulação
 LOCAL do que o notebook do Hugo já calcula pronto no Databricks — aqui
 recalculamos porque o Postgres local não tem um pipeline equivalente
 gerando tb_recomendacoes_painel; o endpoint REST (routers/recomendacoes.py)
@@ -58,9 +61,16 @@ WHERE ativo = TRUE
 """
 
 _Q_LIMITE_PAINEL = """
-SELECT COALESCE(limite_painel, 318) AS limite
+SELECT COALESCE(limite_painel, :limite_padrao) AS limite
 FROM tb_perfil_portal
 WHERE rep_matricula = :rep_matricula
+"""
+
+# Fonte única do default (318 confirmado real) — substitui o literal 318
+# hardcoded que existia aqui antes de tb_renovai_parametros existir (criada
+# pelo George em 26/08/2026, ver docs/context/decisions-log.md).
+_Q_LIMITE_PAINEL_PADRAO = """
+SELECT limite_painel_padrao FROM tb_renovai_parametros WHERE id = 1
 """
 
 _Q_PAINEL_SIZE = """
@@ -233,13 +243,20 @@ def gerar_recomendacoes(ciclo: str | None = None, dry_run: bool = False) -> dict
         propagandistas = conn.execute(text(_Q_PROPAGANDISTAS)).mappings().fetchall()
         logger.info("Propagandistas ativos: %d | ciclo=%s", len(propagandistas), ciclo)
 
+        # Buscado uma vez fora do loop: mesmo valor para todo propagandista
+        # sem personalização, sem repetir a consulta a cada iteração.
+        limite_painel_padrao = conn.execute(text(_Q_LIMITE_PAINEL_PADRAO)).scalar()
+
         for rep in propagandistas:
             mat = rep["rep_matricula"]
             setor = rep["setor"]
             cod_linha = rep["cod_linha"]
 
-            limite_row = conn.execute(text(_Q_LIMITE_PAINEL), {"rep_matricula": mat}).mappings().fetchone()
-            limite_painel = limite_row["limite"] if limite_row else 318
+            limite_row = conn.execute(
+                text(_Q_LIMITE_PAINEL),
+                {"rep_matricula": mat, "limite_padrao": limite_painel_padrao},
+            ).mappings().fetchone()
+            limite_painel = limite_row["limite"] if limite_row else limite_painel_padrao
 
             # --- ENTRADA_PAINEL ---
             candidatos_entrada = conn.execute(

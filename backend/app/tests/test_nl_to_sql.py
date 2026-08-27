@@ -29,11 +29,17 @@ class _LLMFake:
         return "Resposta simulada."
 
 
-def _mock_create_engine(ciclo_max: str, limite_painel: int = 318):
+def _mock_create_engine(ciclo_max: str, limite_painel: int = 318, limite_painel_padrao: int = 318):
     """Substitui create_engine (usado por _ciclo_mais_recente(),
     _limite_painel() e pela execução do SQL gerado, linha 151) — distingue
-    as três consultas por string matching no SQL, mesmo padrão de
-    test_recomendacoes.py."""
+    as quatro consultas por string matching no SQL, mesmo padrão de
+    test_recomendacoes.py.
+
+    `limite_painel_padrao` (tb_renovai_parametros, via `.scalar()`) é
+    consultado sempre que `_limite_painel()` roda, com ou sem matrícula —
+    fonte única do default desde a Fase 3.5 de 26/08/2026, substituindo o
+    318 que antes era literal no código. `limite_painel` (tb_perfil_portal,
+    via `.fetchone()`) só é consultado quando há matrícula."""
 
     def _factory(*args, **kwargs):
         mock_eng = MagicMock()
@@ -44,7 +50,9 @@ def _mock_create_engine(ciclo_max: str, limite_painel: int = 318):
         def _exec(query, params=None):
             sql = str(query)
             result = MagicMock()
-            if "tb_perfil_portal" in sql:
+            if "tb_renovai_parametros" in sql:
+                result.scalar.return_value = limite_painel_padrao
+            elif "tb_perfil_portal" in sql:
                 result.fetchone.return_value = MagicMock(limite=limite_painel)
             elif "MAX(" in sql:
                 result.fetchone.return_value = MagicMock(ciclo=ciclo_max)
@@ -134,15 +142,40 @@ async def test_consultar_dois_propagandistas_limites_diferentes_geram_prompts_di
 
 
 @pytest.mark.asyncio
-async def test_consultar_sem_matricula_usa_default_318_sem_consultar_banco():
-    """Sem matricula (não deveria ocorrer em uso normal — prescricoes.py
+async def test_consultar_sem_matricula_usa_default_sem_consultar_perfil_portal():
+    """Sem matrícula (não deveria ocorrer em uso normal — prescricoes.py
     sempre resolve contexto antes de chamar consultar() — mas o helper não
-    deve quebrar), cai no default 318 sem round-trip ao banco."""
+    deve quebrar), cai no default de tb_renovai_parametros sem consultar
+    tb_perfil_portal (não haveria matrícula para filtrar).
+
+    Diferente de antes da Fase 3.5 (26/08/2026): o default deixou de ser um
+    318 literal em Python, então uma consulta a tb_renovai_parametros
+    sempre acontece — o que este teste não faz mais é pular o banco
+    inteiro, e sim pular especificamente a consulta a tb_perfil_portal."""
     llm = _LLMFake()
-    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608")) as mock_ce:
+    with patch(
+        "backend.app.genie.nl_to_sql.create_engine",
+        side_effect=_mock_create_engine("202608", limite_painel_padrao=318),
+    ):
         resultado = await nl_to_sql.consultar("Quantas recomendações tenho pendentes?", llm=llm)
     assert resultado["status"] == "OK"
     assert "posicao_ranking <= 318" in llm.chamadas[0]
+
+
+@pytest.mark.asyncio
+async def test_consultar_default_reflete_tb_renovai_parametros_nao_literal():
+    """Fase 3.5 (26/08/2026): muda o valor de tb_renovai_parametros (mock) e
+    confirma que o prompt acompanha — sem matrícula, então sem
+    personalização de tb_perfil_portal para mascarar o efeito."""
+    llm = _LLMFake()
+    with patch(
+        "backend.app.genie.nl_to_sql.create_engine",
+        side_effect=_mock_create_engine("202608", limite_painel_padrao=500),
+    ):
+        resultado = await nl_to_sql.consultar("Quantas recomendações tenho pendentes?", llm=llm)
+    assert resultado["status"] == "OK"
+    assert "posicao_ranking <= 500" in llm.chamadas[0]
+    assert "posicao_ranking <= 318" not in llm.chamadas[0]
 
 
 @pytest.mark.asyncio

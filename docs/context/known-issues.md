@@ -533,6 +533,129 @@ em Arquivadas confirmaram que o dado estava correto; provável só atraso
 de renderização no instante exato do screenshot, não reproduzido como
 problema funcional.
 
+## ABERTO — hardening futuro: `_limite_painel()` retorna NULL silencioso se `tb_renovai_parametros` existir sem a linha ID=1 — 26/08/2026
+Registrado a pedido explícito do usuário ao aprovar a Fase 3.5 da
+sincronização com `merge/portal-agente-e-recomendacoes` (nota, não ação).
+
+O comentário real da coluna `tb_renovai_parametros.LIMITE_PAINEL_PADRAO`
+("o código deixa de ser um número e passa a ser erro declarado, para que
+indisponibilidade não vire valor silenciosamente errado") sinaliza intenção
+de **erro declarado** quando o parâmetro não está disponível. A fórmula
+implementada (`COALESCE(pp.LIMITE_PAINEL, (SELECT LIMITE_PAINEL_PADRAO FROM
+tb_renovai_parametros WHERE ID=1))`, aplicada em `routers/recomendacoes.py`,
+`jobs/gerar_recomendacoes.py`, `genie/nl_to_sql.py` e `auth/perfil.py`) já
+falha de verdade (exceção) se a tabela estiver inacessível — mas devolve
+`NULL` em silêncio se a tabela existir sem a linha `ID=1`. Fechar essa borda
+(fazer a ausência da linha também virar erro declarado) fica para uma
+iteração futura, por decisão explícita de manter a fórmula exatamente como
+especificada nesta sincronização.
+
+## ABERTO — `auth/perfil.py` não roda contra Postgres local: `tb_propagandistas` sem 11 colunas — achado em teste de fumaça real, 26/08/2026
+Pré-existente (código de `auth/perfil.py`, commit `fac188c`, anterior a
+qualquer trabalho desta sincronização) — só descoberto agora porque foi a
+primeira vez que alguém rodou a API de verdade contra `DATA_SOURCE=local`
+com token de sessão real. `_CAMPOS_PESSOA` (base de `GET/PUT /auth/perfil`
+e `PUT /auth/perfil/limite-painel`) seleciona `p.linha_produto,
+p.rep_login, p.gd_nome, p.gd_email, p.gr_nome, p.gn_nome, p.cargo,
+p.regional, p.uf, p.linha_nome, p.cidades_setor, p.especialidades_setor` de
+`tb_propagandistas` — nenhuma dessas 11 colunas existe na tabela local
+(`data/scripts/01_create_tables.sql` só tem `rep_matricula, rep_email,
+setor, cod_linha, rep_nome, ativo`). Erro real:
+`psycopg2.errors.UndefinedColumn: column p.linha_produto does not exist`.
+
+Fora de escopo da sincronização de Chat/Ranking/Agente de 26/08/2026 (que
+tratou só das tabelas novas dessas 3 features) — registrado aqui para quando
+a aba Usuário completa (nome editável, limite de painel, foto) for
+priorizada para teste local de ponta a ponta. Precisaria ampliar
+`tb_propagandistas` local com as 11 colunas e popular dado realista.
+
+## RESOLVIDO — dialeto SQL Databricks vs Postgres no código novo do George — 26/08/2026
+Achados em teste de fumaça real (API rodando de verdade contra
+`DATA_SOURCE=local`, não só suíte mockada) ao trazer Chat/Ranking/Agente.
+Todos corrigidos, sem alterar o comportamento em nenhuma das duas fontes:
+
+- **Qualificação de catálogo** (`acheinfo_dev.renovai.tabela` ou
+  `f"{catalog}.{schema}.tabela"`) quebra contra Postgres (identificador de 3
+  partes não existe lá) — removida em `chat/perfil_medico.py`,
+  `routers/agente.py`, `routers/chat.py`; nomes sem qualificação já resolvem
+  certo nos dois lados via `connect_args` (Databricks) / `search_path`
+  (local). Ver `agente/ferramentas.py::Ferramentas._qualificar()`.
+- **Convenção de maiúsculas mista entre objetos reais**: tabelas mais
+  antigas (`tb_perfil_medico_setor`, `tb_ranking_medicos_validacao`,
+  `tb_dim_medicos`) têm coluna maiúscula real; as mais novas
+  (`tb_conduta_medico`, `tb_segmentacao_medico`, `tb_agente_persona`,
+  `vw_segmentacao_efetiva`) têm coluna minúscula real — confirmado via
+  `DESCRIBE EXTENDED`. Postgres sempre devolve minúsculo para identificador
+  sem aspas, então acesso por `["MAIUSCULO"]` quebrava com `KeyError`
+  contra local. Corrigido na borda (`chat/executor.py::ExecutorDoPortal`),
+  acrescentando a chave maiúscula ao dict sem remover a original — resolve
+  as duas convenções sem tocar nenhuma query.
+- **`MERGE ... WHEN MATCHED THEN UPDATE SET destino.coluna = valor`**:
+  Databricks aceita a coluna alvo qualificada pelo alias do destino,
+  Postgres 15 não (`column "destino" of relation ... does not exist`) — só
+  o lado direito (leitura do valor antigo) pode ficar qualificado. Corrigido
+  em 4 MERGEs (`auth/perfil.py` × 3, `auth/foto.py`, `routers/ranking.py`).
+- **`current_timestamp()`** (com parênteses) é erro de sintaxe no Postgres
+  (é palavra reservada, não função) — trocado por `current_timestamp` (sem
+  parênteses, válido nos dois) em todas as ~10 ocorrências dos arquivos
+  acima.
+- **`uuid()`** só existe no Databricks — `routers/ranking.py` (INSERT em
+  `tb_conduta_medico`) passou a gerar o UUID em Python
+  (`str(uuid.uuid4())`) e passar como parâmetro, funcionando igual nas duas
+  fontes sem chamar função SQL nenhuma para o id.
+- **`CAST(:x AS STRING)` / `CAST(:x AS INT)`**: `STRING`/`INT` não são tipo
+  válido no Postgres (`TEXT`/`INTEGER`) — `agente/registro.py::sql_merge()`
+  passou a escolher o nome do tipo conforme `settings.data_source`. Sem
+  isto, toda gravação em `tb_agente_log` falhava contra local — ou seja,
+  toda interação real com o chat/agente, não um caso de borda.
+- **Subquery em `FROM` sem alias**: Databricks aceita, Postgres exige
+  (`subquery in FROM must have an alias`) — corrigido em
+  `routers/ranking.py` (subquery de conduta mais recente por
+  setor+ufcrm).
+
+## RESOLVIDO — `test_revisao_respeita_guarda_painel_maior_que_400` desatualizado — achado e corrigido em 26/08/2026
+`test_recomendacoes_integration.py` (roda contra Databricks real) falhou
+com `assert 368 > 400` — pré-existente, sem relação com a sincronização de
+Chat/Ranking/Agente (não tocou `routers/recomendacoes.py` além do já
+documentado na Fase 3.5, nem este teste).
+
+**Causa confirmada por reprodução manual direta contra o Databricks real**
+(não hipótese): o rep elegível do teste (matrícula `182749`,
+`joao.trisnoski@ache.com.br`) não tem linha em `tb_perfil_portal`, então
+`_limite_painel()` resolve para o default de `tb_renovai_parametros`
+(**318**, não 400). O item que o endpoint `/recomendacoes/revisao`
+devolveu tem `QTD_MEDICOS_PAINEL_CICLO = 368` — **368 > 318** (passa no
+filtro real do endpoint, `AND QTD_MEDICOS_PAINEL_CICLO > :limite_painel`,
+código de `routers/recomendacoes.py` já existente desde a Sprint 6,
+24/08/2026, não alterado por esta investigação) mas **368 ≤ 400** (viola a
+asserção antiga do teste). Confirma que é o teste desatualizado, não bug de
+código: a trava real do endpoint sempre foi o limite por propagandista, não
+400 — só a asserção do teste não tinha acompanhado a mudança da Sprint 6, e
+por isso ficou dormente até a fonte real trazer um propagandista sem
+personalização com painel entre 319 e 400 (cenário que passou a ser
+elegível para revisão desde a Sprint 6, não antes).
+
+**Corrigido:** o teste (renomeado para
+`test_revisao_respeita_guarda_painel_maior_que_o_limite_do_propagandista`)
+agora resolve o limite real via `_limite_painel()` — a mesma função que o
+endpoint usa — em vez de comparar contra outro número fixo no lugar do 400.
+Suíte completa reconfirmada 340 passed / 1 failed (só o
+`test_e2e_05_novo_ciclo_recorrencia` pré-existente, documentado acima) após
+a correção.
+
+## NOTA — `test_golden_set.py` aponta um diretório acima do correto — achado em 26/08/2026
+Pré-existente desde o primeiro commit do repositório (`fc06059`), sem
+relação com nenhuma sincronização. `GOLDEN_SET_PATH = Path(__file__).parents[4]
+/ "docs" / "cenarios" / "golden_set.json"` resolve para
+`/home/admin/projetos/docs/cenarios/golden_set.json` (um nível acima de
+`renovai-local/`), mas o arquivo real está em
+`renovai-local/docs/cenarios/golden_set.json` — `parents[4]` deveria ser
+`parents[3]`. Quebra a coleção do pytest para a suíte inteira
+(`FileNotFoundError` na importação do módulo) se o arquivo não for
+explicitamente ignorado (`--ignore=backend/app/tests/test_golden_set.py`).
+Não corrigido nesta sincronização — fora de escopo, só registrado para não
+ser confundido com problema novo.
+
 ## Próxima ação
 1. ~~`NOME_MEDICO` nulo em `ENTRADA_PAINEL`~~ — **RESOLVIDO NA ORIGEM em
    2026-07-31**, ver seção acima. Nenhuma ação pendente neste item; o

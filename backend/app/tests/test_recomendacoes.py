@@ -421,6 +421,51 @@ def test_limite_painel_integracao_real_local():
     assert _limite_painel("REP004", col) == 318
 
 
+@pytest.mark.requer_banco
+def test_limite_painel_padrao_vem_de_tb_renovai_parametros_nao_de_literal():
+    """Fase 3.5 (26/08/2026): o 318 deixou de ser um literal no código —
+    agora é lido de tb_renovai_parametros a cada chamada. Este teste muda o
+    valor na tabela, confirma que o comportamento do endpoint acompanha a
+    mudança sem qualquer alteração de código, e devolve o valor original no
+    finally — outros testes desta suíte (ex.: test_limite_painel_
+    integracao_real_local acima) dependem de LIMITE_PAINEL_PADRAO=318."""
+    from sqlalchemy import text as sqltext
+
+    from backend.app.routers.recomendacoes import _engine, _limite_painel, _schema
+
+    col = _schema("local")
+    engine = _engine()
+
+    with engine.connect() as conn:
+        original = conn.execute(
+            sqltext("SELECT limite_painel_padrao FROM tb_renovai_parametros WHERE id = 1")
+        ).scalar()
+
+    assert original == 318, "pré-condição: seed local deve começar em 318"
+    assert _limite_painel("REP004", col) == 318  # REP004 não personalizou
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                sqltext("UPDATE tb_renovai_parametros SET limite_painel_padrao = 500 WHERE id = 1")
+            )
+            conn.commit()
+
+        # Mesmo propagandista sem personalização, mesmo código — só o dado
+        # mudou. REP001 (personalizado, 250) continua 250: a mudança do
+        # padrão não deveria afetar quem já tem valor próprio.
+        assert _limite_painel("REP004", col) == 500
+        assert _limite_painel("REP001", col) == 250
+    finally:
+        with engine.connect() as conn:
+            conn.execute(
+                sqltext("UPDATE tb_renovai_parametros SET limite_painel_padrao = 318 WHERE id = 1")
+            )
+            conn.commit()
+
+    assert _limite_painel("REP004", col) == 318
+
+
 def _mock_engine_limite(limite_por_matricula: dict, capturados: list):
     """Mocka _engine() respondendo à query de limite (tb_perfil_portal) com o
     valor configurado por matrícula, resolvendo o ciclo via MAX(...) e

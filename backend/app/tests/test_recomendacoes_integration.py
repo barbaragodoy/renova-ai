@@ -186,12 +186,38 @@ def test_revisao_ordenada_por_posicao_ranking_desc():
     assert posicoes == sorted(posicoes, reverse=True)
 
 
-def test_revisao_respeita_guarda_painel_maior_que_400():
+def test_revisao_respeita_guarda_painel_maior_que_o_limite_do_propagandista():
     """Defesa em profundidade: nenhum item retornado pode ter
-    QTD_MEDICOS_PAINEL_CICLO <= 400 na fonte, mesmo que a coluna não venha
-    no payload de resposta (ver mapeamento em routers/recomendacoes.py)."""
+    QTD_MEDICOS_PAINEL_CICLO menor ou igual ao limite de painel EM VIGOR
+    para aquele propagandista, mesmo que a coluna não venha no payload de
+    resposta (ver mapeamento em routers/recomendacoes.py).
+
+    Corte fixo de 400, não mais o limite: até 26/08/2026 este teste
+    comparava contra um 400 hardcoded, herdado do corte antigo que a
+    Sprint 6 (24/08/2026) já havia substituído no próprio endpoint pelo
+    limite por propagandista (COALESCE(tb_perfil_portal.LIMITE_PAINEL,
+    tb_renovai_parametros.LIMITE_PAINEL_PADRAO), 318 por padrão — ver
+    docs/context/decisions-log.md, Fase 3.5 de 26/08/2026). A trava real do
+    endpoint sempre foi essa; era só a asserção deste teste que não tinha
+    acompanhado a mudança, e por isso passava a falhar assim que a fonte
+    real trouxesse um propagandista sem personalização com painel entre
+    319 e 400 — cenário que passou a ser elegível para revisão desde a
+    Sprint 6, não antes. Comparar contra o mesmo `_limite_painel()` que o
+    endpoint usa (em vez de outro número fixo) evita reintroduzir o mesmo
+    desalinhamento na próxima vez que o parâmetro mudar."""
+    from backend.app.routers.recomendacoes import _limite_painel, _schema
+
     ciclo = _ciclo_atual()
     email = _rep_elegivel("REVISAO_PAINEL", ciclo)
+
+    engine = get_engine()
+    with engine.connect() as conn:
+        matricula = conn.execute(
+            text("SELECT REP_MATRICULA FROM tb_propagandistas WHERE LOWER(REP_EMAIL) = LOWER(:email) LIMIT 1"),
+            {"email": email},
+        ).fetchone().REP_MATRICULA
+    limite = _limite_painel(matricula, _schema("databricks"))
+
     resp = CLIENT.get(
         "/recomendacoes/revisao", params={"email": email, "ciclo": ciclo}, headers=cabecalho(email=email)
     )
@@ -201,7 +227,7 @@ def test_revisao_respeita_guarda_painel_maior_que_400():
     for item in itens:
         qtd = _qtd_medicos_painel(item["id_recomendacao"])
         assert qtd is not None
-        assert qtd > 400
+        assert qtd > limite
 
 
 def test_especialidade_cidade_vem_preenchidos_para_pelo_menos_um_registro_real():

@@ -46,6 +46,8 @@ from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.db.databricks_connection import get_engine as _get_engine
 from backend.app.schemas.perfil import (
     AtribuicaoSetor,
+    FRANQUIAS_POR_LINHA,
+    LimitePainelUpdateRequest,
     PerfilResponse,
     PerfilUpdateRequest,
 )
@@ -84,10 +86,17 @@ _CAMPOS_PESSOA = """
            p.cargo, p.regional, p.uf, p.linha_nome,
            p.cidades_setor, p.especialidades_setor,
            perfil.nome_exibicao, perfil.foto_path,
-           perfil.dt_acesso_anterior
+           perfil.dt_acesso_anterior, perfil.limite_painel,
+           param.limite_painel_padrao
     FROM tb_propagandistas p
     LEFT JOIN tb_perfil_portal perfil
            ON LOWER(perfil.rep_email) = LOWER(p.rep_email)
+    -- CROSS JOIN, não LEFT JOIN: tb_renovai_parametros é linha única (ID=1),
+    -- sempre existe se a tabela existe — mesma ida ao banco que já resolve o
+    -- resto, sem round-trip extra só para o default do limite de painel
+    -- (substitui o literal 318 que vivia como fallback em Python, ver
+    -- docs/context/decisions-log.md, 26/08/2026).
+    CROSS JOIN tb_renovai_parametros param
     WHERE LOWER(p.rep_email) = LOWER(:email)
 """
 
@@ -227,9 +236,20 @@ def resolver_perfil(email: str) -> PerfilResponse:
         linha_nome=primeira["linha_nome"],
         cidades=_lista(primeira["cidades_setor"]),
         especialidades=_lista(primeira["especialidades_setor"]),
+        # `linha_produto` vem como texto na origem ("1".."6"). str() protege
+        # contra a coluna voltar como inteiro num rebuild da tabela.
+        franquias_linha=FRANQUIAS_POR_LINHA.get(
+            str(primeira["linha_produto"] or "").strip(), []
+        ),
         dt_acesso_anterior=primeira["dt_acesso_anterior"],
         medicos_no_painel=medicos,
         recomendacoes_pendentes=pendentes,
+        # Mesmo COALESCE do notebook de geração. Quando ninguém personalizou,
+        # a coluna é nula e o valor em vigor é o padrão — lido de
+        # tb_renovai_parametros no mesmo SELECT (CROSS JOIN em
+        # _CAMPOS_PESSOA), não mais um literal 318 em Python.
+        limite_painel=primeira.get("limite_painel") or primeira.get("limite_painel_padrao"),
+        limite_painel_personalizado=primeira.get("limite_painel") is not None,
         atribuicoes=[
             AtribuicaoSetor(
                 setor=linha["setor"],
@@ -291,15 +311,15 @@ def gravar_nome(email: str, nome: Optional[str]) -> PerfilResponse:
                 USING (SELECT LOWER(:email) AS rep_email) AS origem
                    ON destino.rep_email = origem.rep_email
                 WHEN MATCHED THEN UPDATE SET
-                    destino.rep_matricula = :matricula,
-                    destino.nome_exibicao = :nome,
-                    destino.nome_origem_na_edicao = :origem_nome,
-                    destino.dt_atualizacao = current_timestamp()
+                    rep_matricula = :matricula,
+                    nome_exibicao = :nome,
+                    nome_origem_na_edicao = :origem_nome,
+                    dt_atualizacao = current_timestamp
                 WHEN NOT MATCHED THEN INSERT
                     (rep_email, rep_matricula, nome_exibicao,
                      nome_origem_na_edicao, foto_path, dt_atualizacao)
                     VALUES (LOWER(:email), :matricula, :nome,
-                            :origem_nome, NULL, current_timestamp())
+                            :origem_nome, NULL, current_timestamp)
             """),
             {
                 "email": email,
@@ -354,13 +374,13 @@ def registrar_acesso(email: str) -> None:
                     ) AS origem
                        ON destino.rep_email = origem.rep_email
                     WHEN MATCHED THEN UPDATE SET
-                        destino.dt_acesso_anterior = destino.dt_acesso_atual,
-                        destino.dt_acesso_atual = current_timestamp()
+                        dt_acesso_anterior = destino.dt_acesso_atual,
+                        dt_acesso_atual = current_timestamp
                     WHEN NOT MATCHED THEN INSERT
                         (rep_email, rep_matricula, dt_acesso_anterior,
                          dt_acesso_atual)
                         VALUES (origem.rep_email, origem.rep_matricula, NULL,
-                                current_timestamp())
+                                current_timestamp)
                 """),
                 {"email": email},
             )
@@ -397,3 +417,82 @@ def put_perfil(
 ):
     """Edita o nome de exibição. `nome` nulo ou vazio desfaz a edição."""
     return gravar_nome(resolver_email_autenticado(authorization, email), body.nome)
+
+
+def gravar_limite_painel(email: str, limite: Optional[int]) -> PerfilResponse:
+    """Grava o limite do painel da pessoa em `tb_perfil_portal`.
+
+    `limite` nulo volta ao padrão: a coluna é limpa e a leitura cai no
+    COALESCE, mesmo desenho já usado no nome de exibição.
+
+    O MERGE lista as colunas uma a uma em vez de `UPDATE SET *` porque a
+    linha guarda também NOME_EXIBICAO e FOTO_PATH, escritos por outros
+    fluxos. Um update amplo apagaria o nome editado de quem só quis mexer no
+    tamanho do painel.
+
+    A alteração fica auditada: LIMITE_ALTERADO_POR guarda a matrícula de quem
+    mexeu e LIMITE_DT_ALTERACAO o momento. Como o limite muda o corte que o
+    motor aplica no ciclo seguinte, saber quem mudou e quando é o que permite
+    explicar depois por que o painel de alguém encolheu ou cresceu.
+    """
+    with _get_engine().connect() as conn:
+        cadastro = conn.execute(
+            text(
+                "SELECT rep_matricula FROM tb_propagandistas "
+                "WHERE LOWER(rep_email) = LOWER(:email) LIMIT 1"
+            ),
+            {"email": email},
+        ).mappings().fetchone()
+
+        if cadastro is None:
+            raise HTTPException(status_code=404, detail=_PERFIL_NAO_ENCONTRADO)
+
+        conn.execute(
+            text("""
+                MERGE INTO tb_perfil_portal AS destino
+                USING (SELECT LOWER(:email) AS rep_email) AS origem
+                   ON destino.rep_email = origem.rep_email
+                WHEN MATCHED THEN UPDATE SET
+                    rep_matricula = :matricula,
+                    limite_painel = :limite,
+                    limite_alterado_por = :matricula,
+                    limite_dt_alteracao = current_timestamp
+                WHEN NOT MATCHED THEN INSERT
+                    (rep_email, rep_matricula, nome_exibicao,
+                     nome_origem_na_edicao, foto_path, dt_atualizacao,
+                     limite_painel, limite_alterado_por, limite_dt_alteracao)
+                    VALUES (LOWER(:email), :matricula, NULL,
+                            NULL, NULL, current_timestamp,
+                            :limite, :matricula, current_timestamp)
+            """),
+            {
+                "email": email,
+                "matricula": cadastro["rep_matricula"],
+                "limite": limite,
+            },
+        )
+        conn.commit()
+
+    return resolver_perfil(email)
+
+
+@perfil_router.put("/perfil/limite-painel", response_model=PerfilResponse)
+def put_limite_painel(
+    body: LimitePainelUpdateRequest,
+    email: Optional[str] = Query(
+        None,
+        description=(
+            "E-mail (modo dev, AUTH_REQUIRE_JWT=false). "
+            "Ignorado se AUTH_REQUIRE_JWT=true."
+        ),
+    ),
+    authorization: Optional[str] = Header(None),
+):
+    """Altera o limite do painel. `limite` nulo volta ao padrão de 318.
+
+    A faixa aceita é validada no corpo da requisição, não aqui: um valor fora
+    dela devolve 422 antes de chegar ao banco.
+    """
+    return gravar_limite_painel(
+        resolver_email_autenticado(authorization, email), body.limite
+    )

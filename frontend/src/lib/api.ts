@@ -1,5 +1,5 @@
 /**
- * Cliente HTTP do Portal RenovAI.
+ * Cliente HTTP do PedAI.
  *
  * Os caminhos são relativos porque, na imagem única do container, o React é
  * servido pelo próprio FastAPI. Em desenvolvimento o proxy do Vite encaminha
@@ -160,6 +160,10 @@ export interface PerfilResponse {
   cidades: string[];
   especialidades: string[];
 
+  /** Franquias da linha de produtos, por extenso. Resolvido no backend a
+   *  partir de LINHA_PRODUTO; a tela só exibe. */
+  franquias_linha: string[];
+
   /** Penúltimo login, em ISO. O acesso em curso não entra, senão mostraria
    *  sempre "agora". Nulo no primeiro acesso. */
   dt_acesso_anterior?: string | null;
@@ -168,8 +172,21 @@ export interface PerfilResponse {
   medicos_no_painel?: number | null;
   recomendacoes_pendentes?: number | null;
 
+  /** Limite do painel em vigor. Já vem resolvido pelo backend: o valor
+   *  personalizado quando existe, senão o padrão de 318. A tela nunca
+   *  precisa saber o padrão nem repetir o COALESCE. */
+  limite_painel: number;
+  limite_painel_personalizado: boolean;
+
   atribuicoes: AtribuicaoSetor[];
 }
+
+/** Faixa aceita na edição do limite, espelhando LIMITE_PAINEL_MIN e
+ *  LIMITE_PAINEL_MAX em backend/app/schemas/perfil.py. Validar aqui evita
+ *  uma ida ao servidor para receber 422; o servidor valida de novo, porque
+ *  a tela não é barreira. */
+export const LIMITE_PAINEL_MIN = 50;
+export const LIMITE_PAINEL_MAX = 1000;
 
 /**
  * Perfil do propagandista para a aba Usuário.
@@ -196,6 +213,61 @@ export function salvarNomePerfil(email: string, nome: string | null) {
   return request<PerfilResponse>(`/auth/perfil${query}`, {
     method: "PUT",
     body: JSON.stringify({ nome }),
+  });
+}
+
+/**
+ * Altera o limite do painel da pessoa.
+ *
+ * Atende `PUT /auth/perfil/limite-painel`. Rota separada da do nome de
+ * propósito: naquela, nome nulo significa desfazer a edição do nome, então
+ * mandar as duas coisas juntas apagaria o nome de quem só mexeu no limite.
+ *
+ * `limite` nulo volta ao padrão.
+ */
+/**
+ * Envia ou troca a foto de perfil.
+ *
+ * Vai como multipart, não como JSON com base64: base64 cresce o corpo em um
+ * terço e obriga o servidor a decodificar antes de saber o tamanho.
+ *
+ * Não passa por `request()` porque aquele helper fixa Content-Type JSON; aqui
+ * o navegador precisa montar o boundary do multipart sozinho.
+ */
+export async function enviarFotoPerfil(email: string, arquivo: File) {
+  const query = email ? `?email=${encodeURIComponent(email)}` : "";
+  const corpo = new FormData();
+  corpo.append("arquivo", arquivo);
+
+  const token = obterToken();
+  const resposta = await fetch(`${BASE}/auth/perfil/foto${query}`, {
+    method: "PUT",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    body: corpo,
+  });
+
+  if (!resposta.ok) {
+    const detalhe = await resposta.json().catch(() => null);
+    throw new ApiError(
+      detalhe?.detail ?? "Não foi possível enviar a foto.",
+      resposta.status,
+    );
+  }
+  return (await resposta.json()) as { foto_path: string };
+}
+
+/** URL da foto da pessoa autenticada. O `v` quebra o cache do navegador
+ *  depois de uma troca: sem ele o <img> continuaria mostrando a anterior. */
+export function urlFotoPerfil(email: string, versao: number) {
+  const sep = email ? `?email=${encodeURIComponent(email)}&` : "?";
+  return `${BASE}/auth/perfil/foto${sep}v=${versao}`;
+}
+
+export function salvarLimitePainel(email: string, limite: number | null) {
+  const query = email ? `?email=${encodeURIComponent(email)}` : "";
+  return request<PerfilResponse>(`/auth/perfil/limite-painel${query}`, {
+    method: "PUT",
+    body: JSON.stringify({ limite }),
   });
 }
 
@@ -344,4 +416,286 @@ export function reverter(idRecomendacao: string) {
   return request<ReverterResponse>(`/recomendacoes/${idRecomendacao}/reverter`, {
     method: "POST",
   });
+}
+
+/* ---------------------------------------------------------------- ranking */
+
+export interface MedicoRanking {
+  posicao: number;
+  nome_medico: string;
+  ufcrm: string;
+  pontos?: number | null;
+  no_painel: boolean;
+  especialidade?: string | null;
+  cidade?: string | null;
+  uf?: string | null;
+}
+
+export interface ListaRankingResponse {
+  ciclo: string;
+  total_medicos: number;
+  pontos_lider?: number | null;
+  qtd_painel_setor?: number | null;
+  offset: number;
+  limite: number;
+  medicos: MedicoRanking[];
+}
+
+export interface CategoriaPrescrita {
+  nome: string;
+  pct?: number | null;
+}
+
+export interface OpcaoProduto {
+  nome: string;
+  categoria?: string | null;
+}
+
+export interface ConcorrenteMercado {
+  produto: string;
+  laboratorio?: string | null;
+  participacao?: string | null;
+  eh_ache: boolean;
+}
+
+/** Documento da KB já em campos. O backend interpreta o markdown e descarta
+ *  cabeçalho, referência dos dados e nota metodológica: nada disso ajuda quem
+ *  está na porta do consultório. */
+export interface MercadoDetalhe {
+  mercado: string;
+  area_terapeutica?: string | null;
+  concorrentes: ConcorrenteMercado[];
+  especialidades: string[];
+  usos: string[];
+  efeito?: string | null;
+
+  /** Da estratégia de ciclo, material aprovado da Aché. Separado dos campos
+   *  acima: aqueles descrevem o mercado observado na auditoria, incluindo
+   *  concorrente, e estes descrevem o produto Aché. */
+  indicacao?: string | null;
+  beneficio_clinico?: string | null;
+  perfil_paciente?: string | null;
+  beneficios: string[];
+  vantagens: string[];
+  ciclos_origem: number[];
+}
+
+export interface MercadoPrescrito {
+  mercado: string;
+  rx?: number | null;
+  cod_linha?: string | null;
+}
+
+export interface DetalheMedicoResponse {
+  nome_medico: string;
+  ufcrm: string;
+  especialidade?: string | null;
+  cidade?: string | null;
+  uf?: string | null;
+  posicao?: number | null;
+  pontos?: number | null;
+  pontos_lider?: number | null;
+  no_painel: boolean;
+  qtd_painel_setor?: number | null;
+  data_ultima_visita?: string | null;
+  meses_sem_visita?: number | null;
+  ciclos_no_painel_janela?: number | null;
+
+  /** Segmentação do médico. `perfil_origem` diz de onde veio: propagandista,
+   *  salesfarma ou a definir. */
+  perfil_comunicacao?: string | null;
+  perfil_origem?: string | null;
+
+  /** Registro de conduta, o "Como Trata". Nulo quando ninguém registrou nada
+   *  daquele médico neste setor. */
+  /** Top 3 mercados do último ciclo, da AuditPharma. `mercados_referencia` é a
+   *  referência da auditoria, que a tela mostra: ela fecha depois que o mês
+   *  acaba, então fica um mês atrás do ciclo do painel. */
+  mercados?: MercadoPrescrito[];
+  mercados_referencia?: string | null;
+
+  conduta_texto?: string | null;
+  conduta_em?: string | null;
+  conduta_por?: string | null;
+  recomendacao: string;
+  criterio_saida?: string | null;
+  janela?: string | null;
+  categorias: CategoriaPrescrita[];
+  produtos: string[];
+  pct_ache?: number | null;
+  produto_recomendado?: string | null;
+  produto_recomendado_categoria?: string | null;
+  rec_e_top1: boolean;
+  ja_prescreve_o_produto: boolean;
+  opcoes_produto: OpcaoProduto[];
+}
+
+/** Lista paginada do ranking do setor. `q` busca por nome no warehouse. */
+export function listarRanking(email: string, q?: string, offset = 0) {
+  const partes = [`offset=${offset}`];
+  if (email) partes.push(`email=${encodeURIComponent(email)}`);
+  if (q) partes.push(`q=${encodeURIComponent(q)}`);
+  return request<ListaRankingResponse>(`/ranking?${partes.join("&")}`);
+}
+
+export function detalharMedico(email: string, ufcrm: string) {
+  const query = email ? `?email=${encodeURIComponent(email)}` : "";
+  return request<DetalheMedicoResponse>(`/ranking/medico/${encodeURIComponent(ufcrm)}${query}`);
+}
+
+/* ------------------------------------------------------------------ chat */
+
+/** O canal só encaminha `FORA_DO_ESCOPO` para o motor de linguagem natural.
+ *  Os demais já trazem a mensagem escrita, pronta para exibir. */
+export type StatusChat =
+  | "PERFIL_PRONTO"
+  | "PRECISA_SETOR"
+  | "MEDICO_AMBIGUO"
+  | "MEDICO_NAO_ENCONTRADO"
+  | "NAO_IMPLEMENTADO"
+  | "FORA_DO_ESCOPO";
+
+/** Os quatro tipos do contrato `Message` do protótipo. */
+export interface CardChat {
+  type: "doctor" | "insight" | "suggestions" | "info-banner";
+  name?: string | null;
+  /** Já vem formatado como "#336 no setor". */
+  rank?: string | null;
+  /** Pontuação em valor bruto, decisão de George em 10/08/2026. */
+  score?: number | null;
+  status?: string | null;
+  summary?: string | null;
+  text?: string | null;
+  items?: string[] | null;
+}
+
+/** Um pedaço da resposta, na ordem em que a tela deve revelar.
+ *
+ *  A ordem vem do backend e é de leitura, não de cálculo: decisão de incluir ou
+ *  excluir, ranking e pontuação, o que ele mais prescreve, o que oferecer e
+ *  tempo sem visita. O sexto, o perfil de comunicação, não vem aqui: ele chega
+ *  por `enriquecerPerfil`, que demora mais e não pode segurar os cinco. */
+export interface BlocoChat {
+  ordem: number;
+  tipo: "decisao" | "ranking" | "prescreve" | "oferecer" | "visita" | string;
+  texto: string;
+}
+
+export interface RespostaChat {
+  status: StatusChat;
+  mensagem: string;
+  cards: CardChat[];
+  /** Cada chip já vem com o texto correspondente. Tocar num chip não dispara
+   *  requisição nem chamada de modelo: é instantâneo e não pode contradizer o
+   *  card acima dele. */
+  respostas: Record<string, string>;
+  /** Vazio quando o backend ainda é anterior a 20/08/2026. A tela cai para os
+   *  `cards`, e o portal não fica sem resposta entre um deploy e outro. */
+  blocos?: BlocoChat[];
+  identificacao: Record<string, unknown>;
+}
+
+/**
+ * Pergunta do propagandista no chat.
+ *
+ * Sem estado: o setor vem da sessão, no backend, e nunca do texto. Uma
+ * pergunta que cite outro setor é respondida com o setor de quem perguntou.
+ */
+export interface EnriquecimentoChat {
+  texto: string;
+  documentos: string[];
+  perfil: string;
+  disponivel: boolean;
+}
+
+/** O sexto bloco: como conduzir a visita conforme o perfil de comunicação.
+ *
+ *  Rota separada de propósito. Os cinco primeiros blocos saem de uma consulta e
+ *  chegam juntos; este lê o perfil gravado e o texto pronto da base, e a tela o
+ *  acrescenta quando ele responde, em vez de segurar o resto esperando.
+ *
+ *  `disponivel: false` é resposta normal, não erro: acontece para quem ainda
+ *  não foi segmentado, que são 225.439 profissionais. A tela simplesmente não
+ *  mostra a seção. */
+export function enriquecerPerfil(ufcrm: string) {
+  return request<EnriquecimentoChat>("/agente/enriquecer", {
+    method: "POST",
+    body: JSON.stringify({ ufcrm }),
+  });
+}
+
+export function perguntarAoChat(pergunta: string) {
+  return request<RespostaChat>("/chat/perfil-medico", {
+    method: "POST",
+    body: JSON.stringify({ pergunta }),
+  });
+}
+
+
+/** Os quatro perfis de comunicação, espelhando PERFIS_SEGMENTACAO no backend
+ *  e a restrição CHECK da tb_segmentacao_medico. "A DEFINIR" não entra: é
+ *  ausência de classificação, não uma escolha. */
+export const PERFIS_SEGMENTACAO = [
+  "ANALITICO",
+  "PERFORMANCE",
+  "PESSOAL",
+  "RELACIONAL",
+] as const;
+
+export type PerfilSegmentacao = (typeof PERFIS_SEGMENTACAO)[number];
+
+/**
+ * Grava a leitura do propagandista sobre o perfil do médico.
+ *
+ * Atende `PUT /ranking/medico/{ufcrm}/segmentacao`. Devolve o detalhe inteiro
+ * relido da view, então a tela usa a resposta em vez de assumir que gravou o
+ * que mandou.
+ */
+export function classificarMedico(
+  email: string,
+  ufcrm: string,
+  perfil: PerfilSegmentacao,
+) {
+  const query = email ? `?email=${encodeURIComponent(email)}` : "";
+  return request<DetalheMedicoResponse>(
+    `/ranking/medico/${encodeURIComponent(ufcrm)}/segmentacao${query}`,
+    { method: "PUT", body: JSON.stringify({ perfil }) },
+  );
+}
+
+
+/** Limite do texto de conduta, espelhando CONDUTA_TAMANHO_MAXIMO no backend e
+ *  a restrição CHECK da tb_conduta_medico. */
+export const CONDUTA_TAMANHO_MAXIMO = 3000;
+
+/**
+ * Registra como o médico vem tratando os pacientes.
+ *
+ * Atende `PUT /ranking/medico/{ufcrm}/conduta`. Cada chamada insere uma linha
+ * nova: o histórico é o próprio dado. Devolve o detalhe relido, então a tela
+ * usa a resposta em vez de assumir o que mandou.
+ */
+export function registrarConduta(
+  email: string,
+  ufcrm: string,
+  texto: string,
+  origem: "digitado" | "ditado" = "digitado",
+) {
+  const query = email ? `?email=${encodeURIComponent(email)}` : "";
+  return request<DetalheMedicoResponse>(
+    `/ranking/medico/${encodeURIComponent(ufcrm)}/conduta${query}`,
+    { method: "PUT", body: JSON.stringify({ texto, origem }) },
+  );
+}
+
+
+/** Documento da KB de um mercado montado. Atende
+ *  `GET /ranking/mercado/{mercado}/kb`. Devolve 404 quando o mercado não tem
+ *  material, que é caso normal e não erro. */
+export function textoDoMercado(email: string, mercado: string, codLinha: string) {
+  const params = new URLSearchParams({ cod_linha: codLinha });
+  if (email) params.set("email", email);
+  return request<MercadoDetalhe>(
+    `/ranking/mercado/${encodeURIComponent(mercado)}/kb?${params}`,
+  );
 }

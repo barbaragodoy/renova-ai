@@ -1,8 +1,10 @@
-import { useState } from "react";
-import { Home, MessageSquare, Star, UserCircle } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Home, Star, TrendingUp, UserCircle } from "lucide-react";
 import { Login } from "@/pages/Login";
 import { Recomendacoes } from "@/pages/Recomendacoes";
 import { Usuario } from "@/pages/Usuario";
+import { Chat } from "@/pages/Chat";
+import { Ranking } from "@/pages/Ranking";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { configurarProvedorDeToken } from "@/lib/api";
@@ -13,25 +15,61 @@ import { lerSessao, limparSessao, type Sessao } from "@/auth/sessao";
 let sessaoAtual: Sessao | null = lerSessao();
 configurarProvedorDeToken(() => sessaoAtual?.token ?? null);
 
-/** Abas do portal, na mesma ordem do protótipo.
+/** Abas do portal, na ordem do protótipo, menos uma.
  *
- *  Comunicados entra numa próxima etapa, mas fica visível desde já para a
- *  navegação não mudar de forma quando for ligada. */
+ *  O protótipo tem cinco: Home, Recomendações, Ranking, Comunicados e
+ *  Usuário. Comunicados fica fora do escopo por decisão de George em
+ *  10/08/2026, então restam quatro, todas ligadas. Home é a conversa. */
 const ABAS = [
   { id: "home", rotulo: "Home", icone: Home },
   { id: "recomendacoes", rotulo: "Recom.", icone: Star },
-  { id: "comunicados", rotulo: "Comun.", icone: MessageSquare },
+  { id: "ranking", rotulo: "Ranking", icone: TrendingUp },
   { id: "usuario", rotulo: "Usuário", icone: UserCircle },
 ] as const;
 
 type AbaId = (typeof ABAS)[number]["id"];
 
-function EmBreve() {
+/** Faixa de uma aba, que continua montada quando a pessoa sai dela.
+ *
+ *  O portal é usado em pé, na porta do consultório, alternando entre abas o
+ *  tempo todo. Desmontar a aba ao sair jogava fora tudo: a posição no ranking,
+ *  as páginas já carregadas, a conversa do chat, o texto digitado. Voltar
+ *  significava recomeçar e esperar de novo pela rede.
+ *
+ *  Duas decisões aqui:
+ *
+ *  1. **Montagem preguiçosa.** A aba só é criada no primeiro acesso a ela.
+ *     Montar as quatro no login dispararia quatro consultas ao Databricks de
+ *     uma vez, e a pessoa pagaria a espera de telas que talvez nem abra.
+ *
+ *  2. **Rolagem por aba.** Cada aba tem o próprio contêiner de rolagem, e a
+ *     posição é guardada e devolvida na mão. `display:none` não preserva
+ *     `scrollTop` de forma confiável entre navegadores, então não dá para
+ *     depender disso. */
+function Faixa({
+  ativa,
+  children,
+}: {
+  ativa: boolean;
+  children: React.ReactNode;
+}) {
+  const caixa = useRef<HTMLDivElement>(null);
+  const posicao = useRef(0);
+
+  useEffect(() => {
+    if (ativa && caixa.current) caixa.current.scrollTop = posicao.current;
+  }, [ativa]);
+
   return (
-    <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
-      <p className="text-[var(--color-muted-foreground)]">
-        Esta jornada será adicionada nas próximas etapas.
-      </p>
+    <div
+      ref={caixa}
+      hidden={!ativa}
+      onScroll={(e) => {
+        posicao.current = e.currentTarget.scrollTop;
+      }}
+      className="h-full overflow-y-auto"
+    >
+      {children}
     </div>
   );
 }
@@ -39,6 +77,23 @@ function EmBreve() {
 export default function App() {
   const [sessao, setSessao] = useState<Sessao | null>(sessaoAtual);
   const [aba, setAba] = useState<AbaId>("home");
+  // Abas já abertas ao menos uma vez. Só essas ficam montadas.
+  const [visitadas, setVisitadas] = useState<Set<AbaId>>(new Set(["home"]));
+  // Pergunta que o Ranking manda para o chat pelo botão da gaveta. Fica aqui,
+  // e não dentro de cada aba, porque atravessa as duas.
+  const [perguntaParaOChat, setPerguntaParaOChat] = useState<string | null>(null);
+
+  function conversarSobre(nomeMedico: string) {
+    setPerguntaParaOChat(`Vou visitar ${nomeMedico}`);
+    trocarAba("home");
+  }
+
+  function trocarAba(id: AbaId) {
+    setVisitadas((anteriores) =>
+      anteriores.has(id) ? anteriores : new Set(anteriores).add(id),
+    );
+    setAba(id);
+  }
 
   function aplicarSessao(nova: Sessao | null) {
     sessaoAtual = nova;
@@ -51,6 +106,10 @@ export default function App() {
     limparSessao();
     aplicarSessao(null);
     setAba("home");
+    // Sair descarta o que estava carregado: a próxima pessoa a entrar neste
+    // aparelho não pode ver o ranking nem a conversa da anterior.
+    setVisitadas(new Set(["home"]));
+    setPerguntaParaOChat(null);
   }
 
   return (
@@ -59,7 +118,7 @@ export default function App() {
     // a navegação para fora da área visível no celular.
     <div className="grid h-dvh grid-rows-[auto_minmax(0,1fr)_auto]">
       <header className="flex items-center justify-between gap-4 bg-[var(--color-primary)] px-4 py-3 text-white sm:px-6">
-        <span className="font-semibold tracking-wide">Portal RenovAI</span>
+        <span className="font-semibold tracking-wide">PedAI</span>
         <Button
           variant="ghost"
           onClick={sair}
@@ -69,31 +128,38 @@ export default function App() {
         </Button>
       </header>
 
-      <main className="overflow-y-auto bg-[var(--color-muted)]">
-        {aba === "usuario" && <Usuario email={sessao.email} />}
-
-        {aba === "home" && (
-          <div className="mx-auto w-full max-w-3xl px-4 py-8 sm:px-6">
-            <h1 className="text-2xl font-semibold">
-              Olá{sessao.nome ? `, ${sessao.nome.split(" ")[0]}` : ""}
-            </h1>
-            <p className="mt-1 text-[var(--color-muted-foreground)]">
-              Setor {sessao.setor}
-            </p>
-
-            <div className="mt-8 rounded-[var(--radius-lg)] border border-[var(--color-border)] bg-[var(--color-card)] p-6">
-              <p className="text-[var(--color-muted-foreground)]">
-                As jornadas do portal serão adicionadas nas próximas etapas.
-              </p>
-            </div>
-          </div>
+      <main className="h-full min-h-0 overflow-hidden bg-[var(--color-muted)]">
+        {visitadas.has("home") && (
+          <Faixa ativa={aba === "home"}>
+            <Chat
+              nome={sessao.nome}
+              perguntaPendente={perguntaParaOChat}
+              aoConsumirPergunta={() => setPerguntaParaOChat(null)}
+            />
+          </Faixa>
         )}
 
-        {aba === "recomendacoes" && (
-          <Recomendacoes email={sessao.email} setor={sessao.setor} />
+        {visitadas.has("recomendacoes") && (
+          <Faixa ativa={aba === "recomendacoes"}>
+            <Recomendacoes email={sessao.email} setor={sessao.setor} />
+          </Faixa>
         )}
 
-        {aba === "comunicados" && <EmBreve />}
+        {visitadas.has("ranking") && (
+          <Faixa ativa={aba === "ranking"}>
+            <Ranking
+              email={sessao.email}
+              setor={sessao.setor}
+              onConversar={conversarSobre}
+            />
+          </Faixa>
+        )}
+
+        {visitadas.has("usuario") && (
+          <Faixa ativa={aba === "usuario"}>
+            <Usuario email={sessao.email} />
+          </Faixa>
+        )}
       </main>
 
       <nav
@@ -106,7 +172,7 @@ export default function App() {
             <button
               key={id}
               type="button"
-              onClick={() => setAba(id)}
+              onClick={() => trocarAba(id)}
               aria-current={ativa ? "page" : undefined}
               // 56px de altura: o alvo de toque continua confortável mesmo com
               // ícone e rótulo empilhados.

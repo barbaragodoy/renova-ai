@@ -12,7 +12,7 @@ interface LoginProps {
 }
 
 /**
- * Acesso ao Portal RenovAI.
+ * Acesso ao PedAI.
  *
  * No modo `senha`, o propagandista entra com o e-mail corporativo e a senha
  * recebida. O backend confere contra o hash em `tb_portal_acesso` e devolve
@@ -66,7 +66,7 @@ export function Login({ onEntrar }: LoginProps) {
       <main className="flex flex-col justify-center px-6 py-12 sm:px-10 lg:px-16">
         <div className="mx-auto w-full max-w-sm">
           <p className="text-sm font-semibold tracking-[0.08em] text-[var(--color-primary)] uppercase">
-            Portal RenovAI
+            PedAI
           </p>
 
           <h1 className="mt-6 text-3xl leading-tight font-semibold sm:text-4xl">
@@ -132,7 +132,7 @@ export function Login({ onEntrar }: LoginProps) {
           {USA_SENHA && (
             <p className="mt-6 text-sm text-[var(--color-muted-foreground)]">
               Não recebeu sua senha ou precisa de uma nova? Fale com o time do
-              RenovAI.
+              PedAI.
             </p>
           )}
         </div>

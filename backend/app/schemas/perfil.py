@@ -29,6 +29,50 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
+# Franquias de cada linha comercial, por extenso.
+#
+# Fonte: material "Organização Portfólio e Equipe 2026", enviado por George em
+# 20/08/2026, e o glossário de siglas registrado em
+# `05-Simbiox-e-Ache/ped-1.0-painel-consultivo/docs/task-franquias-perfil-prescritivo.md`,
+# que traz a mesma composição de linhas produto a produto.
+#
+# Fica como constante, e não em tabela, porque não existe de-para de linha
+# para franquia no catálogo hoje: a tb_atc4_produto_ache liga linha a classe
+# terapêutica, e cada linha cobre de 15 a 27 classes distintas (medido em
+# 20/08/2026). Quando esse de-para existir como dado, esta constante sai.
+#
+# "Linha" não é sinônimo de franquia: é a combinação de franquias atribuída a
+# um time. A mesma franquia aparece em mais de uma linha, como SNC nas linhas
+# 2 e 3.
+#
+# Gastro, Osteo e Oftalmo aparecem sem forma expandida porque o glossário
+# registrado também não a define ("Gastro = Gastro", "Ofta = Oftalmo",
+# "Osteo = Osteo/ósseo"). Escrever "Gastroenterologia" ou "Osteoarticular"
+# aqui seria inventar vocabulário que a Aché não registrou.
+FRANQUIAS_POR_LINHA = {
+    "1": ["Cardiologia", "Gastro"],
+    "2": ["Sistema Nervoso Central", "Osteo"],
+    "3": ["Sistema Nervoso Central", "Cardiologia"],
+    "4": ["Gastro", "Respiratório"],
+    "5": ["Osteo", "Respiratório", "Oftalmo"],
+    "6": ["Saúde Feminina", "Dermatológico"],
+}
+
+
+# Padrão do limite do painel. Não é escolha do portal: é o mesmo 318 que o
+# notebook de geração aplica no COALESCE(pp.LIMITE_PAINEL, 318). Mudar aqui
+# sem mudar lá faria a tela prometer um corte que o motor não aplica.
+LIMITE_PAINEL_PADRAO = 318
+
+# Faixa aceita na edição. Medido em 20/08/2026 sobre
+# tb_ranking_medicos_validacao, ciclo 202608: o menor painel real tem 251
+# médicos, a mediana 407 e o maior 596. O teto de 1000 dá folga sobre o maior
+# valor observado; o piso de 50 impede que alguém zere o próprio painel com um
+# clique e fique sem recomendação nenhuma no ciclo seguinte.
+LIMITE_PAINEL_MIN = 50
+LIMITE_PAINEL_MAX = 1000
+
+
 class AtribuicaoSetor(BaseModel):
     """Uma linha de `tb_propagandistas`: o setor e a cadeia de gestão dele.
 
@@ -85,6 +129,12 @@ class PerfilResponse(BaseModel):
     cidades: List[str] = []
     especialidades: List[str] = []
 
+    # Franquias da linha de produtos da pessoa, por extenso. Vazio quando a
+    # linha não está no de-para, o que só acontece se a Aché criar uma linha
+    # nova sem esta constante ser atualizada. A tela mostra não disponível em
+    # vez de esconder o campo, para a lacuna aparecer.
+    franquias_linha: List[str] = []
+
     # Penúltimo login. O login em curso não entra: mostrar o acesso atual
     # daria sempre "agora". Nulo no primeiro acesso da pessoa. Decisão de
     # George em 07/08/2026.
@@ -96,6 +146,14 @@ class PerfilResponse(BaseModel):
     # derrubar o resto do perfil.
     medicos_no_painel: Optional[int] = None
     recomendacoes_pendentes: Optional[int] = None
+
+    # Limite do painel. `limite_painel` é o valor em vigor: o personalizado
+    # quando existe, senão LIMITE_PAINEL_PADRAO. O notebook que gera as
+    # recomendações lê a mesma coluna com o mesmo COALESCE
+    # (nb_dev_criacao_renovai_tb_recomendacoes_painel_hist), então tela e
+    # motor concordam por construção, sem segunda fonte de verdade.
+    limite_painel: int = LIMITE_PAINEL_PADRAO
+    limite_painel_personalizado: bool = False
 
     atribuicoes: List[AtribuicaoSetor]
 
@@ -136,3 +194,21 @@ class PerfilUpdateRequest(BaseModel):
             return None
         limpo = valor.strip()
         return limpo or None
+
+
+
+class LimitePainelUpdateRequest(BaseModel):
+    """Corpo do `PUT /auth/perfil/limite-painel`.
+
+    Rota separada do `PUT /auth/perfil` de propósito. Naquela, `nome` nulo
+    significa "desfazer a edição do nome"; se o limite entrasse no mesmo
+    corpo, salvar só o limite apagaria o nome editado da pessoa. Separar
+    evita esse acoplamento.
+
+    `limite` nulo volta ao padrão: a gravação limpa LIMITE_PAINEL e a leitura
+    cai sozinha no COALESCE, mesmo padrão já usado no nome.
+    """
+
+    limite: Optional[int] = Field(
+        None, ge=LIMITE_PAINEL_MIN, le=LIMITE_PAINEL_MAX
+    )

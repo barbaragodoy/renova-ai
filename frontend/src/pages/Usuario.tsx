@@ -2,15 +2,20 @@ import { useEffect, useState } from "react";
 import { Camera, Pencil, UserCircle } from "lucide-react";
 import {
   ApiError,
+  LIMITE_PAINEL_MAX,
+  LIMITE_PAINEL_MIN,
+  enviarFotoPerfil,
   obterPerfil,
+  salvarLimitePainel,
   salvarNomePerfil,
+  urlFotoPerfil,
   type PerfilResponse,
 } from "@/lib/api";
 import { Alert } from "@/components/ui/alert";
 import { Card, Secao } from "@/components/ui/card";
 
 /**
- * Aba Usuário do Portal RenovAI.
+ * Aba Usuário do PedAI.
  *
  * Espelha o protótipo `UserScreen` do Figma Make `cuZGbZpvR0aBJhixqBnYYB`,
  * lido em 07/08/2026. A estrutura é a de lá: cartão de identificação com
@@ -115,6 +120,123 @@ function Indicador({ rotulo, valor }: { rotulo: string; valor?: string | null })
   );
 }
 
+/** Cartão do limite do painel: mostra o valor em vigor e deixa alterar.
+ *
+ *  O limite é o corte que o motor aplica no ciclo seguinte, não uma
+ *  preferência visual. Por isso o cartão avisa que a mudança só aparece na
+ *  próxima geração, e não some com o valor anterior enquanto salva.
+ *
+ *  Quando o valor é personalizado, aparece a opção de voltar ao padrão. Ela
+ *  envia nulo, e o backend limpa a coluna em vez de gravar 318 na mão: assim
+ *  a pessoa volta a acompanhar o padrão se ele mudar um dia. */
+function LimitePainel({
+  valor,
+  personalizado,
+  salvando,
+  erro,
+  onSalvar,
+}: {
+  valor: number;
+  personalizado: boolean;
+  salvando: boolean;
+  erro: string | null;
+  onSalvar: (limite: number | null) => void;
+}) {
+  const [editando, setEditando] = useState(false);
+  const [rascunho, setRascunho] = useState(String(valor));
+
+  const numero = Number(rascunho);
+  const invalido =
+    rascunho.trim() === "" ||
+    !Number.isInteger(numero) ||
+    numero < LIMITE_PAINEL_MIN ||
+    numero > LIMITE_PAINEL_MAX;
+
+  function abrir() {
+    setRascunho(String(valor));
+    setEditando(true);
+  }
+
+  return (
+    <Card className="col-span-2 flex flex-col gap-2 p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[10px] leading-tight font-semibold tracking-wider text-[var(--color-muted-foreground)] uppercase">
+            Limite do painel
+          </p>
+          {/* Sem o selo "padrão", decisão de George em 20/08/2026: quem lê
+              quer saber o limite, não de onde ele veio. O valor em rosa porque
+              é o número que o propagandista procura no cartão. */}
+          <p className="text-sm leading-snug font-bold text-[var(--color-primary)]">
+            {valor} médicos
+          </p>
+        </div>
+
+        {!editando && (
+          <button
+            type="button"
+            onClick={abrir}
+            aria-label="Alterar o limite do painel"
+            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)]"
+          >
+            <Pencil className="h-4 w-4" aria-hidden="true" />
+          </button>
+        )}
+      </div>
+
+      {editando && (
+        <div className="flex flex-col gap-2">
+          <input
+            type="number"
+            inputMode="numeric"
+            min={LIMITE_PAINEL_MIN}
+            max={LIMITE_PAINEL_MAX}
+            value={rascunho}
+            onChange={(e) => setRascunho(e.target.value)}
+            aria-label="Novo limite do painel"
+            className="w-full rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 py-2 text-sm"
+          />
+          <p className="text-xs text-[var(--color-muted-foreground)]">
+            Entre {LIMITE_PAINEL_MIN} e {LIMITE_PAINEL_MAX}. A mudança vale a
+            partir da próxima geração de recomendações.
+          </p>
+
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={invalido || salvando}
+              onClick={() => onSalvar(numero)}
+              className="rounded-[var(--radius-md)] bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+            >
+              {salvando ? "Salvando..." : "Salvar"}
+            </button>
+            <button
+              type="button"
+              disabled={salvando}
+              onClick={() => setEditando(false)}
+              className="rounded-[var(--radius-md)] px-3 py-1.5 text-sm font-medium text-[var(--color-muted-foreground)]"
+            >
+              Cancelar
+            </button>
+            {personalizado && (
+              <button
+                type="button"
+                disabled={salvando}
+                onClick={() => onSalvar(null)}
+                className="rounded-[var(--radius-md)] px-3 py-1.5 text-sm font-medium text-[var(--color-muted-foreground)] underline"
+              >
+                Voltar ao padrão
+              </button>
+            )}
+          </div>
+
+          {erro && <p className="text-xs text-[var(--color-destructive)]">{erro}</p>}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function Campo({
   rotulo,
   valor,
@@ -153,6 +275,13 @@ export function Usuario({ email }: UsuarioProps) {
   const [rascunho, setRascunho] = useState("");
   const [salvando, setSalvando] = useState(false);
   const [erroEdicao, setErroEdicao] = useState<string | null>(null);
+  const [salvandoLimite, setSalvandoLimite] = useState(false);
+  // Incrementado a cada troca de foto para forçar o <img> a recarregar. Sem
+  // isso o navegador serviria a imagem antiga do cache, mesma URL.
+  const [versaoFoto, setVersaoFoto] = useState(0);
+  const [erroFoto, setErroFoto] = useState<string | null>(null);
+  const [enviandoFoto, setEnviandoFoto] = useState(false);
+  const [erroLimite, setErroLimite] = useState<string | null>(null);
 
   useEffect(() => {
     let ativo = true;
@@ -240,6 +369,46 @@ export function Usuario({ email }: UsuarioProps) {
       .finally(() => setSalvando(false));
   }
 
+  function trocarFoto(arquivo: File | undefined) {
+    if (!arquivo) return;
+    setEnviandoFoto(true);
+    setErroFoto(null);
+
+    enviarFotoPerfil(email, arquivo)
+      .then(() => {
+        setVersaoFoto((v) => v + 1);
+        // Recarrega o perfil para foto_path refletir o novo estado; sem isso
+        // o avatar continuaria caindo no ícone padrão até o próximo acesso.
+        return obterPerfil(email).then(setPerfil);
+      })
+      .catch((excecao) => {
+        setErroFoto(
+          excecao instanceof ApiError
+            ? excecao.message
+            : "Não foi possível enviar a foto. Tente novamente.",
+        );
+      })
+      .finally(() => setEnviandoFoto(false));
+  }
+
+  // `null` volta ao padrão. O backend limpa a coluna em vez de gravar 318,
+  // então quem voltou ao padrão continua acompanhando o padrão se ele mudar.
+  function salvarLimite(limite: number | null) {
+    setSalvandoLimite(true);
+    setErroLimite(null);
+
+    salvarLimitePainel(email, limite)
+      .then(setPerfil)
+      .catch((excecao) => {
+        setErroLimite(
+          excecao instanceof ApiError
+            ? excecao.message
+            : "Não foi possível salvar o limite. Tente novamente.",
+        );
+      })
+      .finally(() => setSalvandoLimite(false));
+  }
+
   return (
     <div className="space-y-4 px-4 py-5 pb-8">
       {/* Identificação ---------------------------------------------------- */}
@@ -257,26 +426,47 @@ export function Usuario({ email }: UsuarioProps) {
                   : { borderColor: FUNDO_AVATAR, background: FUNDO_AVATAR }
               }
             >
-              <UserCircle
-                className="h-10 w-10"
-                style={{
-                  color: editando ? "var(--color-primary)" : ROXO_AVATAR,
-                }}
-              />
+              {perfil.foto_path ? (
+                <img
+                  src={urlFotoPerfil(email, versaoFoto)}
+                  alt="Foto de perfil"
+                  className="h-full w-full rounded-full object-cover"
+                />
+              ) : (
+                <UserCircle
+                  className="h-10 w-10"
+                  style={{
+                    color: editando ? "var(--color-primary)" : ROXO_AVATAR,
+                  }}
+                />
+              )}
             </div>
 
             {editando && (
-              <button
-                type="button"
-                disabled
-                title="Envio de foto indisponível nesta versão"
-                className="absolute -right-1 -bottom-1 flex h-7 w-7 items-center justify-center rounded-full text-white opacity-40 shadow"
+              <label
+                title="Trocar a foto"
+                className={
+                  "absolute -right-1 -bottom-1 flex h-7 w-7 cursor-pointer items-center justify-center rounded-full text-white shadow" +
+                  (enviandoFoto ? " opacity-40" : "")
+                }
                 style={{ background: "var(--color-primary)" }}
               >
-                <Camera className="h-3.5 w-3.5" />
-              </button>
+                <Camera className="h-3.5 w-3.5" aria-hidden="true" />
+                <input
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  disabled={enviandoFoto}
+                  onChange={(e) => trocarFoto(e.target.files?.[0])}
+                  aria-label="Trocar a foto de perfil"
+                  className="hidden"
+                />
+              </label>
             )}
           </div>
+
+          {erroFoto && (
+            <p className="text-xs text-[var(--color-destructive)]">{erroFoto}</p>
+          )}
 
           {editando ? (
             <input
@@ -382,8 +572,8 @@ export function Usuario({ email }: UsuarioProps) {
             valor={setores}
           />
           <Indicador
-            rotulo="Especialidades predominantes"
-            valor={resumir(perfil.especialidades)}
+            rotulo="Especialidades da linha"
+            valor={perfil.franquias_linha.join(" · ") || null}
           />
           <Indicador
             rotulo="Médicos no painel"
@@ -392,6 +582,13 @@ export function Usuario({ email }: UsuarioProps) {
           <Indicador
             rotulo="Recomendações pendentes"
             valor={numero(perfil.recomendacoes_pendentes)}
+          />
+          <LimitePainel
+            valor={perfil.limite_painel}
+            personalizado={perfil.limite_painel_personalizado}
+            salvando={salvandoLimite}
+            erro={erroLimite}
+            onSalvar={salvarLimite}
           />
         </div>
       </Secao>

@@ -7,8 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.routers import prescricoes, recomendacoes, gerencial
+from backend.app.routers import agente, chat, prescricoes, ranking, recomendacoes, gerencial
 from backend.app.auth.context import auth_router
+from backend.app.auth.foto import foto_router
 from backend.app.auth.perfil import perfil_router
 from backend.app.auth.sessao import sessao_router
 from backend.app.config import get_settings
@@ -51,10 +52,14 @@ async def log_requests(request: Request, call_next):
 
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(perfil_router, prefix="/auth", tags=["auth"])
+app.include_router(foto_router, prefix="/auth", tags=["auth"])
 app.include_router(sessao_router, prefix="/auth", tags=["auth"])
 app.include_router(prescricoes.router, prefix="/prescricoes", tags=["prescricoes"])
 app.include_router(recomendacoes.router, prefix="/recomendacoes", tags=["recomendacoes"])
+app.include_router(ranking.router, prefix="/ranking", tags=["ranking"])
 app.include_router(gerencial.router, prefix="/gerencial", tags=["gerencial"])
+app.include_router(chat.router, prefix="/chat", tags=["chat"])
+app.include_router(agente.router, prefix="/agente", tags=["agente"])
 
 
 @app.get("/health")
@@ -68,8 +73,24 @@ def health():
 # a interface na porta 3000.
 _DIST = (Path(__file__).resolve().parents[2] / settings.frontend_dist).resolve()
 
+# Os arquivos de `assets` têm o hash do conteúdo no nome, então uma versão
+# nova sempre tem nome novo e a antiga pode ficar em cache para sempre. O
+# `index.html` é o contrário: o nome nunca muda e ele é quem aponta para o
+# pacote da vez. Sem `no-cache` nele, o navegador continua abrindo o pacote
+# anterior depois de uma publicação, e foi o que aconteceu em 10/08/2026.
+CACHE_IMUTAVEL = "public, max-age=31536000, immutable"
+CACHE_SEMPRE_CONFERIR = "no-cache"
+
 if _DIST.is_dir():
-    app.mount("/assets", StaticFiles(directory=_DIST / "assets"), name="assets")
+    class EstaticosComCache(StaticFiles):
+        """`StaticFiles` que marca os arquivos com hash como imutáveis."""
+
+        def file_response(self, *args, **kwargs):
+            resposta = super().file_response(*args, **kwargs)
+            resposta.headers["Cache-Control"] = CACHE_IMUTAVEL
+            return resposta
+
+    app.mount("/assets", EstaticosComCache(directory=_DIST / "assets"), name="assets")
 
     def _dentro_do_portal(caminho: str) -> Path | None:
         """Resolve o caminho pedido e confirma que ele fica dentro de _DIST.
@@ -94,8 +115,12 @@ if _DIST.is_dir():
         recarregar a página dentro do app não caia em 404."""
         arquivo = _dentro_do_portal(caminho) if caminho else None
         if arquivo is not None:
-            return FileResponse(arquivo)
-        return FileResponse(_DIST / "index.html")
+            # Arquivo de nome fixo, como o ícone e o avião da marca: o navegador
+            # pode guardar, mas precisa perguntar antes de reusar.
+            return FileResponse(arquivo, headers={"Cache-Control": CACHE_SEMPRE_CONFERIR})
+        return FileResponse(
+            _DIST / "index.html", headers={"Cache-Control": CACHE_SEMPRE_CONFERIR}
+        )
 
 else:
     logger.warning(

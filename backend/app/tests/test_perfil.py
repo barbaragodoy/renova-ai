@@ -42,7 +42,12 @@ def _linha(setor: str, linha_produto: str, gd_nome: str) -> dict:
         # nunca editou nem acessou, que é todo mundo até a aba entrar em uso.
         "nome_exibicao": None,
         "foto_path": None,
+        "limite_painel": None,
         "dt_acesso_anterior": None,
+        # Vinda do CROSS JOIN com tb_renovai_parametros (Fase 3.5,
+        # 26/08/2026) — fonte única do default, substitui o antigo literal
+        # 318 em Python. Linha única real: sempre presente, nunca NULL.
+        "limite_painel_padrao": 318,
         # Contagens do bloco 2, que passaram a vir na mesma consulta da
         # identidade em 07/08/2026.
         "medicos_no_painel": 392,
@@ -409,7 +414,11 @@ def test_registrar_acesso_desloca_o_atual_para_o_anterior():
         registrar_acesso("antonio.vaz@ache.com.br")
 
     merge = next(sql for sql in conn.sqls if "MERGE" in sql)
-    assert "destino.dt_acesso_anterior = destino.dt_acesso_atual" in merge
+    # Alvo do UPDATE SET sem qualificação (Postgres MERGE não aceita
+    # `destino.coluna =` no lado esquerdo, só no direito, ao contrário do
+    # Databricks — achado em teste de fumaça real em 26/08/2026, ver
+    # docs/context/decisions-log.md).
+    assert "dt_acesso_anterior = destino.dt_acesso_atual" in merge
     # A matrícula do INSERT sai do próprio USING, não de parâmetro: a
     # Identidade montada no login não carrega matrícula.
     assert "MAX(rep_matricula)" in merge
@@ -516,7 +525,12 @@ def test_falha_no_resumo_nao_derruba_o_perfil():
             class _Conn:
                 def execute(self, sql, *_a, **_k):
                     engine.consultas += 1
-                    if "CROSS JOIN" in str(sql):
+                    # Marca só a query COM resumo (painel/pendentes), não o
+                    # `CROSS JOIN tb_renovai_parametros` que existe nas duas
+                    # variantes desde a Fase 3.5 (26/08/2026) — ver
+                    # _CAMPOS_PESSOA, compartilhado por _SQL_COM_RESUMO e
+                    # _SQL_SEM_RESUMO.
+                    if "tb_ranking_medicos_validacao" in str(sql):
                         raise RuntimeError("tabela de ranking indisponível")
                     return _FakeResult([linha_sem_resumo])
 
@@ -537,3 +551,52 @@ def test_falha_no_resumo_nao_derruba_o_perfil():
     assert perfil.medicos_no_painel is None
     assert perfil.recomendacoes_pendentes is None
     assert engine.consultas == 2, "tentou com resumo e recuou para sem resumo"
+
+
+# --- Franquias da linha e limite do painel ---------------------------------
+
+
+def test_franquias_saem_da_linha_de_produtos_e_nao_do_setor():
+    """A linha 5 é Osteo, Respiratório e Oftalmo.
+
+    O campo antigo, `especialidades`, descrevia o setor e continua existindo.
+    O novo descreve a linha, que é outra coisa: a mesma franquia aparece em
+    mais de uma linha e o setor não determina nenhuma delas.
+    """
+    with _com_linhas([_linha("010103040755", "5", "EWERTON PAULA")]):
+        perfil = resolver_perfil("antonio.vaz@ache.com.br")
+
+    assert perfil.franquias_linha == ["Osteo", "Respiratório", "Oftalmo"]
+    # O campo de setor segue intacto, com o conteúdo da mock.
+    assert perfil.especialidades == ["CLINICO GERAL", "CARDIOLOGIA"]
+
+
+def test_linha_desconhecida_devolve_lista_vazia_e_nao_derruba_o_perfil():
+    """Uma linha 7 criada pela Aché sem atualizar o de-para não pode dar erro.
+
+    A tela mostra não disponível, e o resto do perfil continua carregando.
+    """
+    linha = _linha("010103040755", "7", "EWERTON PAULA")
+    with _com_linhas([linha]):
+        perfil = resolver_perfil("antonio.vaz@ache.com.br")
+
+    assert perfil.franquias_linha == []
+    assert perfil.matricula == "184480"
+
+
+def test_limite_do_painel_cai_no_padrao_quando_ninguem_personalizou():
+    with _com_linhas([_linha("010103040755", "5", "EWERTON PAULA")]):
+        perfil = resolver_perfil("antonio.vaz@ache.com.br")
+
+    assert perfil.limite_painel == 318
+    assert perfil.limite_painel_personalizado is False
+
+
+def test_limite_personalizado_vence_o_padrao():
+    linha = _linha("010103040755", "5", "EWERTON PAULA")
+    linha["limite_painel"] = 450
+    with _com_linhas([linha]):
+        perfil = resolver_perfil("antonio.vaz@ache.com.br")
+
+    assert perfil.limite_painel == 450
+    assert perfil.limite_painel_personalizado is True

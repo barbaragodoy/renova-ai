@@ -113,3 +113,28 @@ def test_nao_entrega_arquivo_fora_do_portal(ambiente, ataque):
 def test_portal_continua_funcionando(ambiente, caminho, esperado):
     """Rota desconhecida devolve o index.html, para a navegação do React."""
     assert esperado in pedir(caminho)
+
+
+def test_index_nao_pode_ficar_em_cache_e_assets_podem():
+    """O `index.html` aponta para o pacote da vez e o nome dele nunca muda.
+    Sem `no-cache`, o navegador continua abrindo o pacote anterior depois de
+    uma publicação. Aconteceu em 10/08/2026, e o portal parecia não ter sido
+    publicado. Os arquivos de `assets` têm hash no nome e são o caso oposto."""
+    from fastapi.testclient import TestClient
+
+    from backend.app.main import app
+
+    cliente = TestClient(app)
+    raiz = cliente.get("/")
+    if raiz.status_code != 200:
+        pytest.skip("frontend/dist não existe neste ambiente")
+
+    assert raiz.headers.get("cache-control") == "no-cache"
+
+    import re
+
+    achado = re.search(r"assets/[^\"]+\.js", raiz.text)
+    assert achado, "o index não referencia nenhum pacote"
+    ativo = cliente.get("/" + achado.group(0))
+    assert ativo.status_code == 200
+    assert "immutable" in ativo.headers.get("cache-control", "")

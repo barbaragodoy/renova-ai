@@ -92,6 +92,89 @@ _CAUDA = re.compile(
     r"maior|menor|mais de \d|menos de \d|entre \d|por que|porque|explique)\b"
 )
 
+# Saudação e cortesia são consumidas como PREFIXO da mensagem, palavra a
+# palavra, antes de qualquer extração de identificador. Visto em teste de
+# 02/09/2026: "Olá" virava busca por substring e encontrava PAOLA. Para a
+# comparação, cada palavra é normalizada para só letras: "Olá!", aspas
+# tipográficas e emoji caem na mesma entrada. Palavra com dígito nunca casa
+# com o léxico e interrompe o consumo, então "oi 34827" preserva o CRM.
+_SO_LETRAS = re.compile(r"[^a-z\s]+")
+
+# Termos que também são palavra de nome real ficaram de fora, medido na
+# vw_agente_medico em 02/09/2026 por palavra exata do nome: BELEZA 49
+# médicos, PERFEITO 46, SALVE 24, LEGAL 10 e OPA 7, todos fora do léxico.
+# Com zero ocorrências, e mantidos: VALEU, OK, BLZ, OIE e EAI (SHOW e OTIMO,
+# também zerados, ficaram fora por não serem cortesia de abertura no Brasil).
+# OI aparece em 12 nomes e OLA em 11,
+# mas permanecem no léxico por decisão de produto: a mensagem que é só "oi" é
+# cumprimento com probabilidade dominante, e quem procura esses médicos busca
+# pelo nome completo. Cortesia que não estiver aqui desce para o agente, que
+# tem o histórico.
+_SAUDACOES = frozenset((
+    "ola", "oi", "oie", "hey", "hello", "eai", "e ai",
+    "bom dia", "boa tarde", "boa noite", "tudo bem", "tudo bom",
+    "como vai", "td bem", "td bom",
+    "obrigado", "obrigada", "muito obrigado", "muito obrigada",
+    "valeu", "ok", "blz",
+))
+
+# Da mais longa para a mais curta, para "bom dia" vencer antes de "boa" e
+# "oie" antes de "oi" na detecção de prefixo.
+_SAUDACOES_POR_TAMANHO = [e.split() for e in sorted(_SAUDACOES, key=len, reverse=True)]
+
+
+def _prefixo_de_saudacao(pergunta: str) -> tuple[int, bool]:
+    """Índice de corte do cumprimento inicial, e se a mensagem inteira é.
+
+    A comparação acontece palavra normalizada a palavra normalizada, com um
+    mapa de volta para o token original, porque um token pode carregar mais
+    de uma palavra: "oi,bom dia" tem "oi" e "bom" dentro do mesmo token, e a
+    sexta rodada da revisão de 02/09/2026 mostrou a regressão de compará-lo
+    inteiro. Três regras:
+
+    - palavra de token com dígito nunca é consumível: "oi2" não é cumprimento
+      e "34827" interrompe o consumo, preservando CRM, UFCRM e setor;
+    - token sem letra e sem dígito é ruído puro (emoji, pontuação) e é
+      atravessado; mensagem só de ruído conta como cumprimento, para "👋" e
+      "..." ganharem boas-vindas em vez de uma ida ao agente;
+    - se o consumo parar no meio de um token (típico de erro de digitação,
+      "oi,paola"), nada é cortado e a mensagem segue o fluxo normal.
+    """
+    tokens = pergunta.split()
+    palavras: list[tuple[str, int, bool]] = []  # (palavra, token, consumivel)
+    for indice, token in enumerate(tokens):
+        tem_digito = any(c.isdigit() for c in token)
+        for palavra in _SO_LETRAS.sub(" ", _sem_acento(token)).split():
+            palavras.append((palavra, indice, not tem_digito))
+        if tem_digito and not _SO_LETRAS.sub(" ", _sem_acento(token)).split():
+            palavras.append(("", indice, False))
+    if not palavras:
+        return (len(tokens), True) if tokens else (0, False)
+    consumidas = 0
+    while consumidas < len(palavras):
+        avancou = False
+        for partes in _SAUDACOES_POR_TAMANHO:
+            fim = consumidas + len(partes)
+            if (fim <= len(palavras)
+                    and all(c for _, _, c in palavras[consumidas:fim])
+                    and [w for w, _, _ in palavras[consumidas:fim]] == partes):
+                consumidas = fim
+                avancou = True
+                break
+        if not avancou:
+            break
+    if consumidas == 0:
+        return 0, False
+    if consumidas == len(palavras):
+        return len(tokens), True
+    corte = palavras[consumidas][1]
+    ultimo_consumido = palavras[consumidas - 1][1]
+    if corte == ultimo_consumido:
+        # o consumo parou no meio de um token: não há corte limpo
+        return 0, False
+    return corte, False
+
+
 _STOP = {
     "setor", "do", "da", "de", "no", "na", "o", "a", "os", "as", "e", "para",
     "medico", "dr", "dra", "crm", "codigo", "",
@@ -124,6 +207,20 @@ class Rota(BaseModel):
 
 def rotear(pergunta: str) -> Rota:
     """Classifica a pergunta. `intencao=None` significa mandar para o LLM."""
+    # O cumprimento é consumido ANTES de qualquer extração, e o resto volta
+    # por recursão. Fazer depois deixava rastro em cada canto: "Oi Paola"
+    # capitalizado virava nome "OI PAOLA", "oi bom dia paola" perdia o termo,
+    # e a limpeza por conjunto apagava palavra repetida fora do prefixo.
+    # Achados das revisões independentes de 02/09/2026. Mensagem que é só
+    # cumprimento (uma ou encadeadas, com emoji e pontuação atravessados)
+    # responde saudação; dígito no meio interrompe o consumo e preserva CRM,
+    # UFCRM e setor.
+    cortadas, tudo_saudacao = _prefixo_de_saudacao(pergunta)
+    if tudo_saudacao:
+        return Rota(intencao="saudacao", motivo="saudacao")
+    if cortadas:
+        return rotear(" ".join(pergunta.split()[cortadas:]))
+
     texto = _sem_acento(pergunta)
 
     achado = _SETOR.search(texto)
@@ -1069,8 +1166,11 @@ def bloco_relacao(d: dict) -> str:
         plural = "ciclo" if ciclos == 1 else "ciclos"
         linhas.append(f"- No seu painel há {ciclos} {plural}{inteira}".replace(" ,", ","))
 
-    visita = _data_br(d.get("DATA_ULTIMA_VISITA"))
-    linhas.append(f"- Última visita em {visita}" if visita else "- Sem visita registrada")
+    # A data da última visita saiu daqui em 03/09/2026, no encurtamento pedido
+    # por George: a mesma resposta já a traz na Memória de Visitas e o tempo
+    # relativo no bloco "Tempo sem visita". Três vezes era uma a mais.
+    if not d.get("DATA_ULTIMA_VISITA"):
+        linhas.append("- Sem visita registrada")
 
     categorias, produtos = d.get("QTD_CATEGORIAS"), d.get("QTD_PRODUTOS")
     if categorias:
@@ -1088,6 +1188,40 @@ def bloco_relacao(d: dict) -> str:
         linhas.append(f"- Última prescrição em {_curto(categoria)}, a categoria do {produto}, em {periodo}")
 
     return "Como está a relação\n" + "\n".join(linhas)
+
+
+def _dias_sem_visita(d: dict) -> Optional[int]:
+    """Dias desde a última visita, contados contra hoje. `None` quando não há
+    data, ela não parseia ou está no futuro, que a base trata como sem
+    registro."""
+    bruto = d.get("DATA_ULTIMA_VISITA")
+    if not bruto:
+        return None
+    if isinstance(bruto, str):
+        try:
+            data = _date.fromisoformat(bruto[:10])
+        except ValueError:
+            return None
+    else:
+        data = bruto
+    dias = (_date.today() - data).days
+    return None if dias < 0 else dias
+
+
+def tempo_de_visita(d: dict) -> str:
+    """Texto do tempo relativo para o card do médico: "hoje", "ontem",
+    "há 17 dias", "há cerca de 3 meses" ou "sem registro". Nunca lê
+    `MESES_DESDE_ULTIMA_VISITA`; ver o porquê em `bloco_visita`."""
+    dias = _dias_sem_visita(d)
+    if dias is None:
+        return "sem registro"
+    if dias == 0:
+        return "hoje"
+    if dias == 1:
+        return "ontem"
+    if dias <= 60:
+        return f"há {dias} dias"
+    return f"há cerca de {dias // 30} meses"
 
 
 def bloco_visita(d: dict) -> str:
@@ -1118,42 +1252,24 @@ def bloco_visita(d: dict) -> str:
 
     Em dias até dois meses, em meses depois disso: "há 3 dias" é acionável e
     "há 0 meses" não diz nada.
+
+    Desde 03/09/2026, por pedido de George, o tempo relativo mora no card do
+    médico (`last_visit`) e este bloco só existe quando há aviso de risco.
     """
-    bruto = d.get("DATA_ULTIMA_VISITA")
-    if not bruto:
-        return "Tempo sem visita\n- Sem visita registrada na base"
-
-    if isinstance(bruto, str):
-        try:
-            data = _date.fromisoformat(bruto[:10])
-        except ValueError:
-            return "Tempo sem visita\n- Sem visita registrada na base"
-    else:
-        data = bruto
-
-    dias = (_date.today() - data).days
-    if dias < 0:
-        return "Tempo sem visita\n- Sem visita registrada na base"
-    if dias == 0:
-        quanto = "hoje"
-    elif dias == 1:
-        quanto = "ontem"
-    elif dias <= 60:
-        quanto = f"há {dias} dias"
-    else:
-        meses = dias // 30
-        quanto = f"há cerca de {meses} meses"
-    linhas = ["Tempo sem visita", f"- Última visita {quanto}, em {_data_br(bruto)}"]
+    dias = _dias_sem_visita(d)
+    if dias is None or dias <= 60:
+        return ""
 
     # Aviso de risco, decisão de George em 20/08/2026. O corte é de tempo, não de
     # ranking: 17.075 linhas da base saem do painel só por ausência de visita,
     # sempre dentro do limite, às vezes na posição 1 do setor.
+    linhas = ["Tempo sem visita"]
     if dias > 90:
         linhas.append(
             "- Passou de três meses sem visita. Sem retomada, o mais provável é "
             "sair do painel no próximo ciclo."
         )
-    elif dias > 60:
+    else:
         linhas.append(
             "- Passou de dois meses sem visita. Vale visitar antes que ele saia "
             "do painel por tempo, e não por potencial."
@@ -1238,6 +1354,9 @@ class Card(BaseModel):
     summary: Optional[str] = None
     text: Optional[str] = None
     items: Optional[list[str]] = None
+    # Tempo relativo da última visita ("há 17 dias", "sem registro"). Mora no
+    # card, e não num bloco da mensagem, por pedido de George em 03/09/2026.
+    last_visit: Optional[str] = None
 
 
 class Bloco(BaseModel):
@@ -1377,6 +1496,22 @@ def resolver_perfil(pergunta: str, executor, setor_autenticado: str | None = Non
             identificacao={"motivo": rota.motivo},
         )
 
+    if rota.intencao == "saudacao":
+        # Resposta instantânea, sem modelo: saudação é a primeira mensagem de
+        # quase todo teste, e virar busca de médico era a primeira impressão
+        # do portal. Os chips são os mesmos caminhos que o agente cobre.
+        return PerfilResponse(
+            status="SAUDACAO",
+            mensagem=(
+                "Olá! Estou aqui para apoiar a sua rota. Me diga o nome ou o "
+                "CRM de um médico, ou escolha um caminho:"
+            ),
+            cards=[Card(type="suggestions", items=[
+                "Quem está com visita pendente há mais de 3 meses?",
+                "Buscar um médico pelo nome",
+            ])],
+        )
+
     if rota.intencao != "briefing_medico":
         # As outras cinco intenções são reconhecidas pelo roteador e ainda não
         # têm consulta. Dizer isso é melhor do que devolver texto vazio.
@@ -1396,9 +1531,28 @@ def resolver_perfil(pergunta: str, executor, setor_autenticado: str | None = Non
         },
     )
     if not achados:
+        if rota.termo and not (rota.ufcrm or rota.crm_numero or rota.nome):
+            # O identificador veio da heurística de sobra de palavras, não de
+            # um dado explícito. O teste de 30/08/2026 mostrou o que cai aqui:
+            # "quero a lista de pendências" e "quero a segunda opção" viravam
+            # busca por um médico chamado "lista pendências" e morriam em
+            # "não encontrei ninguém". Continuação de conversa desce para o
+            # agente, que tem o histórico e as ferramentas.
+            return PerfilResponse(
+                status="FORA_DO_ESCOPO",
+                mensagem="Essa pergunta eu ainda não sei responder sozinho. Vou procurar nos dados.",
+                identificacao={"motivo": f"termo sem correspondencia: {rota.termo}"},
+            )
         return PerfilResponse(
             status="MEDICO_NAO_ENCONTRADO",
-            mensagem="Não encontrei ninguém com esse dado no seu setor.",
+            mensagem=(
+                "Não encontrei ninguém com esse dado no seu setor. Confira o "
+                "nome ou o CRM. Também posso ajudar de outras formas."
+            ),
+            cards=[Card(type="suggestions", items=[
+                "Quem está com visita pendente há mais de 3 meses?",
+                "Buscar um médico pelo nome",
+            ])],
         )
     if len(achados) > 1:
         # Medido em 10/08/2026: dentro do mesmo setor, 856 CRMs sem UF e 2.394
@@ -1422,7 +1576,14 @@ def resolver_perfil(pergunta: str, executor, setor_autenticado: str | None = Non
     if not linhas:
         return PerfilResponse(
             status="MEDICO_NAO_ENCONTRADO",
-            mensagem="Não encontrei ninguém com esse dado no seu setor.",
+            mensagem=(
+                "Não encontrei ninguém com esse dado no seu setor. Confira o "
+                "nome ou o CRM. Também posso ajudar de outras formas."
+            ),
+            cards=[Card(type="suggestions", items=[
+                "Quem está com visita pendente há mais de 3 meses?",
+                "Buscar um médico pelo nome",
+            ])],
         )
 
     dados = dict(linhas[0])
@@ -1506,10 +1667,11 @@ def bloco_ranking(d: dict) -> str:
         return ""
     linhas = [f"- Posição {posicao} no seu setor"]
 
+    # Sem casas decimais, pedido de George em 03/09/2026: "100.500,22" não diz
+    # mais que "100.500" e alonga o número.
     pontos = d.get("PONTOS")
     if pontos is not None:
-        linhas.append(f"- {float(pontos):,.2f} pontos"
-                      .replace(",", "X").replace(".", ",").replace("X", "."))
+        linhas.append(f"- {float(pontos):,.0f} pontos".replace(",", "."))
 
     # `QTD_MEDICOS_PAINEL_SETOR` fica de fora, e por dois motivos medidos em
     # 20/08/2026.
@@ -1569,6 +1731,7 @@ def montar_payload(d: dict) -> PerfilResponse:
             # depender disso.
             status=_STATUS.get(d["RECOMENDACAO"], "Sem classificação"),
             summary=resumo,
+            last_visit=tempo_de_visita(d),
         ),
         Card(type="insight", text=bloco_ache(d).replace("\n", " ")),
     ]

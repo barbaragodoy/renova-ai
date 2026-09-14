@@ -156,3 +156,89 @@ def test_detalhe_medico_completo():
     assert body["produtos"] == ["PRODUTO X"]
     assert body["produto_recomendado"] == "PRODUTO DA LINHA"
     assert len(body["opcoes_produto"]) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Recomendacao pendente na lista, para a sinalizacao da aba Ranking.
+# --------------------------------------------------------------------------- #
+
+
+def _linha(status, id_rec="11111111-1111-1111-1111-111111111111", tipo="ENTRADA_PAINEL"):
+    return dict(
+        _MEDICO,
+        id_recomendacao=id_rec,
+        tipo_recomendacao=tipo,
+        status_recomendacao=status,
+    )
+
+
+def _listar(rows):
+    mock_eng, _ = _mock_engine_lista(_CABECALHO_SETOR, rows)
+    with patch("backend.app.routers.ranking.resolver_contexto", return_value=_CTX_VALIDO):
+        with patch("backend.app.routers.ranking.get_engine", return_value=mock_eng):
+            return CLIENT.get(
+                "/ranking", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
+            ).json()["medicos"][0]
+
+
+def test_pendente_traz_id_e_tipo_para_a_acao():
+    m = _listar([_linha("PENDENTE")])
+    assert m["id_recomendacao_pendente"] == "11111111-1111-1111-1111-111111111111"
+    assert m["tipo_recomendacao_pendente"] == "ENTRADA_PAINEL"
+    assert m["status_recomendacao"] == "PENDENTE"
+
+
+@pytest.mark.parametrize("status", ["ACEITA", "DESCONSIDERADA", "APLICADA", "EXPIRADA", "INELEGIVEL"])
+def test_recomendacao_resolvida_nao_devolve_id_acionavel(status):
+    """O status sai sempre, para a linha mostrar a decisao ja tomada. O id e o
+    tipo nao: sem recomendacao pendente nao existe o que aceitar nem o que
+    desconsiderar, e devolver o id convidaria a tela a oferecer acao que o
+    endpoint recusaria."""
+    m = _listar([_linha(status)])
+    assert m["status_recomendacao"] == status
+    assert m["id_recomendacao_pendente"] is None
+    assert m["tipo_recomendacao_pendente"] is None
+
+
+def test_medico_sem_recomendacao_nenhuma():
+    m = _listar([dict(_MEDICO)])
+    assert m["status_recomendacao"] is None
+    assert m["id_recomendacao_pendente"] is None
+
+
+def test_juncao_do_databricks_garante_uma_linha_por_medico():
+    """A tabela tem 580.911 grupos de matricula, medico e ciclo com mais de uma
+    linha, medido em 04/09/2026. Sem a janela, a juncao multiplicaria o medico e
+    a pagina devolveria menos de 50. O teste tranca as seis propriedades que
+    fazem a cardinalidade e a escolha da linha serem deterministicas."""
+    from backend.app.routers.ranking import _fragmentos_recomendacao
+    join = _fragmentos_recomendacao("databricks")["join"]
+    assert "ROW_NUMBER() OVER" in join
+    assert "rec.ordem = 1" in join
+    # Setor entra na particao: uma matricula pode ter mais de um setor.
+    assert "PARTITION BY SETOR, UFCRM, CICLO_RECOMENDACAO" in join
+    # A matricula corta antes da janela, que nao roda sobre a tabela inteira.
+    assert "WHERE REP_MATRICULA = :mat" in join
+    # Desempate deterministico: sem o id, duas linhas de mesma data alternariam.
+    assert "ID_RECOMENDACAO DESC" in join
+    # GREATEST e nao COALESCE: a primeira data nao nula nao e a mais recente.
+    assert "GREATEST(" in join and "COALESCE(DATA_ACEITE" not in join
+
+
+def test_juncao_local_sinaliza_recomendacao_sem_duplicar_medico():
+    """O Postgres local tem o mesmo selo de ação usando sua tabela própria."""
+    from backend.app.routers.ranking import _fragmentos_recomendacao
+
+    frag = _fragmentos_recomendacao("local")
+    assert "rec.id_recomendacao" in frag["select"]
+    assert "FROM tb_recomendacoes_painel" in frag["join"]
+    assert "ROW_NUMBER() OVER" in frag["join"]
+    assert "PARTITION BY setor, ufcrm, ciclo_referencia" in frag["join"]
+    assert "WHERE rep_matricula = :mat" in frag["join"]
+    assert "rec.ordem = 1" in frag["join"]
+
+
+def test_fonte_desconhecida_degrada_sem_sinalizacao():
+    from backend.app.routers.ranking import _fragmentos_recomendacao
+
+    assert _fragmentos_recomendacao("desconhecida") == {"select": "", "join": ""}

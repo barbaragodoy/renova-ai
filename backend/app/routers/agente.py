@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 import json
 import logging
 
+from backend.app.agente import memoria_visitas
 from backend.app.agente.conhecimento import ConhecimentoKA
 from backend.app.agente.ferramentas import Contexto
 from backend.app.agente.modelo import ServingDatabricks
@@ -56,6 +57,10 @@ class RespostaEnriquecimento(BaseModel):
     documentos: list[str] = []
     perfil: str = ""
     disponivel: bool = True
+    # A Memória de Visitas substitui o "Como Tratar" na tela; o texto do
+    # perfil de comunicação acima vira rodapé dela. Campo opcional de
+    # propósito: backend novo com front antigo continua funcionando.
+    visitas: Optional[memoria_visitas.MemoriaDeVisitas] = None
 
 
 class RespostaAgente(BaseModel):
@@ -158,6 +163,20 @@ def enriquecer(body: EnriquecerRequest,
 
     executor = ExecutorDoPortal()
 
+    # A Memória de Visitas vem antes e independe da persona: médico sem
+    # segmentação continua tendo histórico de visitas, e é justamente para
+    # ele que a memória mais serve. Falha aqui degrada dentro do módulo e
+    # nunca derruba a resposta.
+    try:
+        visitas = memoria_visitas.montar(
+            executor, ServingDatabricks(get_settings()),
+            contexto.setor, body.ufcrm,
+        )
+    except Exception:  # noqa: BLE001
+        # cinto além do suspensório: nenhuma surpresa do módulo pode virar 500
+        logger.exception("memoria de visitas falhou fora da degradacao prevista")
+        visitas = memoria_visitas.MemoriaDeVisitas(disponivel=False)
+
     # Uma consulta só: o perfil do médico e o texto pronto na mesma ida ao
     # banco. Medido em 20/08/2026, o custo da consulta é indistinguível de um
     # `SELECT 1`, ou seja, é só a ida e volta.
@@ -176,7 +195,7 @@ def enriquecer(body: EnriquecerRequest,
         {"setor": contexto.setor, "ufcrm": body.ufcrm.strip().upper()},
     )
     if not linha:
-        return RespostaEnriquecimento(texto="", disponivel=False)
+        return RespostaEnriquecimento(texto="", disponivel=False, visitas=visitas)
 
     escolhido = (linha[0].get("perfil_efetivo") or "").strip()
     texto = (linha[0].get("texto") or "").strip()
@@ -185,14 +204,14 @@ def enriquecer(body: EnriquecerRequest,
     # médicos. Mostrar texto de perfil para quem não tem perfil seria dar
     # orientação genérica com cara de recomendação.
     if not escolhido or escolhido.upper() == "A DEFINIR":
-        return RespostaEnriquecimento(texto="", disponivel=False)
+        return RespostaEnriquecimento(texto="", disponivel=False, visitas=visitas)
 
     if not texto:
         # A geração ainda não rodou para este perfil, ou a KB mudou e a tabela
         # está sendo refeita. Não cair para a chamada ao vivo à base: seriam os
         # mesmos 8 a 18 segundos que esta tabela existe para evitar.
         logger.warning("tb_agente_persona sem texto para o perfil %s", escolhido)
-        return RespostaEnriquecimento(texto="", disponivel=False)
+        return RespostaEnriquecimento(texto="", disponivel=False, visitas=visitas)
 
     documentos: list[str] = []
     try:
@@ -204,4 +223,5 @@ def enriquecer(body: EnriquecerRequest,
         texto=texto,
         documentos=documentos,
         perfil=escolhido,
+        visitas=visitas,
     )

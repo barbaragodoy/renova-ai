@@ -88,6 +88,16 @@ class Settings(BaseSettings):
     # jobs/gerar_recomendacoes.py.
     ciclo_referencia: str = "202608"
     sem_visita_meses: int = 3
+    # Até 04/09/2026 este número cortava a lista das abas de entrada e
+    # exclusão, e o que passasse dele simplesmente não aparecia. Medido no
+    # ciclo atual: a mediana é de 132 recomendações por pessoa e por tipo, e o
+    # máximo é 629, então mais de 96% ficavam invisíveis. Por decisão de
+    # George, a lista passou a mostrar todas, paginadas, e este número virou
+    # quantas ficam destacadas como prioridade da semana. A origem dele é o
+    # combinado antigo de 5 inclusões e 5 exclusões por semana.
+    #
+    # Continua cortando a geração em jobs/gerar_recomendacoes.py, que é outro
+    # uso e não foi alterado.
     limite_sugestoes: int = 5
 
     @property

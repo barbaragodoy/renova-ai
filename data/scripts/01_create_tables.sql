@@ -121,7 +121,7 @@ CREATE INDEX IF NOT EXISTS idx_presc_data   ON tb_prescricoes_geral (data_prescr
 -- =============================================================
 -- tb_recomendacoes_painel
 -- Recomendações geradas pelo motor de IA para o painel do rep.
--- Máximo 5 sugestões por retorno, separadas por tipo.
+-- Listas paginadas; as 5 primeiras de cada tipo são destaques.
 -- =============================================================
 CREATE TABLE IF NOT EXISTS tb_recomendacoes_painel (
     id_recomendacao             UUID         NOT NULL DEFAULT gen_random_uuid(),
@@ -133,7 +133,7 @@ CREATE TABLE IF NOT EXISTS tb_recomendacoes_painel (
     tipo_recomendacao           VARCHAR(20)  NOT NULL
         CHECK (tipo_recomendacao IN ('ENTRADA_PAINEL', 'REVISAO_PAINEL')),
     status_recomendacao         VARCHAR(20)  NOT NULL DEFAULT 'PENDENTE'
-        CHECK (status_recomendacao IN ('PENDENTE', 'DESCONSIDERADA', 'APLICADA', 'EXPIRADA')),
+        CHECK (status_recomendacao IN ('PENDENTE', 'DESCONSIDERADA', 'APLICADA', 'EXPIRADA', 'ACEITA', 'INELEGIVEL')),
     posicao_ranking             INTEGER,
     soma_pontuacao              NUMERIC(12,4),
     motivo_revisao              TEXT,           -- texto livre gerado pelo LLM
@@ -143,6 +143,8 @@ CREATE TABLE IF NOT EXISTS tb_recomendacoes_painel (
     motivo_desconsideracao       TEXT,           -- valor fixo, ou "OUTROS: <texto>" (task 161830)
     desconsiderado_por           VARCHAR(20),    -- matrícula de quem desconsiderou (pode ser GD)
     data_desconsideracao         TIMESTAMPTZ,    -- gerada pelo backend, nunca aceita do cliente
+    aceito_por                   VARCHAR(20),    -- matrícula de quem declarou o aceite
+    data_aceite                  TIMESTAMPTZ,    -- data da declaração de aceite
     qtd_vezes_desconsiderado     INTEGER      NOT NULL DEFAULT 0,
     bloquear_novas_recomendacoes BOOLEAN,        -- NULL = sem decisão; TRUE/FALSE = decidido
     qtd_vezes_recomendado       INTEGER      NOT NULL DEFAULT 1,
@@ -155,12 +157,14 @@ CREATE TABLE IF NOT EXISTS tb_recomendacoes_painel (
 
 COMMENT ON TABLE  tb_recomendacoes_painel                      IS 'Recomendações geradas pelo motor RenovAI por ciclo.';
 COMMENT ON COLUMN tb_recomendacoes_painel.tipo_recomendacao    IS 'ENTRADA_PAINEL: médico fora do painel para incluir. REVISAO_PAINEL: médico no painel para revisar saída.';
-COMMENT ON COLUMN tb_recomendacoes_painel.status_recomendacao  IS 'PENDENTE=aguardando ação; DESCONSIDERADA=ignorada pelo rep/GD; APLICADA=ação tomada; EXPIRADA=ciclo encerrado.';
+COMMENT ON COLUMN tb_recomendacoes_painel.status_recomendacao  IS 'PENDENTE=aguardando ação; ACEITA=intenção declarada; DESCONSIDERADA=ignorada pelo rep/GD; APLICADA=ação detectada no painel; EXPIRADA=ciclo encerrado; INELEGIVEL=deixou de atender aos critérios.';
 COMMENT ON COLUMN tb_recomendacoes_painel.motivo_revisao       IS 'Texto gerado pelo LLM explicando o motivo da revisão (ex: médico sem visita há X meses).';
 COMMENT ON COLUMN tb_recomendacoes_painel.qtd_vezes_recomendado IS 'Quantas vezes este médico foi recomendado ao rep no histórico.';
 COMMENT ON COLUMN tb_recomendacoes_painel.motivo_desconsideracao IS 'Motivo da desconsideração (lista fixa) ou "OUTROS: <texto informado>" — task 161830.';
 COMMENT ON COLUMN tb_recomendacoes_painel.desconsiderado_por IS 'Matrícula de quem desconsiderou (pode ser o próprio rep ou o GD).';
 COMMENT ON COLUMN tb_recomendacoes_painel.data_desconsideracao IS 'Timestamp da desconsideração, gerado pelo backend no momento da gravação.';
+COMMENT ON COLUMN tb_recomendacoes_painel.aceito_por IS 'Matrícula de quem declarou intenção de cumprir a recomendação.';
+COMMENT ON COLUMN tb_recomendacoes_painel.data_aceite IS 'Timestamp do aceite, gerado pelo backend no momento da gravação.';
 COMMENT ON COLUMN tb_recomendacoes_painel.qtd_vezes_desconsiderado IS 'Quantas vezes esta combinação já foi desconsiderada ao longo do histórico.';
 COMMENT ON COLUMN tb_recomendacoes_painel.bloquear_novas_recomendacoes IS 'NULL = sem decisão. TRUE = não recomendar mais este médico a este rep; FALSE = pode voltar a ser recomendado em ciclo futuro se elegível.';
 
@@ -208,6 +212,8 @@ CREATE TABLE IF NOT EXISTS tb_visitacao_medica (
     ufcrm               VARCHAR(20) NOT NULL,
     data_visita         DATE        NOT NULL,
     visita_efetiva      BOOLEAN     NOT NULL DEFAULT TRUE,  -- FALSE = tentativa sem contato
+    visita_tipo         VARCHAR(40),
+    comentarios         TEXT,
     ciclo_referencia    CHAR(6)     NOT NULL,
 
     CONSTRAINT pk_visitacao PRIMARY KEY (setor, ufcrm, data_visita)
@@ -216,6 +222,8 @@ CREATE TABLE IF NOT EXISTS tb_visitacao_medica (
 COMMENT ON TABLE  tb_visitacao_medica                IS 'Registro de visitas médicas realizadas ou tentadas.';
 COMMENT ON COLUMN tb_visitacao_medica.ufcrm          IS 'Identificador único do médico visitado.';
 COMMENT ON COLUMN tb_visitacao_medica.visita_efetiva IS 'TRUE = contato realizado; FALSE = tentativa sem contato com o médico.';
+COMMENT ON COLUMN tb_visitacao_medica.visita_tipo     IS 'Modalidade registrada para a visita.';
+COMMENT ON COLUMN tb_visitacao_medica.comentarios     IS 'Observações de campo usadas pela Memória de Visitas.';
 COMMENT ON COLUMN tb_visitacao_medica.ciclo_referencia IS 'Ciclo em que a visita ocorreu (aaaamm).';
 
 CREATE INDEX IF NOT EXISTS idx_visit_ufcrm  ON tb_visitacao_medica (ufcrm);

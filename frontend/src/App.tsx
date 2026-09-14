@@ -7,7 +7,7 @@ import { Chat } from "@/pages/Chat";
 import { Ranking } from "@/pages/Ranking";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { configurarProvedorDeToken } from "@/lib/api";
+import { configurarAoExpirarSessao, configurarProvedorDeToken } from "@/lib/api";
 import { lerSessao, limparSessao, type Sessao } from "@/auth/sessao";
 
 // Sessão atual em módulo, para o cliente HTTP ler o token sem depender do
@@ -22,7 +22,7 @@ configurarProvedorDeToken(() => sessaoAtual?.token ?? null);
  *  10/08/2026, então restam quatro, todas ligadas. Home é a conversa. */
 const ABAS = [
   { id: "home", rotulo: "Home", icone: Home },
-  { id: "recomendacoes", rotulo: "Recom.", icone: Star },
+  { id: "recomendacoes", rotulo: "Recomendações", icone: Star },
   { id: "ranking", rotulo: "Ranking", icone: TrendingUp },
   { id: "usuario", rotulo: "Usuário", icone: UserCircle },
 ] as const;
@@ -82,6 +82,31 @@ export default function App() {
   // Pergunta que o Ranking manda para o chat pelo botão da gaveta. Fica aqui,
   // e não dentro de cada aba, porque atravessa as duas.
   const [perguntaParaOChat, setPerguntaParaOChat] = useState<string | null>(null);
+  // Motivo do retorno ao login. Hoje só existe um: a sessão venceu.
+  const [avisoDeSessao, setAvisoDeSessao] = useState<string | null>(null);
+
+  /** Encerra a sessão e devolve a pessoa ao login, descartando o que estava
+   *  carregado: quem entrar depois neste aparelho não pode ver o ranking nem
+   *  a conversa de quem estava antes. */
+  function encerrarSessao(aviso: string | null) {
+    limparSessao();
+    sessaoAtual = null;
+    setSessao(null);
+    setAba("home");
+    setVisitadas(new Set(["home"]));
+    setPerguntaParaOChat(null);
+    setAvisoDeSessao(aviso);
+  }
+
+  // O token vale 60 minutos. Quando ele vence, a primeira chamada de negócio
+  // volta 401 e o cliente HTTP avisa aqui, em vez de a tela seguir exibindo
+  // uma pessoa autenticada cujas chamadas todas falham.
+  useEffect(() => {
+    configurarAoExpirarSessao(() =>
+      encerrarSessao("Sua sessão expirou. Entre novamente."),
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function conversarSobre(nomeMedico: string) {
     setPerguntaParaOChat(`Vou visitar ${nomeMedico}`);
@@ -98,18 +123,13 @@ export default function App() {
   function aplicarSessao(nova: Sessao | null) {
     sessaoAtual = nova;
     setSessao(nova);
+    if (nova) setAvisoDeSessao(null);
   }
 
-  if (!sessao) return <Login onEntrar={aplicarSessao} />;
+  if (!sessao) return <Login onEntrar={aplicarSessao} aviso={avisoDeSessao} />;
 
   function sair() {
-    limparSessao();
-    aplicarSessao(null);
-    setAba("home");
-    // Sair descarta o que estava carregado: a próxima pessoa a entrar neste
-    // aparelho não pode ver o ranking nem a conversa da anterior.
-    setVisitadas(new Set(["home"]));
-    setPerguntaParaOChat(null);
+    encerrarSessao(null);
   }
 
   return (
@@ -135,6 +155,10 @@ export default function App() {
               nome={sessao.nome}
               perguntaPendente={perguntaParaOChat}
               aoConsumirPergunta={() => setPerguntaParaOChat(null)}
+              // O chat encaminha para a aba que resolve a recomendação, em vez
+              // de replicar o fluxo de aceitar e desconsiderar dentro da
+              // conversa. Decisão de George em 04/09/2026.
+              onIrParaRecomendacoes={() => trocarAba("recomendacoes")}
             />
           </Faixa>
         )}
@@ -184,7 +208,10 @@ export default function App() {
               )}
             >
               <Icone className="h-5 w-5" aria-hidden="true" />
-              <span>{rotulo}</span>
+              {/* O rótulo mais longo é "Recomendações"; num celular estreito
+                  ele corta com reticências em vez de quebrar em duas linhas e
+                  estourar os 56px. */}
+              <span className="max-w-full truncate px-1">{rotulo}</span>
             </button>
           );
         })}

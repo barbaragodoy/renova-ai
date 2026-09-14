@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 
@@ -552,3 +553,411 @@ if __name__ == "__main__":
             print(f"  ERRO {nome}: {type(e).__name__}: {e}")
     print(f"\n{len(testes) - falhas} de {len(testes)} passaram")
     sys.exit(1 if falhas else 0)
+
+
+# --------------------------------------------------------------- continuidade
+
+
+def test_extrai_a_linha_de_sugestoes_e_limpa_o_texto():
+    texto = "Raquel está há 14 meses sem visita.\nSUGESTOES: Perfil da Raquel | Produtos para a Raquel"
+    limpo, sugestoes = composicao.extrair_sugestoes(texto)
+    assert limpo == "Raquel está há 14 meses sem visita."
+    assert sugestoes == ["Perfil da Raquel", "Produtos para a Raquel"]
+
+
+def test_sem_linha_de_sugestoes_o_texto_volta_intacto():
+    limpo, sugestoes = composicao.extrair_sugestoes("Só a resposta, sem sugestão.")
+    assert limpo == "Só a resposta, sem sugestão."
+    assert sugestoes == []
+
+
+def test_sugestoes_repetidas_e_vazias_sao_descartadas():
+    _, sugestoes = composicao.extrair_sugestoes("x\nSUGESTOES: a | | A | b | c | d")
+    assert sugestoes == ["a", "b", "c"]
+
+
+def test_numero_dentro_de_sugestao_nao_e_acusado_pelo_verificador():
+    # "3 meses" na sugestão não é afirmação sobre o dado. Sem a extração antes
+    # do verificador, a resposta inteira seria degradada por um número que o
+    # usuário nem vê como texto.
+    modelo = ModeloFalso([
+        {"role": "assistant",
+         "content": "Nenhuma visita pendente.\nSUGESTOES: Quem está sem visita há 3 meses?"},
+    ])
+    orq = Orquestrador(CTX, ExecutorFalso(), modelo)
+    r = orq.responder("tenho pendências?")
+    assert not r.degradada
+    assert r.texto == "Nenhuma visita pendente."
+    assert r.sugestoes == ["Quem está sem visita há 3 meses?"]
+
+
+def test_o_historico_entra_entre_o_system_e_a_pergunta():
+    """Reproduz o fluxo real: o turno anterior guardado na memória carrega as
+    sugestões que saíram do texto da tela, no formato que o router grava."""
+    from backend.app.agente import memoria
+    memoria.esquecer("rep@ache.com.br|c-hist")
+    # turno anterior, como o router grava depois de uma resposta do agente
+    memoria.registrar("rep@ache.com.br|c-hist", "user", "o que você faz?")
+    memoria.registrar(
+        "rep@ache.com.br|c-hist", "assistant",
+        "Posso ajudar de algumas formas.\nSugestões oferecidas: Buscar um médico | Visitas pendentes",
+    )
+    modelo = ModeloFalso([{"role": "assistant", "content": "ok"}])
+    orq = Orquestrador(CTX, ExecutorFalso(), modelo)
+    orq.responder("quero a segunda opção",
+                  historico=memoria.historico("rep@ache.com.br|c-hist"))
+    enviadas = modelo.recebido[0]
+    papeis = [m["role"] for m in enviadas]
+    assert papeis == ["system", "user", "assistant", "user"]
+    assert enviadas[-1]["content"] == "quero a segunda opção"
+    # o modelo enxerga as opções a que "a segunda" se refere
+    assert "Visitas pendentes" in enviadas[2]["content"]
+    memoria.esquecer("rep@ache.com.br|c-hist")
+
+
+def test_historico_malformado_e_ignorado_sem_quebrar():
+    modelo = ModeloFalso([{"role": "assistant", "content": "ok"}])
+    orq = Orquestrador(CTX, ExecutorFalso(), modelo)
+    r = orq.responder("oi", historico=[
+        {"role": "tool", "content": "não entra"},
+        {"role": "user", "content": "  "},
+        "lixo",
+        {"role": "user", "content": "essa entra"},
+    ])
+    enviadas = modelo.recebido[0]
+    assert [m["role"] for m in enviadas] == ["system", "user", "user"]
+    assert r.texto == "ok"
+
+
+def test_memoria_guarda_devolve_e_esquece():
+    from backend.app.agente import memoria
+    memoria.esquecer("c1")
+    memoria.registrar("c1", "user", "pergunta um")
+    memoria.registrar("c1", "assistant", "resposta um")
+    assert memoria.historico("c1") == [
+        {"role": "user", "content": "pergunta um"},
+        {"role": "assistant", "content": "resposta um"},
+    ]
+    memoria.esquecer("c1")
+    assert memoria.historico("c1") == []
+
+
+def test_memoria_sem_id_nao_guarda_nada():
+    from backend.app.agente import memoria
+    memoria.registrar("", "user", "não deve entrar")
+    assert memoria.historico("") == []
+
+
+def test_memoria_respeita_o_teto_de_conversas():
+    """A revisão de 31/08/2026 mostrou o dicionário estabilizando em 501 com o
+    teto declarado de 500. A remoção agora acontece depois da inserção."""
+    from backend.app.agente import memoria
+    import backend.app.agente.memoria as m
+    original = dict(m._conversas)
+    try:
+        m._conversas.clear()
+        for i in range(memoria.MAX_CONVERSAS + 7):
+            memoria.registrar(f"conv-{i}", "user", "oi")
+        assert len(m._conversas) == memoria.MAX_CONVERSAS
+        # a mais recente sobrevive; a mais antiga caiu
+        assert f"conv-{memoria.MAX_CONVERSAS + 6}" in m._conversas
+        assert "conv-0" not in m._conversas
+    finally:
+        m._conversas.clear()
+        m._conversas.update(original)
+
+
+def test_memoria_corta_os_turnos_mais_antigos():
+    from backend.app.agente import memoria
+    memoria.esquecer("c2")
+    for i in range(memoria.MAX_TURNOS * 2 + 5):
+        memoria.registrar("c2", "user", f"turno {i}")
+    turnos = memoria.historico("c2")
+    assert len(turnos) == memoria.MAX_TURNOS * 2
+    assert turnos[-1]["content"] == f"turno {memoria.MAX_TURNOS * 2 + 4}"
+    memoria.esquecer("c2")
+
+
+def test_memoria_nao_revive_conversa_vencida():
+    """Achado da segunda rodada de 31/08/2026: a leitura atualizava o toque e
+    a conversa vencida nunca expirava. O TTL agora vale também na leitura."""
+    from backend.app.agente import memoria
+    import backend.app.agente.memoria as m
+    memoria.esquecer("c-ttl")
+    memoria.registrar("c-ttl", "user", "oi")
+    with m._trava:
+        m._conversas["c-ttl"]["tocada_em"] -= memoria.TTL_SEGUNDOS + 1
+    assert memoria.historico("c-ttl") == []
+    with m._trava:
+        assert "c-ttl" not in m._conversas
+
+
+def test_conversa_serializa_o_ciclo_da_mesma_chave():
+    """Duas threads na mesma conversa nunca se intercalam: cada seção crítica
+    grava começo e fim, e os pares saem inteiros."""
+    import threading
+    import time
+    from backend.app.agente import memoria
+    memoria.esquecer("c-serial")
+    eventos: list[str] = []
+
+    def ciclo(nome: str) -> None:
+        with memoria.conversa("c-serial"):
+            eventos.append(f"{nome}:inicio")
+            # o sono força a troca de thread: sem a trava, os pares
+            # intercalariam com certeza prática e o teste falharia
+            time.sleep(0.002)
+            eventos.append(f"{nome}:fim")
+
+    threads = [threading.Thread(target=ciclo, args=(f"t{i}",)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(eventos) == 12
+    for i in range(0, 12, 2):
+        assert eventos[i].endswith(":inicio")
+        assert eventos[i + 1] == eventos[i].replace(":inicio", ":fim")
+    memoria.esquecer("c-serial")
+
+
+def test_conversa_readquire_quando_a_trava_foi_trocada():
+    """A janela da quarta rodada: a trava pode sair do registro entre a
+    devolução e o acquire. Sem a reconferência, a thread entraria pela trava
+    velha; o teste prova que ela fica presa na nova até a liberação."""
+    import threading
+    import time
+    from backend.app.agente import memoria
+    import backend.app.agente.memoria as m
+    memoria.esquecer("c-troca")
+    velha = threading.Lock()
+    velha.acquire()  # simula outra requisição em voo com um objeto que saiu do registro
+    with m._trava:
+        m._travas_por_conversa["c-troca"] = velha
+    resultado: list[str] = []
+
+    def tenta() -> None:
+        with memoria.conversa("c-troca"):
+            resultado.append("entrou")
+
+    t = threading.Thread(target=tenta)
+    t.start()
+    time.sleep(0.05)  # a thread fica bloqueada na velha
+    # troca a trava no registro e segura a nova antes de liberar a velha
+    nova = threading.Lock()
+    nova.acquire()
+    with m._trava:
+        m._travas_por_conversa["c-troca"] = nova
+    velha.release()
+    time.sleep(0.15)
+    # sem a reconferência, a thread teria entrado pela velha; com ela, a
+    # thread detectou a troca e está presa na nova
+    assert resultado == []
+    assert t.is_alive()
+    nova.release()
+    t.join(timeout=5)
+    assert resultado == ["entrou"]
+    memoria.esquecer("c-troca")
+
+
+def test_registro_de_travas_nao_cresce_sem_limite():
+    """O invariante é de pertencimento: trava morta, sem conversa viva e sem
+    uso, não sobrevive à aquisição seguinte. Com chaves todas mortas, o
+    registro carrega no máximo a trava em voo e a anterior ainda não varrida."""
+    from backend.app.agente import memoria
+    import backend.app.agente.memoria as m
+    with m._trava:
+        travas_originais = dict(m._travas_por_conversa)
+        m._travas_por_conversa.clear()
+    try:
+        pico = 0
+        for i in range(200):
+            with memoria.conversa(f"trava-{i}"):
+                with m._trava:
+                    pico = max(pico, len(m._travas_por_conversa))
+        assert pico <= 2
+    finally:
+        with m._trava:
+            m._travas_por_conversa.clear()
+            m._travas_por_conversa.update(travas_originais)
+
+
+def test_trava_de_conversa_viva_sobrevive():
+    """Conversa com memória viva mantém a trava no registro entre aquisições:
+    o pertencimento segue `_conversas`, que já tem TTL e teto próprios."""
+    from backend.app.agente import memoria
+    import backend.app.agente.memoria as m
+    with m._trava:
+        travas_originais = dict(m._travas_por_conversa)
+        m._travas_por_conversa.clear()
+    try:
+        with memoria.conversa("c-viva"):
+            memoria.registrar("c-viva", "user", "oi")
+        for i in range(20):
+            with memoria.conversa(f"morta-{i}"):
+                pass
+        with m._trava:
+            assert "c-viva" in m._travas_por_conversa
+    finally:
+        memoria.esquecer("c-viva")
+        with m._trava:
+            m._travas_por_conversa.clear()
+            m._travas_por_conversa.update(travas_originais)
+
+
+def test_trava_em_uso_nunca_e_removida_pela_contencao():
+    from backend.app.agente import memoria
+    import backend.app.agente.memoria as m
+    with m._trava:
+        travas_originais = dict(m._travas_por_conversa)
+        m._travas_por_conversa.clear()
+    try:
+        with memoria.conversa("trava-segurada"):
+            for i in range(memoria.MAX_CONVERSAS + 50):
+                with memoria.conversa(f"enche-{i}"):
+                    pass
+            with m._trava:
+                assert "trava-segurada" in m._travas_por_conversa
+    finally:
+        with m._trava:
+            m._travas_por_conversa.clear()
+            m._travas_por_conversa.update(travas_originais)
+
+
+# ------------------------------------------------------------- observações
+
+
+def test_observacoes_filtram_setor_efetiva_e_limitam():
+    """A consulta injeta o setor autenticado, exige visita efetiva e limita.
+
+    O texto da observação é conteúdo, nunca entra no SQL: só setor e UFCRM
+    viajam como parâmetro."""
+    from backend.app.agente.ferramentas import Ferramentas, LIMITE_OBSERVACOES
+    ex = ExecutorFalso([[{"DATA_VISITA": "14/08/2026", "VISITA_TIPO": "PRESENCIAL",
+                          "COMENTARIOS": "PEDIU AMOSTRA DE FUSOR"}]])
+    f = Ferramentas(CTX, ex)
+    with patch(
+        "backend.app.db.sql_dialect.get_settings",
+        return_value=type("Settings", (), {"data_source": "local"})(),
+    ):
+        linhas = f.observacoes_do_medico(" rj0462552 ")
+    assert linhas[0]["COMENTARIOS"] == "PEDIU AMOSTRA DE FUSOR"
+    sql, params = ex.chamadas[0]
+    # Le pela view, e nao pela tabela de origem: medido em 04/09/2026, o
+    # service principal do portal nao e membro de nenhum grupo
+    # `user-renovai-*` e a leitura direta da dmn_produtividade_dev falha com
+    # INSUFFICIENT_PERMISSIONS. A view roda com a permissao do dono e ja
+    # filtra VISITA_EFETIVA, por isso o filtro saiu do SQL daqui.
+    assert "vw_visitacao_comentarios" in sql
+    assert "dmn_produtividade_dev" not in sql
+    assert "VISITA_EFETIVA" not in sql
+    # setor e ufcrm por parametro nomeado, nunca interpolados
+    assert "v.SETOR = :setor AND v.UFCRM = :ufcrm" in sql
+    # ordena a coluna original: o alias da projecao e texto dd/MM/yyyy e
+    # ordenaria 31/01/2025 acima de 01/12/2026
+    assert "ORDER BY v.DATA_VISITA DESC" in sql
+    assert "TO_CHAR(v.DATA_VISITA, 'DD/MM/YYYY')" in sql
+    assert "DATE_FORMAT" not in sql
+    assert f"LIMIT {LIMITE_OBSERVACOES}" in sql
+    assert params == {"setor": CTX.setor, "ufcrm": "RJ0462552"}
+
+
+def test_observacoes_usam_date_format_no_databricks():
+    from backend.app.agente.ferramentas import Ferramentas
+
+    ex = ExecutorFalso([{"DATA_VISITA": "14/08/2026"}])
+    with patch(
+        "backend.app.db.sql_dialect.get_settings",
+        return_value=type("Settings", (), {"data_source": "databricks"})(),
+    ):
+        Ferramentas(CTX, ex).observacoes_do_medico("RJ0462552")
+
+    sql, _ = ex.chamadas[0]
+    assert "DATE_FORMAT(v.DATA_VISITA, 'dd/MM/yyyy')" in sql
+    assert "TO_CHAR" not in sql
+
+
+def test_numero_de_observacao_nao_autoriza_afirmacao():
+    """"Retornar em 15 dias" no comentário autorizava o modelo a escrever
+    "15%" sobre participação: o verificador guarda só o valor, sem a unidade.
+    COMENTARIOS saiu da autoridade numérica. Achado da revisão de 02/09/2026."""
+    ch = composicao.Chamada(chamada_id="f1_0", ferramenta="observacoes_do_medico",
+                 linhas=[{"DATA_VISITA": "14/08/2026", "VISITA_TIPO": "PRESENCIAL",
+                          "COMENTARIOS": "RETORNAR EM 15 DIAS"}],
+                 resultado_hash="h", parametros="{}", latencia_ms=1, sucesso=True)
+    veredito = composicao.verificar("A participação está em 15%.", [ch])
+    assert not veredito.aprovado
+
+
+def test_data_da_observacao_continua_autorizada():
+    """A data formatada sai do campo DATA_VISITA, que mantém autoridade: citar
+    "na visita de 14/08/2026" é fiel ao retorno."""
+    ch = composicao.Chamada(chamada_id="f1_0", ferramenta="observacoes_do_medico",
+                 linhas=[{"DATA_VISITA": "14/08/2026", "VISITA_TIPO": "PRESENCIAL",
+                          "COMENTARIOS": "PEDIU AMOSTRA"}],
+                 resultado_hash="h", parametros="{}", latencia_ms=1, sucesso=True)
+    veredito = composicao.verificar("Na visita de 14/08/2026 ele pediu amostra.", [ch])
+    assert veredito.aprovado
+
+
+def test_observacoes_estao_no_catalogo_do_modelo():
+    from backend.app.agente.ferramentas import Ferramentas
+    f = Ferramentas(CTX, ExecutorFalso())
+    nomes = [d.nome for d in f.catalogo()]
+    assert "observacoes_do_medico" in nomes
+    assert len(nomes) == 7
+    declarada = next(d for d in f.catalogo() if d.nome == "observacoes_do_medico")
+    # setor nao e parametro: o modelo nao tem onde escrever setor de outro
+    assert "setor" not in str(declarada.declaracao())
+
+
+def test_percentual_exige_origem_com_percentual():
+    """O golpe de unidade da segunda rodada de 02/09/2026: "15" numa data ou
+    cinco linhas de retorno autorizavam "15%". Percentual na resposta agora
+    exige ocorrência com % na origem."""
+    ch = composicao.Chamada(
+        chamada_id="f1_0", ferramenta="observacoes_do_medico",
+        linhas=[{"DATA_VISITA": "15/08/2026", "VISITA_TIPO": "PRESENCIAL",
+                 "COMENTARIOS": "PEDIU AMOSTRA"}],
+        resultado_hash="h", parametros="{}", latencia_ms=1, sucesso=True)
+    assert not composicao.verificar("A participação está em 15%.", [ch]).aprovado
+    # a mesma data continua autorizada sem o sinal de percentual
+    assert composicao.verificar("Na visita de 15/08/2026 ele pediu amostra.", [ch]).aprovado
+
+
+def test_contagem_de_linhas_nao_autoriza_percentual():
+    linhas = [{"NOME_MEDICO": f"M{i}"} for i in range(5)]
+    ch = composicao.Chamada(chamada_id="f1_0", ferramenta="buscar_medico",
+                            linhas=linhas, resultado_hash="h", parametros="{}",
+                            latencia_ms=1, sucesso=True)
+    assert composicao.verificar("Encontrei 5 profissionais.", [ch]).aprovado
+    assert not composicao.verificar("A participação é 5%.", [ch]).aprovado
+
+
+def test_percentual_formatado_continua_autorizado():
+    """O caminho legítimo não muda: "3,6%" vindo de _formatar_percentual tem o
+    % na origem e segue aprovado."""
+    ch = composicao.Chamada(chamada_id="f1_0", ferramenta="participacao_no_agrupamento",
+                            linhas=[{"PRODUTO": "FUSOR", "PARTICIPACAO": "3,6%"}],
+                            resultado_hash="h", parametros="{}", latencia_ms=1, sucesso=True)
+    assert composicao.verificar("FUSOR tem 3,6% de participação.", [ch]).aprovado
+
+
+def test_espaco_antes_do_percentual_nao_contorna_a_unidade():
+    """"15 %" com espaço driblava a detecção e a data voltava a autorizar.
+    Achado da terceira rodada de 02/09/2026."""
+    ch = composicao.Chamada(
+        chamada_id="f1_0", ferramenta="observacoes_do_medico",
+        linhas=[{"DATA_VISITA": "15/08/2026", "COMENTARIOS": "PEDIU AMOSTRA"}],
+        resultado_hash="h", parametros="{}", latencia_ms=1, sucesso=True)
+    assert not composicao.verificar("A participação está em 15 %.", [ch]).aprovado
+
+
+def test_percentual_pequeno_tambem_exige_origem():
+    """0, 1 e 2 são livres como quantidade, nunca como percentual: "1%" sem
+    origem com unidade é reprovado, "1 produto" continua livre."""
+    ch = composicao.Chamada(chamada_id="f1_0", ferramenta="buscar_medico",
+                            linhas=[{"NOME_MEDICO": "M"}], resultado_hash="h",
+                            parametros="{}", latencia_ms=1, sucesso=True)
+    assert not composicao.verificar("A participação é 1%.", [ch]).aprovado
+    assert composicao.verificar("Encontrei 1 profissional.", [ch]).aprovado

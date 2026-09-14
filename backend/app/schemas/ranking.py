@@ -17,6 +17,19 @@ class MedicoRanking(BaseModel):
     cidade: Optional[str] = None
     uf: Optional[str] = None
 
+    # Recomendação pendente para este médico, quando existe. Sai de
+    # tb_recomendacoes_painel_historico, e **não** da coluna `recomendacao` da
+    # tb_ranking_medicos_validacao: a primeira é o registro sobre o qual se
+    # age, a segunda é uma classificação calculada. As duas divergem quando a
+    # recomendação já foi aceita, desconsiderada, expirou ou nunca foi gerada,
+    # e é a divergência que faria a tela oferecer ação inexistente.
+    id_recomendacao_pendente: Optional[str] = None
+    tipo_recomendacao_pendente: Optional[str] = None
+    # Estado da recomendação do médico neste ciclo, mesmo quando já resolvida.
+    # Sai sempre, e é o que permite a linha mostrar o que o propagandista já
+    # decidiu em vez de voltar a exibir só o selo de painel.
+    status_recomendacao: Optional[str] = None
+
 
 class ListaRankingResponse(BaseModel):
     ciclo: str

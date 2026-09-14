@@ -8,10 +8,10 @@
  * Quando o Entra ID entrar, esta camada é substituída pelo cache de token da
  * própria MSAL e este arquivo deixa de guardar identidade.
  *
- * Pendente antes de produção: a expiração do token não é guardada aqui, então
- * a interface continua exibindo o usuário como autenticado depois dos 60
- * minutos. Falta guardar a validade, limpar a sessão ao receber 401 e devolver
- * a pessoa ao login com um aviso.
+ * A validade do token é guardada em `expiraEm` e conferida na leitura: sessão
+ * vencida é descartada como se não existisse, e a pessoa volta ao login. O
+ * complemento está em `lib/api.ts`, que trata o 401 do servidor: o relógio do
+ * navegador pode estar errado, e o token pode ser invalidado antes do prazo.
  */
 
 const CHAVE = "renovai.sessao";
@@ -22,6 +22,10 @@ export interface Sessao {
   setor: string;
   /** Bearer token devolvido pelo login, enviado nas chamadas seguintes. */
   token?: string;
+  /** Instante em que o token perde a validade, em milissegundos de época.
+   *  O backend devolve `expira_em` como duração em segundos; a conversão
+   *  para instante absoluto acontece no login. */
+  expiraEm?: number;
 }
 
 export function lerSessao(): Sessao | null {
@@ -29,7 +33,14 @@ export function lerSessao(): Sessao | null {
   if (!bruto) return null;
   try {
     const dados = JSON.parse(bruto) as Sessao;
-    return dados.email && dados.setor ? dados : null;
+    if (!dados.email || !dados.setor) return null;
+    // Sessão vencida não é sessão. Sem esta conferência a interface seguia
+    // exibindo a pessoa como autenticada e toda chamada falhava em silêncio.
+    if (dados.expiraEm !== undefined && Date.now() >= dados.expiraEm) {
+      sessionStorage.removeItem(CHAVE);
+      return null;
+    }
+    return dados;
   } catch {
     sessionStorage.removeItem(CHAVE);
     return null;

@@ -2,18 +2,17 @@ import { useEffect, useState } from "react";
 import { CheckCircle, Star, X } from "lucide-react";
 import {
   ApiError,
-  desconsiderar,
   listarDesconsideradas,
   listarEntrada,
   listarRevisao,
-  MOTIVOS_DESCONSIDERACAO,
+  obterPerfil,
   reverter,
   type DesconsideradaItem,
-  type DesconsiderarRequest,
-  type MotivoDesconsideracao,
   type RecomendacaoItem,
 } from "@/lib/api";
 import { Alert } from "@/components/ui/alert";
+import { rotuloMotivoDesconsideracao } from "@/lib/motivos";
+import { GavetaDeAcao } from "@/components/GavetaDeAcao";
 
 /**
  * Aba Recomendações do PedAI.
@@ -27,9 +26,20 @@ import { Alert } from "@/components/ui/alert";
  * (`renovai-local`), depois da comparação registrada em
  * docs/context/known-issues.md:
  *
- * 1. A lista mostra todas as pendências do ciclo, não seis exemplos. As cinco
- *    primeiras de cada tipo ganham selo de prioridade, porque a ordenação do
- *    backend já vem do ranking do setor (decisão de George em 10/08/2026).
+ * 1. A lista mostra todas as pendências do ciclo, paginadas de 50 em 50, com
+ *    o total no cabeçalho. As primeiras de cada tipo ganham selo de
+ *    prioridade, quantas o backend disser em `destaques`.
+ *
+ *    **Esta linha era falsa até 04/09/2026.** O backend cortava em 5 e o resto
+ *    não aparecia: medido no ciclo daquela data, a mediana era de 132
+ *    pendências por pessoa e tipo, e o máximo 629, então mais de 96% ficavam
+ *    invisíveis sem aviso. O corte vinha de um combinado antigo de 5 inclusões
+ *    e 5 exclusões por semana, que virou limite de lista sem querer. George
+ *    decidiu em 04/09/2026 mostrar todas e manter as 5 primeiras destacadas
+ *    como prioridade da semana.
+ *
+ *    A ordenação é a do ranking do setor: entrada da melhor posição para a
+ *    pior, exclusão da pior para a melhor.
  * 2. Botão "Desconsiderar recomendação" e a gaveta de confirmação foram
  *    adicionados nesta revisão — a versão do George não tinha, porque na
  *    época o endpoint respondia 501. Hoje `POST
@@ -50,6 +60,10 @@ import { Alert } from "@/components/ui/alert";
  *  portal, entra cru pelo mesmo motivo das cores do avatar da aba Usuário. */
 const LARANJA_EXCLUSAO = "#F59E0B";
 
+/** Fallback do destaque, se o backend não mandar `destaques`. O número real
+ *  vem da resposta, para a regra viver num lugar só: até 04/09/2026 este 5
+ *  cortava a lista inteira no backend, e hoje ele só marca quantas ficam em
+ *  destaque como prioridade da semana. */
 const QTD_PRIORIDADE = 5;
 
 type TipoAba = "entrada" | "exclusao";
@@ -77,7 +91,6 @@ const MOTIVO_AMBOS = "REVISAO_RANKING_SETOR_ACIMA_LIMITE_E_SEM_VISITA_3_MESES";
 function fraseDaVisita(meses?: number | null): string {
   return meses ? `não recebe visita há ${meses} meses` : "não tem visita registrada";
 }
-
 function resumoDoCard(item: RecomendacaoItem, tipo: TipoAba): string {
   if (tipo === "entrada") {
     return "Médico com forte prescrição no setor e ainda fora do seu painel.";
@@ -151,29 +164,11 @@ function capitalizarNome(nome: string): string {
 function formatarPontos(valor?: number | null): string {
   if (valor === null || valor === undefined) return "—";
   return `${valor.toLocaleString("pt-BR", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    maximumFractionDigits: 0,
   })} pts`;
 }
 
-/** Rótulo em português de cada motivo fixo de desconsideração — espelha
- *  MOTIVOS_DESCONSIDERACAO em lib/api.ts / backend/app/schemas/recomendacoes.py. */
-const ROTULO_MOTIVO: Record<MotivoDesconsideracao, string> = {
-  MEDICO_NAO_ATUA_MAIS: "Médico não atua mais",
-  MEDICO_APOSENTADO: "Médico aposentado",
-  MEDICO_FALECIDO: "Médico falecido",
-  SEM_INTERESSE_COMERCIAL: "Sem interesse comercial",
-  OUTROS: "Outros",
-};
 
-/** O backend formata o motivo "OUTROS" como "OUTROS: <texto informado>"
- *  (ver _formatar_motivo_desconsideracao em routers/recomendacoes.py) — já
- *  vem legível, só tira o prefixo. Os demais motivos são os códigos fixos
- *  de MOTIVOS_DESCONSIDERACAO, traduzidos via ROTULO_MOTIVO. */
-function rotuloMotivoDesconsideracao(bruto: string): string {
-  if (bruto.startsWith("OUTROS:")) return bruto.replace(/^OUTROS:\s*/, "").trim();
-  return ROTULO_MOTIVO[bruto as MotivoDesconsideracao] ?? bruto;
-}
 
 function formatarData(iso: string): string {
   const data = new Date(iso);
@@ -195,6 +190,17 @@ interface RecomendacoesProps {
 export function Recomendacoes({ email, setor }: RecomendacoesProps) {
   const [entrada, setEntrada] = useState<RecomendacaoItem[]>([]);
   const [exclusao, setExclusao] = useState<RecomendacaoItem[]>([]);
+  // Quantas pendências existem no ciclo, contra quantas já foram carregadas.
+  // A mediana é de 132 por pessoa e tipo, e o máximo medido é 629: sem
+  // paginação a tela receberia tudo de uma vez.
+  const [totalEntrada, setTotalEntrada] = useState(0);
+  const [totalExclusao, setTotalExclusao] = useState(0);
+  const [destaques, setDestaques] = useState(QTD_PRIORIDADE);
+  const [carregandoMais, setCarregandoMais] = useState(false);
+  // Quem é a pessoa e onde ela atua, para a linha do cabeçalho. Chega depois
+  // e não segura a tela: até responder, o cabeçalho mostra só o setor, que já
+  // vem da sessão.
+  const [ondeAtua, setOndeAtua] = useState<string | null>(null);
   const [aba, setAba] = useState<Aba>("entrada");
   const [detalhe, setDetalhe] = useState<RecomendacaoItem | null>(null);
   const [desconsiderando, setDesconsiderando] = useState<RecomendacaoItem | null>(null);
@@ -218,8 +224,37 @@ export function Recomendacoes({ email, setor }: RecomendacoesProps) {
       ([respEntrada, respRevisao]) => {
         setEntrada(respEntrada.recomendacoes);
         setExclusao(respRevisao.recomendacoes);
+        setTotalEntrada(respEntrada.total);
+        setTotalExclusao(respRevisao.total);
+        // `??` e nao `||`: destaques igual a zero e resposta valida, quer
+        // dizer nenhuma em destaque, e o `||` viraria cinco.
+        setDestaques(respEntrada.destaques ?? QTD_PRIORIDADE);
       },
     );
+  }
+
+  /** Próxima página da aba ativa. O `offset` sai do que já está na tela, e
+   *  não de um contador de página: assim uma recomendação resolvida entre
+   *  duas cargas não faz a próxima pular um item. */
+  function carregarMais() {
+    const daEntrada = aba === "entrada";
+    const buscar = daEntrada ? listarEntrada : listarRevisao;
+    const jaCarregadas = daEntrada ? entrada.length : exclusao.length;
+    setCarregandoMais(true);
+    buscar(email, jaCarregadas)
+      .then((resp) => {
+        const guardar = daEntrada ? setEntrada : setExclusao;
+        guardar((atuais) => [...atuais, ...resp.recomendacoes]);
+        (daEntrada ? setTotalEntrada : setTotalExclusao)(resp.total);
+      })
+      .catch((excecao) =>
+        setErro(
+          excecao instanceof ApiError
+            ? excecao.message
+            : "Não foi possível carregar mais recomendações.",
+        ),
+      )
+      .finally(() => setCarregandoMais(false));
   }
 
   useEffect(() => {
@@ -234,6 +269,26 @@ export function Recomendacoes({ email, setor }: RecomendacoesProps) {
         );
       })
       .finally(() => ativo && setCarregando(false));
+    return () => {
+      ativo = false;
+    };
+  }, [email]);
+
+  // O nome e o lugar vêm do perfil, não da sessão: a sessão guarda o setor,
+  // mas não cidade nem estado. Falha aqui não mostra nada e não atrapalha,
+  // porque a linha do cabeçalho é contexto e não conteúdo.
+  useEffect(() => {
+    let ativo = true;
+    obterPerfil(email)
+      .then((p) => {
+        if (!ativo) return;
+        const cidade = p.cidades?.[0];
+        const partes = [p.nome, cidade, p.uf].filter(Boolean);
+        setOndeAtua(partes.length ? partes.join(", ") : null);
+      })
+      .catch(() => {
+        /* silencioso: o cabeçalho fica só com o setor */
+      });
     return () => {
       ativo = false;
     };
@@ -268,6 +323,8 @@ export function Recomendacoes({ email, setor }: RecomendacoesProps) {
   }, [aba, email, jaCarregouArquivadas]);
 
   const lista = aba === "entrada" ? entrada : aba === "exclusao" ? exclusao : [];
+  const totalDaAba = aba === "entrada" ? totalEntrada : aba === "exclusao" ? totalExclusao : 0;
+  const totalPendente = totalEntrada + totalExclusao;
   // Evita depender de estreitamento de tipo de `aba` dentro de closures do
   // JSX (.map) — tipoAtual só é lido quando aba !== "arquivadas", garantido
   // pelo bloco condicional que envolve os cards de Entrada/Exclusão.
@@ -275,9 +332,33 @@ export function Recomendacoes({ email, setor }: RecomendacoesProps) {
 
   /** O id só existe numa das duas listas por vez — filtrar as duas é
    *  inofensivo e evita ter que saber de qual aba o item veio. */
+  /** Tira a recomendação resolvida da lista e do contador.
+   *
+   *  O total precisa cair junto: ele passou a ser a contagem real do ciclo, e
+   *  não o tamanho da lista, então sem isto o cabeçalho continuaria dizendo
+   *  "132 pendentes" depois de resolver uma, até a próxima carga. Também é o
+   *  que impede o botão "Carregar mais" de reaparecer sozinho quando a lista
+   *  encolhe abaixo do total. Achado da revisão independente de 04/09/2026. */
   function removerDaLista(id: string) {
-    setEntrada((atual) => atual.filter((item) => item.id_recomendacao !== id));
-    setExclusao((atual) => atual.filter((item) => item.id_recomendacao !== id));
+    // Decide fora do updater em qual lista o item está, e só então atualiza.
+    //
+    // A primeira versão disto chamava `setTotal...` de dentro do callback de
+    // `setEntrada`, o que parece prático e está errado: o updater precisa ser
+    // função pura, e o StrictMode do React o executa duas vezes em
+    // desenvolvimento justamente para expor impureza. O contador seria
+    // decrementado duas vezes numa remoção só. Achado da revisão independente
+    // de 04/09/2026.
+    const naEntrada = entrada.some((item) => item.id_recomendacao === id);
+    const naExclusao = exclusao.some((item) => item.id_recomendacao === id);
+
+    if (naEntrada) {
+      setEntrada((atual) => atual.filter((item) => item.id_recomendacao !== id));
+      setTotalEntrada((n) => Math.max(0, n - 1));
+    }
+    if (naExclusao) {
+      setExclusao((atual) => atual.filter((item) => item.id_recomendacao !== id));
+      setTotalExclusao((n) => Math.max(0, n - 1));
+    }
   }
 
   function abrirDesconsiderar(item: RecomendacaoItem) {
@@ -357,21 +438,55 @@ export function Recomendacoes({ email, setor }: RecomendacoesProps) {
         <p className="text-lg font-bold leading-tight text-[var(--color-foreground)]">
           Recomendações do seu setor
         </p>
+        {/* A frase "as decisões tomadas aqui não alteram o SalesFarma" saiu em
+            04/09/2026, por decisão de George: o destino é o aceite alimentar a
+            carga, e o aviso passa a contradizer o produto. Quem diz que não é
+            instantâneo é o texto do próprio aceite, "acontece na próxima
+            carga". */}
+        {/* Quem e onde, antes do código do setor. O protótipo mostra "Sugestões
+            de D. Porto Alegre, RS"; aqui entra também o nome da pessoa e o
+            setor, porque um propagandista pode atender mais de um e o código é
+            o que ele usa para se orientar. Confirmado com George em
+            04/09/2026. A base não tem nome legível para o setor, só o número. */}
         <p className="mt-1 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
-          Sugestões do setor S{setor}. As decisões tomadas aqui não alteram o
-          seu painel no SalesFarma automaticamente.
+          {ondeAtua ? `Sugestões de ${ondeAtua} · ` : "Sugestões do "}
+          Setor {setor}.
         </p>
+
+        {/* Total pendente em destaque, no desenho do protótipo do Figma Make.
+            Antes disso o número aparecia só como "5 pendentes" ao lado dos
+            filtros, e com a lista cortada em 5 ele nem era o total real. */}
+        {totalPendente > 0 && (
+          <div
+            className="mt-4 flex items-center gap-3 rounded-2xl px-4 py-3"
+            style={{ background: "var(--color-accent)" }}
+          >
+            <span className="text-2xl font-bold leading-none text-[var(--color-primary)]">
+              {totalPendente}
+            </span>
+            <p className="text-xs leading-snug text-[var(--color-primary)]">
+              {totalPendente === 1
+                ? "recomendação pendente aguardando sua avaliação"
+                : "recomendações pendentes aguardando sua avaliação"}
+            </p>
+          </div>
+        )}
 
         {/* Filtros + contagem */}
         <div className="mt-4 flex items-center justify-between gap-2">
           <div className="flex gap-1.5">
             {(
               [
-                { id: "entrada", rotulo: "Entrada" },
-                { id: "exclusao", rotulo: "Exclusão" },
-                { id: "arquivadas", rotulo: "Arquivadas" },
+                // Cada aba mostra o próprio número, decisão de George em
+                // 04/09/2026: com a lista inteira à vista, saber quantas são
+                // de entrada e quantas são de exclusão é o que orienta por
+                // onde começar. O histórico não conta, porque é consulta e
+                // não fila de trabalho.
+                { id: "entrada", rotulo: "Entrada", contagem: totalEntrada },
+                { id: "exclusao", rotulo: "Exclusão", contagem: totalExclusao },
+                { id: "arquivadas", rotulo: "Histórico", contagem: null },
               ] as const
-            ).map(({ id, rotulo }) => (
+            ).map(({ id, rotulo, contagem }) => (
               <button
                 key={id}
                 type="button"
@@ -392,13 +507,14 @@ export function Recomendacoes({ email, setor }: RecomendacoesProps) {
                 }
               >
                 {rotulo}
+                {contagem !== null && contagem > 0 ? ` (${contagem})` : ""}
               </button>
             ))}
           </div>
           <span className="flex-shrink-0 text-xs text-[var(--color-muted-foreground)]">
             {aba === "arquivadas"
-              ? `${desconsideradas.length} arquivada${desconsideradas.length !== 1 ? "s" : ""}`
-              : `${lista.length} pendente${lista.length !== 1 ? "s" : ""}`}
+              ? `${desconsideradas.length} no histórico`
+              : `${totalDaAba} pendente${totalDaAba !== 1 ? "s" : ""}`}
           </span>
         </div>
       </div>
@@ -420,15 +536,30 @@ export function Recomendacoes({ email, setor }: RecomendacoesProps) {
               </p>
             </div>
           ) : (
-            lista.map((item, indice) => (
-              <CardRecomendacao
-                key={item.id_recomendacao}
-                item={item}
-                tipo={tipoAtual}
-                prioridade={indice < QTD_PRIORIDADE}
-                onDetalhes={() => setDetalhe(item)}
-              />
-            ))
+            <>
+              {lista.map((item, indice) => (
+                <CardRecomendacao
+                  key={item.id_recomendacao}
+                  item={item}
+                  tipo={tipoAtual}
+                  prioridade={indice < destaques}
+                  onDetalhes={() => setDetalhe(item)}
+                />
+              ))}
+
+              {lista.length < totalDaAba && (
+                <button
+                  type="button"
+                  onClick={carregarMais}
+                  disabled={carregandoMais}
+                  className="w-full rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] py-3 text-sm font-semibold text-[var(--color-primary)] disabled:opacity-50"
+                >
+                  {carregandoMais
+                    ? "Carregando..."
+                    : `Carregar mais (${lista.length} de ${totalDaAba})`}
+                </button>
+              )}
+            </>
           )}
         </div>
       )}
@@ -478,13 +609,22 @@ export function Recomendacoes({ email, setor }: RecomendacoesProps) {
       )}
 
       {desconsiderando && (
-        <GavetaDesconsiderar
-          item={desconsiderando}
+        <GavetaDeAcao
+          nome={capitalizarNome(desconsiderando.nome_medico ?? desconsiderando.ufcrm)}
+          idRecomendacao={desconsiderando.id_recomendacao}
+          // O item da lista não carrega o tipo: ele vem da aba de onde a
+          // gaveta foi aberta, que é sempre entrada ou exclusão.
+          tipoRecomendacao={tipoAtual === "entrada" ? "ENTRADA_PAINEL" : "REVISAO_PAINEL"}
+          // A frase já está em mãos aqui: a lista traz o item inteiro, então
+          // não há detalhe a buscar, diferente do Ranking.
+          frase={motivoDoDetalhe(desconsiderando, tipoAtual)}
           onFechar={() => setDesconsiderando(null)}
-          onSucesso={() => {
-            removerDaLista(desconsiderando.id_recomendacao);
-            setDesconsiderando(null);
-          }}
+          // Só tira da lista. Fechar é do `onFechar`, acionado pelo botão da
+          // etapa "Pronto": fechar aqui pularia a confirmação que a gaveta
+          // mostra, e a aba Recomendações se comportaria diferente do Ranking,
+          // que é justamente o que a gaveta compartilhada existe para evitar.
+          // Achado da revisão independente de 04/09/2026.
+          onResolvida={() => removerDaLista(desconsiderando.id_recomendacao)}
         />
       )}
     </div>
@@ -508,8 +648,8 @@ function CardRecomendacao({
   return (
     <div
       className="overflow-hidden rounded-2xl bg-[var(--color-card)] shadow-sm"
-      // As cinco primeiras de cada tipo ganham a borda inteira na cor do tipo,
-      // além do selo; as demais mantêm só a faixa esquerda do protótipo.
+      // As destacadas ganham a borda inteira na cor do tipo, além do selo;
+      // as demais mantêm só a faixa esquerda do protótipo.
       style={{
         border: prioridade
           ? `1.5px solid ${cor}`
@@ -658,8 +798,13 @@ function CardArquivada({ item, revertendo, onReverter }: CardArquivadaProps) {
           <span className="rounded-full bg-[var(--color-muted)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-muted-foreground)]">
             Ciclo {item.ciclo_recomendacao}
           </span>
+          {/* A aba virou Histórico em 04/09/2026 e mostra as duas decisões, o
+              que muda o rótulo: uma recomendação aceita não foi
+              desconsiderada. A data vem de `data_decisao`, que o backend
+              unifica, com recuo para a antiga quando o servidor for velho. */}
           <span className="rounded-full bg-[var(--color-muted)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-muted-foreground)]">
-            Desconsiderada em {formatarData(item.data_desconsideracao)}
+            {item.status_recomendacao === "ACEITA" ? "Aceita em " : "Desconsiderada em "}
+            {formatarData(item.data_decisao ?? item.data_desconsideracao ?? "")}
           </span>
           {item.bloquear_novas_recomendacoes && (
             <span className="rounded-full border border-[var(--color-destructive)]/30 bg-[var(--color-destructive)]/8 px-2.5 py-1 text-[11px] font-medium text-[var(--color-destructive)]">
@@ -680,24 +825,33 @@ function CardArquivada({ item, revertendo, onReverter }: CardArquivadaProps) {
           </p>
         )}
 
-        <p className="text-xs leading-relaxed text-[var(--color-foreground)]">
-          <span className="font-semibold">Motivo da desconsideração:</span>{" "}
-          {rotuloMotivoDesconsideracao(item.motivo_desconsideracao)}
-        </p>
+        {item.status_recomendacao !== "ACEITA" && item.motivo_desconsideracao && (
+          <p className="text-xs leading-relaxed text-[var(--color-foreground)]">
+            <span className="font-semibold">Motivo da desconsideração:</span>{" "}
+            {rotuloMotivoDesconsideracao(item.motivo_desconsideracao)}
+          </p>
+        )}
 
-        <button
-          type="button"
-          onClick={onReverter}
-          disabled={revertendo}
-          className="w-full rounded-xl border py-2.5 text-sm font-semibold transition-colors active:opacity-80 disabled:opacity-50"
-          style={{
-            borderColor: "var(--color-primary)",
-            color: "var(--color-primary)",
-            background: "var(--color-card)",
-          }}
-        >
-          {revertendo ? "Revertendo…" : "Reverter"}
-        </button>
+        {/* Reverter só existe para desconsiderada. O backend recusa reverter
+            uma aceita, e desfazer o aceite tem regra própria: só vale enquanto
+            a recomendação não entrou em CSV de exportação, que ainda não
+            existe. Oferecer o botão aqui seria prometer uma ação que o
+            servidor devolve com erro. */}
+        {item.status_recomendacao !== "ACEITA" && (
+          <button
+            type="button"
+            onClick={onReverter}
+            disabled={revertendo}
+            className="w-full rounded-xl border py-2.5 text-sm font-semibold transition-colors active:opacity-80 disabled:opacity-50"
+            style={{
+              borderColor: "var(--color-primary)",
+              color: "var(--color-primary)",
+              background: "var(--color-card)",
+            }}
+          >
+            {revertendo ? "Revertendo…" : "Reverter"}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -834,185 +988,6 @@ function GavetaDetalhes({ item, tipo, onFechar, onDesconsiderar }: GavetaDetalhe
             className="w-full rounded-2xl bg-[var(--color-muted)] py-3 text-sm font-medium text-[var(--color-muted-foreground)]"
           >
             Fechar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-interface GavetaDesconsiderarProps {
-  item: RecomendacaoItem;
-  onFechar: () => void;
-  onSucesso: () => void;
-}
-
-/** Gaveta de confirmação de "Desconsiderar recomendação".
- *
- * Mesmo padrão visual de GavetaDetalhes (bottom sheet), reaproveitado por
- * consistência — não existe componente de modal/toggle compartilhado no
- * design system do portal hoje (ver components/ui/). O toggle de
- * "bloquear novas recomendações" é construído com as mesmas variáveis CSS
- * do tema, não um componente novo. */
-function GavetaDesconsiderar({ item, onFechar, onSucesso }: GavetaDesconsiderarProps) {
-  const [motivo, setMotivo] = useState<MotivoDesconsideracao | null>(null);
-  const [motivoOutrosTexto, setMotivoOutrosTexto] = useState("");
-  const [bloquear, setBloquear] = useState(false);
-  const [enviando, setEnviando] = useState(false);
-  const [erro, setErro] = useState<string | null>(null);
-
-  const podeConfirmar =
-    motivo !== null && (motivo !== "OUTROS" || motivoOutrosTexto.trim().length > 0);
-
-  function confirmar() {
-    if (!motivo) return;
-    setEnviando(true);
-    setErro(null);
-
-    const body: DesconsiderarRequest = {
-      motivo,
-      motivo_outros_texto: motivo === "OUTROS" ? motivoOutrosTexto.trim() : null,
-      bloquear_novas_recomendacoes: bloquear,
-    };
-
-    desconsiderar(item.id_recomendacao, body)
-      .then(() => onSucesso())
-      .catch((excecao) => {
-        setErro(
-          excecao instanceof ApiError
-            ? excecao.message
-            : "Não foi possível desconsiderar esta recomendação. Tente novamente.",
-        );
-        setEnviando(false);
-      });
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-end"
-      style={{ background: "rgba(0,0,0,0.45)" }}
-      onClick={enviando ? undefined : onFechar}
-    >
-      <div
-        className="flex max-h-[92vh] w-full flex-col rounded-t-3xl bg-[var(--color-card)]"
-        onClick={(evento) => evento.stopPropagation()}
-      >
-        <div className="flex-shrink-0 px-5 pb-3 pt-4">
-          <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-[var(--color-border)]" />
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <p className="text-lg font-bold leading-tight text-[var(--color-foreground)]">
-                Desconsiderar recomendação
-              </p>
-              <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">
-                {capitalizarNome(item.nome_medico)} · {item.ufcrm}
-              </p>
-            </div>
-            <button
-              type="button"
-              onClick={onFechar}
-              disabled={enviando}
-              aria-label="Fechar"
-              className="mt-0.5 flex-shrink-0 p-1 text-[var(--color-muted-foreground)] disabled:opacity-50"
-            >
-              <X className="h-5 w-5" aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-1 space-y-4 overflow-y-auto px-5 pb-2">
-          {erro && <Alert>{erro}</Alert>}
-
-          <div>
-            <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
-              Motivo
-            </p>
-            <div className="flex flex-wrap gap-2">
-              {MOTIVOS_DESCONSIDERACAO.map((codigo) => (
-                <button
-                  key={codigo}
-                  type="button"
-                  onClick={() => setMotivo(codigo)}
-                  disabled={enviando}
-                  className="rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-50"
-                  style={
-                    motivo === codigo
-                      ? {
-                          background: "var(--color-primary)",
-                          color: "white",
-                          borderColor: "var(--color-primary)",
-                        }
-                      : {
-                          background: "var(--color-card)",
-                          color: "var(--color-muted-foreground)",
-                          borderColor: "var(--color-border)",
-                        }
-                  }
-                >
-                  {ROTULO_MOTIVO[codigo]}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          {motivo === "OUTROS" && (
-            <div>
-              <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
-                Descreva o motivo
-              </p>
-              <textarea
-                value={motivoOutrosTexto}
-                onChange={(evento) => setMotivoOutrosTexto(evento.target.value)}
-                disabled={enviando}
-                rows={3}
-                maxLength={280}
-                placeholder="Explique o motivo..."
-                className="w-full rounded-xl border border-[var(--color-border)] bg-[var(--color-input-background)] p-3 text-sm text-[var(--color-foreground)] outline-none transition-shadow focus-visible:border-transparent focus-visible:ring-2 focus-visible:ring-[var(--color-primary)] disabled:opacity-60"
-              />
-            </div>
-          )}
-
-          <div>
-            <button
-              type="button"
-              onClick={() => setBloquear((atual) => !atual)}
-              disabled={enviando}
-              aria-pressed={bloquear}
-              className="flex w-full items-center justify-between rounded-xl bg-[var(--color-muted)] px-4 py-3 text-left disabled:opacity-50"
-            >
-              <span className="text-sm text-[var(--color-foreground)]">
-                Não recomendar este médico novamente
-              </span>
-              <span
-                className="flex h-6 w-11 flex-shrink-0 items-center rounded-full p-0.5 transition-colors"
-                style={{ background: bloquear ? "var(--color-primary)" : "var(--color-border)" }}
-              >
-                <span
-                  className="h-5 w-5 rounded-full bg-white shadow transition-transform"
-                  style={{ transform: bloquear ? "translateX(20px)" : "translateX(0)" }}
-                />
-              </span>
-            </button>
-          </div>
-        </div>
-
-        <div className="flex-shrink-0 space-y-2 border-t border-[var(--color-border)] px-5 py-4">
-          <button
-            type="button"
-            onClick={confirmar}
-            disabled={!podeConfirmar || enviando}
-            className="w-full rounded-2xl py-3 text-sm font-bold text-white transition-colors disabled:opacity-50"
-            style={{ background: "var(--color-destructive)" }}
-          >
-            {enviando ? "Desconsiderando…" : "Confirmar"}
-          </button>
-          <button
-            type="button"
-            onClick={onFechar}
-            disabled={enviando}
-            className="w-full rounded-2xl bg-[var(--color-muted)] py-3 text-sm font-medium text-[var(--color-muted-foreground)] disabled:opacity-50"
-          >
-            Cancelar
           </button>
         </div>
       </div>

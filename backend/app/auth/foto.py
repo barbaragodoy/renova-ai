@@ -69,6 +69,54 @@ def _cliente():
     )
 
 
+class _NuncaLevantada(Exception):
+    """Sentinela para o seletor de except quando o SDK não está instalado.
+
+    Sem ela, avaliar o seletor dispararia um segundo import no meio do
+    tratamento da exceção original, e a requisição escaparia sem o 502.
+    """
+
+
+def _nao_encontrado_no_volume():
+    """A classe NotFound do SDK, resolvida antes do try, nunca dentro dele.
+
+    Mesmo motivo do import dentro de _cliente(): o modo local não deve exigir
+    o SDK para carregar o módulo. Se o SDK não existir, devolve a sentinela,
+    que não casa com nada, e a falha real cai no except genérico do 502.
+    """
+    try:
+        from databricks.sdk.errors import NotFound
+    except Exception:  # noqa: BLE001
+        return _NuncaLevantada
+    return NotFound
+
+
+def _limpar_caminho_orfao(email: str, caminho_orfao: str, dt_observada) -> None:
+    """Anula FOTO_PATH somente se a linha ainda for a que o GET observou.
+
+    UPDATE condicional, e não o MERGE de _gravar_caminho, pelos motivos da
+    revisão independente de 01/09/2026: não inserir linha, não tocar outra
+    coluna, e não apagar foto gravada por um PUT concorrente.
+
+    A guarda compara caminho E dt_atualizacao. Só o caminho não basta: o PUT
+    regrava o mesmo `/{matricula}.{extensao}` quando a extensão repete, e a
+    referência recém-gravada seria apagada. Todo PUT atualiza dt_atualizacao
+    no MERGE, então a dupla funciona como versão da linha. IS NOT DISTINCT
+    FROM cobre o nulo nas duas fontes, Databricks e Postgres.
+    """
+    with get_engine().connect() as conn:
+        conn.execute(
+            text(
+                "UPDATE tb_perfil_portal SET foto_path = NULL "
+                "WHERE LOWER(rep_email) = LOWER(:email) "
+                "AND foto_path = :caminho "
+                "AND dt_atualizacao IS NOT DISTINCT FROM :dt"
+            ),
+            {"email": email, "caminho": caminho_orfao, "dt": dt_observada},
+        )
+        conn.commit()
+
+
 def _raiz_do_volume() -> str:
     s = get_settings()
     return f"/Volumes/{s.databricks_catalog}/{s.databricks_schema}/volume_renovai_dev"
@@ -187,7 +235,7 @@ def obter_foto(
         linha = (
             conn.execute(
                 text(
-                    "SELECT foto_path FROM tb_perfil_portal "
+                    "SELECT foto_path, dt_atualizacao FROM tb_perfil_portal "
                     "WHERE LOWER(rep_email) = LOWER(:email) LIMIT 1"
                 ),
                 {"email": autenticado},
@@ -197,12 +245,40 @@ def obter_foto(
         )
 
     caminho = linha["foto_path"] if linha else None
+    dt_observada = linha["dt_atualizacao"] if linha else None
     if not caminho:
         raise HTTPException(status_code=404, detail="Sem foto de perfil.")
 
+    nao_encontrado = _nao_encontrado_no_volume()
     try:
-        baixado = _cliente().files.download(caminho)
+        cliente = _cliente()
+        baixado = cliente.files.download(caminho)
         conteudo = baixado.contents.read()
+    except nao_encontrado:
+        # O SDK converte qualquer 404 em NotFound, então isto sozinho não
+        # separa "o arquivo sumiu" de "o volume inteiro sumiu". A raiz do
+        # volume desempata: se ela existe, o caminho é órfão e o contrato é
+        # "sem foto", com a coluna limpa para o estado se curar; se nem a
+        # raiz responde, o problema é de infraestrutura e a resposta é 502.
+        # Estado órfão visto em homologação em 01/09/2026.
+        try:
+            cliente.files.get_directory_metadata(_raiz_do_volume())
+        except Exception:  # noqa: BLE001
+            logger.exception("Volume indisponível ao ler a foto.")
+            raise HTTPException(
+                status_code=502,
+                detail="Não foi possível carregar a foto agora.",
+            )
+        logger.info("FOTO_PATH órfão de %s: %s não existe mais no volume.",
+                    autenticado, caminho)
+        try:
+            _limpar_caminho_orfao(autenticado, caminho, dt_observada)
+        except Exception:  # noqa: BLE001
+            logger.warning("Não foi possível limpar o FOTO_PATH órfão.",
+                           exc_info=True)
+        raise HTTPException(status_code=404, detail="Sem foto de perfil.")
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Falha ao ler a foto do volume.")
         raise HTTPException(

@@ -25,7 +25,7 @@ HISTÓRICO — NOME_MEDICO nulo em ENTRADA_PAINEL RESOLVIDO NA ORIGEM em
 com a tabela dimensional ranking_medicos_renovache_dim_medicos. O fallback
 em routers/recomendacoes.py permanece como defesa em profundidade
 permanente, mas não é mais exigido nos testes de conteúdo — ver
-test_entrada_ordenada_por_soma_pontuacao_desc.
+test_entrada_ordenada_por_posicao_ranking_asc.
 """
 import pytest
 from fastapi.testclient import TestClient
@@ -129,8 +129,9 @@ def test_entrada_email_real_lista_coerente():
     data = resp.json()
     assert data["tipo"] == "ENTRADA_PAINEL"
     assert isinstance(data["recomendacoes"], list)
-    assert data["total"] == len(data["recomendacoes"])
-    assert len(data["recomendacoes"]) <= 5
+    assert data["total"] >= len(data["recomendacoes"])
+    assert len(data["recomendacoes"]) <= 50
+    assert data["destaques"] == 5
     for item in data["recomendacoes"]:
         assert item["id_recomendacao"]
         assert item["nome_medico"]
@@ -138,7 +139,7 @@ def test_entrada_email_real_lista_coerente():
         assert item["ciclo_referencia"]
 
 
-def test_entrada_ordenada_por_soma_pontuacao_desc():
+def test_entrada_ordenada_por_posicao_ranking_asc():
     """NOME_MEDICO estava nulo em 100% das linhas reais de ENTRADA_PAINEL
     até 2026-07-30 (ver docs/context/known-issues.md); Hugo corrigiu na
     origem em 2026-07-31 via COALESCE com a tabela dimensional
@@ -146,8 +147,8 @@ def test_entrada_ordenada_por_soma_pontuacao_desc():
     aplicado em routers/recomendacoes.py (_aplicar_fallback_nome_medico)
     permanece no código como defesa em profundidade permanente, não é mais
     esperado aparecer nos dados atuais — por isso não exigimos aqui que
-    apareça, só que nome_medico nunca venha vazio/None e que a ordenação
-    continue correta."""
+    apareça, só que nome_medico nunca venha vazio/None e que a ordenação por
+    posição continue correta."""
     ciclo = _ciclo_atual()
     email = _rep_elegivel("ENTRADA_PAINEL", ciclo)
     resp = CLIENT.get(
@@ -156,8 +157,8 @@ def test_entrada_ordenada_por_soma_pontuacao_desc():
     assert resp.status_code == 200
     itens = resp.json()["recomendacoes"]
     assert itens, "Rep elegível via query direta à fonte, mas o endpoint devolveu lista vazia."
-    pontuacoes = [i["soma_pontuacao"] for i in itens if i["soma_pontuacao"] is not None]
-    assert pontuacoes == sorted(pontuacoes, reverse=True)
+    posicoes = [i["posicao_ranking"] for i in itens if i["posicao_ranking"] is not None]
+    assert posicoes == sorted(posicoes)
     for item in itens:
         assert item["nome_medico"], "nome_medico não pode vir vazio/None no payload — fallback deveria ter sido aplicado."
 
@@ -169,8 +170,9 @@ def test_revisao_email_real_lista_coerente():
     data = resp.json()
     assert data["tipo"] == "REVISAO_PAINEL"
     assert isinstance(data["recomendacoes"], list)
-    assert data["total"] == len(data["recomendacoes"])
-    assert len(data["recomendacoes"]) <= 5
+    assert data["total"] >= len(data["recomendacoes"])
+    assert len(data["recomendacoes"]) <= 50
+    assert data["destaques"] == 5
 
 
 def test_revisao_ordenada_por_posicao_ranking_desc():

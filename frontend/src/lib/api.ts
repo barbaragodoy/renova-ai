@@ -19,6 +19,15 @@ export function configurarProvedorDeToken(provedor: () => string | null) {
   obterToken = provedor;
 }
 
+/** Avisa a aplicação de que a sessão morreu, para ela devolver a pessoa ao
+ *  login. Fica aqui, e não em cada chamada, porque qualquer rota de negócio
+ *  pode ser a primeira a receber o 401 depois dos 60 minutos. */
+let aoExpirar: () => void = () => {};
+
+export function configurarAoExpirarSessao(callback: () => void) {
+  aoExpirar = callback;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -43,6 +52,14 @@ async function request<T>(caminho: string, init: RequestInit = {}): Promise<T> {
       "Não foi possível falar com o servidor. Verifique sua conexão.",
       0,
     );
+  }
+
+  // 401 numa chamada que levou token é sessão vencida ou revogada, e não
+  // credencial errada: o login não manda token, então ele nunca cai aqui e
+  // continua mostrando "e-mail ou senha inválidos" na própria tela.
+  if (resposta.status === 401 && token) {
+    aoExpirar();
+    throw new ApiError("Sua sessão expirou. Entre novamente.", 401);
   }
 
   if (!resposta.ok) {
@@ -246,6 +263,16 @@ export async function enviarFotoPerfil(email: string, arquivo: File) {
     body: corpo,
   });
 
+  // Esta chamada não passa por `request` porque envia FormData, e definir
+  // Content-Type na mão quebraria o boundary do multipart. O tratamento de
+  // sessão vencida precisa ser repetido aqui, senão o upload seria a única
+  // rota de negócio que falha sem devolver a pessoa ao login. Achado da
+  // revisão independente de 03/09/2026.
+  if (resposta.status === 401 && token) {
+    aoExpirar();
+    throw new ApiError("Sua sessão expirou. Entre novamente.", 401);
+  }
+
   if (!resposta.ok) {
     const detalhe = await resposta.json().catch(() => null);
     throw new ApiError(
@@ -301,35 +328,66 @@ export interface RecomendacaoItem {
 
 export interface ListaRecomendacoesResponse {
   tipo: "ENTRADA_PAINEL" | "REVISAO_PAINEL";
+  /** Quantas pendências existem no ciclo, e não quantas vieram nesta página. */
   total: number;
-  /** Lista completa, já ordenada pelo backend: entrada por maior pontuação,
-   *  revisão por maior posição no ranking. Limitada a `LIMITE_SUGESTOES`
-   *  (5 hoje) pelo próprio backend. */
+  /** Uma página, já ordenada pelo backend: entrada da melhor para a pior
+   *  posição no ranking, exclusão da pior para a melhor. Até 04/09/2026 a
+   *  lista era cortada em 5 e o resto ficava invisível. */
   recomendacoes: RecomendacaoItem[];
+  /** Quantas ficam destacadas como prioridade da semana. Vem do backend para
+   *  a regra viver num lugar só. */
+  destaques: number;
 }
 
-export function listarEntrada(email: string) {
-  const query = email ? `?email=${encodeURIComponent(email)}` : "";
-  return request<ListaRecomendacoesResponse>(`/recomendacoes/entrada${query}`);
+const RECOMENDACOES_POR_PAGINA = 50;
+
+function queryDaLista(email: string, offset: number) {
+  const partes = [];
+  if (email) partes.push(`email=${encodeURIComponent(email)}`);
+  if (offset) partes.push(`offset=${offset}`);
+  return partes.length ? `?${partes.join("&")}` : "";
 }
 
-export function listarRevisao(email: string) {
-  const query = email ? `?email=${encodeURIComponent(email)}` : "";
-  return request<ListaRecomendacoesResponse>(`/recomendacoes/revisao${query}`);
+export function listarEntrada(email: string, offset = 0) {
+  return request<ListaRecomendacoesResponse>(
+    `/recomendacoes/entrada${queryDaLista(email, offset)}`,
+  );
 }
+
+export function listarRevisao(email: string, offset = 0) {
+  return request<ListaRecomendacoesResponse>(
+    `/recomendacoes/revisao${queryDaLista(email, offset)}`,
+  );
+}
+
+export { RECOMENDACOES_POR_PAGINA };
 
 /** Lista fixa de motivos de desconsideração — espelha
  *  MOTIVOS_DESCONSIDERACAO em backend/app/schemas/recomendacoes.py.
- *  "OUTROS" exige motivo_outros_texto; os demais não aceitam texto livre. */
+ *  "OUTROS" exige motivo_outros_texto; os demais não aceitam texto livre.
+ *
+ *  Vocabulário do protótipo do Figma Make, adotado por decisão de George em
+ *  04/09/2026: fala da decisão de quem desconsidera, e não de um fato
+ *  cadastral do médico. */
 export const MOTIVOS_DESCONSIDERACAO = [
-  "MEDICO_NAO_ATUA_MAIS",
-  "MEDICO_APOSENTADO",
-  "MEDICO_FALECIDO",
-  "SEM_INTERESSE_COMERCIAL",
+  "SEM_PERFIL_PARA_O_PAINEL",
+  "TRABALHADO_POR_OUTRO_CANAL",
+  "AGUARDAR_PROXIMO_CICLO",
+  "DADOS_DESATUALIZADOS",
+  "FORA_DO_PLANEJAMENTO",
   "OUTROS",
 ] as const;
 
 export type MotivoDesconsideracao = (typeof MOTIVOS_DESCONSIDERACAO)[number];
+
+/** Códigos aceitos até 04/09/2026. Não são mais oferecidos, mas as linhas já
+ *  gravadas os guardam, e a aba Arquivadas precisa exibi-los em português. */
+export const MOTIVOS_DESCONSIDERACAO_HISTORICOS = [
+  "MEDICO_NAO_ATUA_MAIS",
+  "MEDICO_APOSENTADO",
+  "MEDICO_FALECIDO",
+  "SEM_INTERESSE_COMERCIAL",
+] as const;
 
 export interface DesconsiderarRequest {
   motivo: MotivoDesconsideracao;
@@ -359,6 +417,28 @@ export function desconsiderar(idRecomendacao: string, body: DesconsiderarRequest
   });
 }
 
+export interface AceitarResponse {
+  success: boolean;
+  message: string;
+  id_recomendacao: string;
+  status_recomendacao: string;
+  data_aceite: string;
+}
+
+/**
+ * Aceita uma recomendação.
+ *
+ * Atende `POST /recomendacoes/{id}/aceitar`. Sem corpo: aceitar não tem
+ * parâmetro. **Isto grava intenção, não fato:** quem confirma que o médico
+ * entrou ou saiu do painel continua sendo o job diário que compara contra o
+ * painel real. Por isso a tela nunca diz que o médico já está no painel.
+ */
+export function aceitarRecomendacao(idRecomendacao: string) {
+  return request<AceitarResponse>(`/recomendacoes/${idRecomendacao}/aceitar`, {
+    method: "POST",
+  });
+}
+
 /** Uma recomendação desconsiderada, para a aba Arquivadas. */
 export interface DesconsideradaItem {
   id_recomendacao: string;
@@ -367,13 +447,21 @@ export interface DesconsideradaItem {
   tipo_recomendacao: "ENTRADA_PAINEL" | "REVISAO_PAINEL";
   /** Motivo original da recomendação, não o motivo da desconsideração. */
   motivo_recomendacao?: string | null;
-  motivo_desconsideracao: string;
+  /** Nulo quando a decisão foi aceite. */
+  motivo_desconsideracao?: string | null;
   /** Optional no backend (Optional[bool] em DesconsideradaItem, ver
    *  schemas/recomendacoes.py): registros legados anteriores à
    *  obrigatoriedade deste campo no contrato de POST /desconsiderar têm
    *  esse valor NULL no banco. */
   bloquear_novas_recomendacoes: boolean | null;
-  data_desconsideracao: string;
+  /** Qual foi a decisão: `DESCONSIDERADA` ou `ACEITA`. A aba Histórico passou
+   *  a mostrar as duas em 04/09/2026. */
+  status_recomendacao?: string | null;
+  /** Data da decisão, seja ela qual for. Aceita não tem
+   *  `data_desconsideracao`. */
+  data_decisao?: string | null;
+  /** Nulo quando a decisão foi aceite. */
+  data_desconsideracao?: string | null;
   ciclo_recomendacao: string;
   especialidade?: string | null;
   cidade?: string | null;
@@ -429,6 +517,16 @@ export interface MedicoRanking {
   especialidade?: string | null;
   cidade?: string | null;
   uf?: string | null;
+  /** Recomendação pendente deste médico, quando existe. Nulo significa que
+   *  não há o que aceitar nem o que desconsiderar, e a lista não oferece ação.
+   *  Sai da tabela de recomendações, e não da classificação do ranking: as
+   *  duas divergem quando a recomendação já foi resolvida ou expirou. */
+  id_recomendacao_pendente?: string | null;
+  tipo_recomendacao_pendente?: "ENTRADA_PAINEL" | "REVISAO_PAINEL" | null;
+  /** Estado da recomendação deste médico no ciclo, mesmo já resolvida. É o que
+   *  permite a linha mostrar o que o propagandista decidiu, em vez de voltar
+   *  ao selo de painel como se nada tivesse acontecido. */
+  status_recomendacao?: string | null;
 }
 
 export interface ListaRankingResponse {
@@ -553,7 +651,9 @@ export type StatusChat =
   | "MEDICO_AMBIGUO"
   | "MEDICO_NAO_ENCONTRADO"
   | "NAO_IMPLEMENTADO"
-  | "FORA_DO_ESCOPO";
+  | "FORA_DO_ESCOPO"
+  | "RESPOSTA_DO_AGENTE"
+  | "SAUDACAO";
 
 /** Os quatro tipos do contrato `Message` do protótipo. */
 export interface CardChat {
@@ -567,6 +667,9 @@ export interface CardChat {
   summary?: string | null;
   text?: string | null;
   items?: string[] | null;
+  /** Tempo relativo da última visita ("há 17 dias", "sem registro"). No card,
+   *  e não num bloco da mensagem, por pedido de George em 03/09/2026. */
+  last_visit?: string | null;
 }
 
 /** Um pedaço da resposta, na ordem em que a tela deve revelar.
@@ -601,11 +704,34 @@ export interface RespostaChat {
  * Sem estado: o setor vem da sessão, no backend, e nunca do texto. Uma
  * pergunta que cite outro setor é respondida com o setor de quem perguntou.
  */
+/** Um item do resumo estruturado da Memória de Visitas, com a data da
+ *  observação de origem. */
+export interface ItemDeVisita {
+  data: string;
+  texto: string;
+}
+
+/** A Memória de Visitas: a última observação crua mais o resumo estruturado
+ *  nas dimensões da proposta de captura, e a classificação automática do
+ *  momento da relação. `somente_crua` indica que o resumo não pôde ser
+ *  gerado e só a última observação está presente. */
+export interface MemoriaDeVisitas {
+  disponivel: boolean;
+  ultima?: { data: string; tipo: string; comentario: string } | null;
+  momento_da_relacao?: { classificacao: string; justificativa: string } | null;
+  voz_do_medico: ItemDeVisita[];
+  momento_clinico: ItemDeVisita[];
+  toque_pessoal: ItemDeVisita[];
+  somente_crua: boolean;
+}
+
 export interface EnriquecimentoChat {
   texto: string;
   documentos: string[];
   perfil: string;
   disponivel: boolean;
+  /** Ausente quando o backend é anterior à Memória de Visitas. */
+  visitas?: MemoriaDeVisitas | null;
 }
 
 /** O sexto bloco: como conduzir a visita conforme o perfil de comunicação.
@@ -624,10 +750,26 @@ export function enriquecerPerfil(ufcrm: string) {
   });
 }
 
-export function perguntarAoChat(pergunta: string) {
+export function perguntarAoChat(
+  pergunta: string,
+  idConversa?: string,
+  turno?: number,
+) {
+  // O id_conversa é a chave da memória do agente no backend. Sem ele, cada
+  // pergunta é uma conversa nova e "quero a segunda opção" não aponta para
+  // nada. Quem gera e guarda o id é a tela do chat, um por sessão de conversa.
+  //
+  // O turno cresce a cada envio porque ele compõe o identificador da
+  // interação no log do agente. Sem ele, repetir a mesma pergunta na mesma
+  // conversa gerava o mesmo identificador e a segunda interação não era
+  // registrada: sumiam a resposta, os tokens e o custo da repetição.
   return request<RespostaChat>("/chat/perfil-medico", {
     method: "POST",
-    body: JSON.stringify({ pergunta }),
+    body: JSON.stringify(
+      idConversa
+        ? { pergunta, id_conversa: idConversa, turno: turno ?? 1 }
+        : { pergunta },
+    ),
   });
 }
 

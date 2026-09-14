@@ -20,10 +20,11 @@ from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.agente.conhecimento import ConhecimentoKA
 from backend.app.agente.ferramentas import Contexto
 from backend.app.agente.modelo import ServingDatabricks
+from backend.app.agente import memoria
 from backend.app.agente.orquestrador import Orquestrador
 from backend.app.agente import registro
 from backend.app.chat.executor import ExecutorDoPortal, get_executor
-from backend.app.chat.perfil_medico import PerfilResponse, resolver_perfil
+from backend.app.chat.perfil_medico import Card, PerfilResponse, resolver_perfil
 from backend.app.config import get_settings
 from backend.app.llm.adapter import LLMError, LLMTimeoutError
 
@@ -87,22 +88,105 @@ def perfil_medico(
     # que vieram de erro em campo. O agente serve para o que o código não
     # cobre, e não para refazer o que já funciona.
     #
-    # `FORA_DO_ESCOPO` é o único status que desce para cá. `PERFIL_PRONTO`,
-    # `MEDICO_AMBIGUO` e `MEDICO_NAO_ENCONTRADO` já são respostas boas: a
-    # primeira acertou, e as outras duas dizem a verdade em vez de gastar
-    # segundos para dizer a mesma coisa mais devagar.
-    if resposta.status != "FORA_DO_ESCOPO":
+    # Descem para o agente: `FORA_DO_ESCOPO`, que sempre foi dele, e
+    # `NAO_IMPLEMENTADO`, que era o beco onde morria a continuação da conversa.
+    # O teste de 30/08/2026 mostrou o estrago: "Ordenar produtos da linha para
+    # um médico específico", sugestão oferecida pelo próprio agente, casava com
+    # a palavra-chave "produtos" do roteador e voltava "ainda não sei responder"
+    # sem nunca chegar a quem tinha a ferramenta para responder.
+    #
+    # `PERFIL_PRONTO`, `MEDICO_AMBIGUO` e `MEDICO_NAO_ENCONTRADO` continuam
+    # respondendo na hora: a primeira acertou, e as outras duas dizem a verdade
+    # sobre um identificador explícito em vez de gastar segundos para dizer a
+    # mesma coisa mais devagar.
+    if resposta.status not in ("FORA_DO_ESCOPO", "NAO_IMPLEMENTADO"):
+        # A resposta determinística também entra na memória: são três autores
+        # na mesma janela, e o agente precisa saber o que os outros disseram
+        # quando a conversa continuar com ele.
+        chave = _chave_da_memoria(email, body.id_conversa)
+        if chave and resposta.mensagem:
+            # Sob a mesma trava do ciclo do agente: sem ela, uma resposta
+            # determinística podia intercalar os turnos com uma requisição ao
+            # agente em voo na mesma conversa. Achado da terceira rodada da
+            # revisão de 31/08/2026.
+            with memoria.conversa(chave):
+                memoria.registrar(chave, "user", body.pergunta.strip())
+                memoria.registrar(chave, "assistant", _texto_para_memoria(resposta))
         return resposta
     return _tentar_o_agente(body, email, contexto, resposta)
+
+
+def _texto_para_memoria(resposta: PerfilResponse) -> str:
+    """A mensagem mais as opções dos cards, no turno guardado.
+
+    Em `MEDICO_AMBIGUO` os nomes oferecidos vivem só nos cards; guardar apenas
+    "Qual delas?" deixaria "quero a segunda opção" sem referência no histórico.
+    Achado da segunda rodada da revisão independente de 31/08/2026.
+    """
+    itens: list[str] = []
+    for card in resposta.cards or []:
+        if getattr(card, "type", "") == "suggestions":
+            itens.extend(i for i in (card.items or []) if i)
+    if not itens:
+        return resposta.mensagem
+    return resposta.mensagem + "\nOpções oferecidas: " + " | ".join(itens)
+
+
+def _chave_da_memoria(email: str, id_conversa: str | None) -> str:
+    """A chave combina a identidade autenticada com o id que o cliente enviou.
+
+    O `id_conversa` vem do navegador e qualquer cliente autenticado pode
+    escrever o valor que quiser. Sozinho, ele deixaria um usuário ler o
+    histórico de outro que usasse o mesmo id, de propósito ou por azar.
+    Prefixado pelo e-mail da sessão, o pior caso vira ler a própria conversa.
+    Achado da revisão independente de 31/08/2026.
+    """
+    limpo = (id_conversa or "").strip()
+    return f"{email}|{limpo}" if limpo else ""
+
+
+def _com_memoria(chave: str, resposta: PerfilResponse) -> PerfilResponse:
+    """Grava a resposta de recuo antes de devolvê-la, para o turno do usuário
+    já registrado não ficar sem par no histórico."""
+    if chave and resposta.mensagem:
+        memoria.registrar(chave, "assistant", resposta.mensagem)
+    return resposta
 
 
 def _tentar_o_agente(body: PerguntaRequest, email: str, contexto,
                      resposta_original: PerfilResponse):
     """Última tentativa antes de dizer que não sabe. Falha volta ao original."""
-    settings = get_settings()
-    ctx = Contexto(email=email, matricula=contexto.matricula or "", setor=contexto.setor)
     ts_inicio = dt.datetime.now(dt.timezone.utc)
     pergunta = body.pergunta.strip()
+    chave = _chave_da_memoria(email, body.id_conversa)
+    if not chave:
+        # Sem id de conversa não há memória nem ordem a proteger, e criar
+        # trava por requisição vazaria uma entrada no registro a cada chamada.
+        return _perguntar_ao_agente_travado(body, contexto, chave, pergunta,
+                                            resposta_original, ts_inicio, email)
+    # A trava por conversa faz o ciclo ler, perguntar ao modelo e gravar ser
+    # sequencial dentro da mesma conversa. Sem ela, duas requisições cruzadas
+    # gravavam os turnos fora de ordem. Conversas diferentes seguem paralelas.
+    with memoria.conversa(chave):
+        return _perguntar_ao_agente_travado(body, contexto, chave, pergunta,
+                                            resposta_original, ts_inicio, email)
+
+
+def _perguntar_ao_agente_travado(body: PerguntaRequest, contexto, chave: str,
+                                 pergunta: str, resposta_original: PerfilResponse,
+                                 ts_inicio, email: str):
+    """O ciclo da conversa com o agente, já sob a trava da conversa.
+
+    A memória é lida sob a chave que combina a identidade autenticada com o id
+    do cliente. Sem `id_conversa` não há o que lembrar. O turno do usuário é
+    gravado antes da ida ao modelo, para as perguntas ficarem na ordem de
+    chegada.
+    """
+    settings = get_settings()
+    ctx = Contexto(email=email, matricula=contexto.matricula or "", setor=contexto.setor)
+    historico = memoria.historico(chave)
+    if chave:
+        memoria.registrar(chave, "user", pergunta)
     try:
         modelo = ServingDatabricks(settings)
         orquestrador = Orquestrador(
@@ -113,16 +197,16 @@ def _tentar_o_agente(body: PerguntaRequest, email: str, contexto,
             # Sem `schema=`: nomes sem catálogo já resolvem certo nos dois lados
             # de `DATA_SOURCE` — ver `Ferramentas._qualificar`.
         )
-        resultado = orquestrador.responder(pergunta)
+        resultado = orquestrador.responder(pergunta, historico=historico)
     except (LLMError, LLMTimeoutError):
         logger.warning("agente indisponivel no fallback do chat", exc_info=True)
-        return resposta_original
+        return _com_memoria(chave, resposta_original)
     except Exception:  # noqa: BLE001
         logger.exception("falha no fallback do chat para o agente")
-        return resposta_original
+        return _com_memoria(chave, resposta_original)
 
     if not resultado.texto.strip():
-        return resposta_original
+        return _com_memoria(chave, resposta_original)
 
     # Registro em `tb_agente_log`.
     #
@@ -149,4 +233,17 @@ def _tentar_o_agente(body: PerguntaRequest, email: str, contexto,
         # o agrupamento da Fase 3 sem ninguem perceber.
         origem="portal",
     )
-    return PerfilResponse(status="RESPOSTA_DO_AGENTE", mensagem=resultado.texto)
+    if chave:
+        # As sugestões entram no turno guardado, ainda que saiam do texto da
+        # tela: sem elas, "quero a segunda opção" não teria a que se referir
+        # no histórico. Achado da revisão independente de 31/08/2026.
+        guardado = resultado.texto
+        if resultado.sugestoes:
+            guardado += "\nSugestões oferecidas: " + " | ".join(resultado.sugestoes)
+        memoria.registrar(chave, "assistant", guardado)
+
+    # As sugestões da regra 8 viram o mesmo card que o fluxo determinístico já
+    # usa, e o front já renderiza como botão. Clique em botão volta como
+    # pergunta e, com o histórico acima, o agente sabe do que se trata.
+    cards = [Card(type="suggestions", items=resultado.sugestoes)] if resultado.sugestoes else []
+    return PerfilResponse(status="RESPOSTA_DO_AGENTE", mensagem=resultado.texto, cards=cards)

@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from backend.app.routers import agente, chat, prescricoes, ranking, recomendacoes, gerencial
+from backend.app.routers import agente, chat, prescricoes, ranking, recomendacoes, gerencial, webhooks_twilio
 from backend.app.auth.context import auth_router
 from backend.app.auth.foto import foto_router
 from backend.app.auth.perfil import perfil_router
@@ -60,6 +60,7 @@ app.include_router(ranking.router, prefix="/ranking", tags=["ranking"])
 app.include_router(gerencial.router, prefix="/gerencial", tags=["gerencial"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(agente.router, prefix="/agente", tags=["agente"])
+app.include_router(webhooks_twilio.router, prefix="/webhooks/twilio", tags=["webhooks"])
 
 
 @app.get("/health")

@@ -37,22 +37,42 @@ class RecomendacaoItem(BaseModel):
 
 class ListaRecomendacoesResponse(BaseModel):
     tipo: str
+    # Quantas recomendações pendentes existem no ciclo, e não quantas vieram
+    # nesta página. Até 04/09/2026 a lista era cortada em 5 e este campo
+    # devolvia 5, então a tela não tinha como saber que existia mais.
     total: int
     recomendacoes: list[RecomendacaoItem]
+    # Quantas devem aparecer destacadas como prioridade da semana. Vem do
+    # backend para a tela não repetir a regra: se o número mudar, muda num
+    # lugar só.
+    destaques: int = 0
 
 
-# Lista fixa de motivos de desconsideração (task 161830 — especificação
-# oficial do George). "OUTROS" exige motivo_outros_texto e é persistido no
+# Lista fixa de motivos de desconsideração. Origem: protótipo do Figma Make
+# `cuZGbZpvR0aBJhixqBnYYB`, adotado por decisão de George em 04/09/2026 no lugar
+# da lista da task 161830. "OUTROS" exige motivo_outros_texto e é persistido no
 # formato "OUTROS: <texto informado>" — ver _formatar_motivo_desconsideracao
-# em routers/recomendacoes.py. Ajustável conforme negócio confirmar novos
-# motivos, mas precisa sempre existir uma lista fechada (nunca texto livre
-# direto do cliente, exceto dentro de OUTROS).
+# em routers/recomendacoes.py. Precisa sempre existir uma lista fechada (nunca
+# texto livre direto do cliente, exceto dentro de OUTROS).
 MOTIVOS_DESCONSIDERACAO = [
+    "SEM_PERFIL_PARA_O_PAINEL",
+    "TRABALHADO_POR_OUTRO_CANAL",
+    "AGUARDAR_PROXIMO_CICLO",
+    "DADOS_DESATUALIZADOS",
+    "FORA_DO_PLANEJAMENTO",
+    "OUTROS",
+]
+
+# Motivos aceitos até 04/09/2026, quando a lista passou a ser a do protótipo do
+# Figma Make por decisão de George. Não entram mais em gravação nova: falavam do
+# médico (faleceu, aposentou) e não da decisão de quem desconsidera, que é o que
+# o negócio quer medir. Continuam listados porque as linhas já gravadas guardam
+# esses códigos e a aba Arquivadas precisa saber traduzi-los.
+MOTIVOS_DESCONSIDERACAO_HISTORICOS = [
     "MEDICO_NAO_ATUA_MAIS",
     "MEDICO_APOSENTADO",
     "MEDICO_FALECIDO",
     "SEM_INTERESSE_COMERCIAL",
-    "OUTROS",
 ]
 
 
@@ -89,6 +109,20 @@ class DesconsiderarResponse(BaseModel):
     data_desconsideracao: str
 
 
+class AceitarResponse(BaseModel):
+    """Resposta do aceite da recomendação.
+
+    Sem corpo de requisição: aceitar não tem parâmetro. O que muda é só o
+    estado, e a identidade de quem aceitou vem do token, nunca do cliente,
+    pela mesma regra do desconsiderar.
+    """
+    success: bool
+    message: str
+    id_recomendacao: str
+    status_recomendacao: str
+    data_aceite: str
+
+
 class DesconsideradaItem(BaseModel):
     id_recomendacao: UUID
     # Mesmo fallback de /entrada e /revisao (_aplicar_fallback_nome_medico) —
@@ -100,7 +134,10 @@ class DesconsideradaItem(BaseModel):
     # coluna `motivo_revisao` no mapeamento de schema, nula para
     # ENTRADA_PAINEL histórico.
     motivo_recomendacao: Optional[str] = None
-    motivo_desconsideracao: str
+    # Optional desde 04/09/2026: a aba virou Histórico e mostra também as
+    # aceitas, que não têm motivo de desconsideração. Sem isto o endpoint
+    # devolvia 500 na primeira recomendação aceita do propagandista.
+    motivo_desconsideracao: Optional[str] = None
     # Optional: a coluna real permite NULL de propósito ("NULL = sem
     # decisão", ver comentário da coluna em data/scripts/01_create_tables.sql
     # e databricks-schema-real.md) — confirmado em teste de ponta a ponta
@@ -108,7 +145,15 @@ class DesconsideradaItem(BaseModel):
     # campo no contrato de POST /desconsiderar) têm esse valor NULL, e
     # quebravam GET /desconsideradas com 500 quando o schema exigia bool.
     bloquear_novas_recomendacoes: Optional[bool] = None
-    data_desconsideracao: datetime
+    # Qual foi a decisão: DESCONSIDERADA ou ACEITA. A aba Histórico passou a
+    # mostrar as duas em 04/09/2026.
+    status_recomendacao: Optional[str] = None
+    # Optional desde 04/09/2026: uma recomendação aceita não tem data de
+    # desconsideração. Quem quiser a data da decisão usa `data_decisao`.
+    data_desconsideracao: Optional[datetime] = None
+    # A data da decisão, seja ela qual for. Existe para a tela ordenar e
+    # exibir sem precisar saber de qual coluna veio.
+    data_decisao: Optional[datetime] = None
     ciclo_recomendacao: str
     # Mesmo tratamento de RecomendacaoItem — ver comentário lá.
     especialidade: Optional[str] = None

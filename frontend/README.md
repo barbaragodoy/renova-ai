@@ -55,9 +55,12 @@ O backend precisa estar rodando em paralelo:
 uvicorn backend.app.main:app --reload    # http://localhost:8000
 ```
 
-O proxy configurado em `vite.config.ts` encaminha `/auth`, `/recomendacoes`,
-`/prescricoes`, `/insight-medico`, `/gerencial` e `/health` para o backend,
-evitando CORS e reproduzindo os mesmos caminhos relativos do container.
+O proxy configurado em `vite.config.ts` encaminha `/agente`, `/auth`, `/chat`,
+`/gerencial`, `/health`, `/insight-medico`, `/prescricoes`, `/ranking` e
+`/recomendacoes` para o backend, evitando CORS e reproduzindo os mesmos
+caminhos relativos do container. **Rota nova no backend precisa entrar nessa
+lista**, senão o Vite devolve o `index.html` e a chamada falha sem explicação
+em desenvolvimento, enquanto continua funcionando no container.
 
 O backend precisa de `AUTH_MODE=senha` e `SESSAO_JWT_SECRET` definidos. Na
 imagem única não há CORS, porque portal e API compartilham a origem.
@@ -118,14 +121,60 @@ frontend/
 ├── vite.config.ts
 ├── src/
 │   ├── main.tsx
-│   ├── App.tsx
+│   ├── App.tsx                 abas, sessão e navegação
 │   ├── auth/modo.ts            seleção do modo de autenticação
-│   ├── auth/sessao.ts          sessão do navegador
+│   ├── auth/sessao.ts          sessão do navegador e validade do token
 │   ├── components/ui/          componentes base
+│   ├── components/CardMemoriaDeVisitas.tsx   memória de visitas, chat e ranking
 │   ├── lib/api.ts              cliente HTTP e contratos
 │   ├── pages/Login.tsx         identificação do propagandista
+│   ├── pages/Chat.tsx          conversa, cards e blocos da resposta
+│   ├── pages/Ranking.tsx       ranking do setor e gaveta de detalhes
+│   ├── pages/Recomendacoes.tsx entrada, exclusão e arquivadas
+│   ├── pages/Usuario.tsx       perfil, foto e dados do propagandista
 │   └── styles/                 tokens e estilos globais
 ```
+
+As quatro abas são montadas de forma preguiçosa e **não são desmontadas ao
+trocar de aba**: o portal é usado em pé, alternando o tempo todo, e recomeçar
+a carga a cada volta seria pagar a rede de novo. Quem mexer em estado de aba
+precisa considerar que ele sobrevive à navegação e só morre no logout.
+
+O texto das respostas do chat **não é escrito aqui**. Ele chega pronto do
+backend, montado por código em `backend/app/chat/perfil_medico.py`. Como
+alterar qualquer frase está em
+`backend/app/chat/como-alterar-a-resposta-do-chat.md`.
+
+## Protótipo de referência
+
+Figma Make `cuZGbZpvR0aBJhixqBnYYB` ("Teste PED 2.0"). É a fonte do desenho,
+não do conteúdo: o texto das respostas vem do backend.
+
+O protótipo tem cinco abas; o portal tem quatro. **Comunicados ficou fora do
+escopo por decisão de George em 10/08/2026** e não é esquecimento.
+
+O que existe no protótipo e não foi construído, tudo decisão registrada e não
+pendência técnica:
+
+| No protótipo | Situação |
+|---|---|
+| Aba Comunicados | fora do escopo desde 10/08/2026 |
+| Polegar para cima e para baixo na resposta | não construído; a avaliação do piloto é por formulário |
+| Microfone na conversa | ditado por voz é frente separada, análise de 07/08/2026 |
+| Sino de notificações | depende de Comunicados |
+| Cards `rec-list`, `comunicado-card` e afins no chat | o chat responde perfil de médico; lista de recomendação é a aba própria |
+
+**Divergências deliberadas do protótipo.** Cada tela documenta as suas no
+próprio arquivo, com data e motivo: `Chat.tsx` lista quatro, `Ranking.tsx`
+lista cinco. Antes de "corrigir" a tela para ficar igual ao protótipo, leia o
+cabeçalho do arquivo. As mais recentes, de 03/09/2026:
+
+- a aba usa "Recomendações" por extenso, e não o `shortLabel` "Recom." do
+  protótipo;
+- a última visita aparece dentro do card do médico, e não como bloco separado
+  da mensagem;
+- a pontuação é exibida sem casas decimais em todo o portal.
+
 
 ## Pendências conhecidas
 
@@ -134,16 +183,29 @@ frontend/
 
 Bloqueantes:
 
-- **Sessão expirada não é tratada.** O token vale 60 minutos, mas a interface
-  não guarda essa validade. Depois do prazo, a tela segue mostrando o usuário
-  como autenticado e as chamadas falham sem devolver ao login. Precisa guardar
-  a expiração, limpar a sessão ao receber 401 e avisar a pessoa.
 - Migração da autenticação para o Entra ID, já mapeada acima.
 
 Demais itens:
 
+- **Sem camada de teste no frontend.** Não há vitest nem testing-library, e
+  `npm run lint` é só `tsc -b --noEmit`. O backend tem suíte de testes; o
+  front não tem nenhuma. Primeira coisa a montar em desenvolvimento novo.
+- **Sem ESLint.** O projeto depende do compilador do TypeScript para checagem,
+  o que não pega erro de regra de hook nem de acessibilidade.
 - Contraste do botão primário levemente abaixo do mínimo de acessibilidade,
   a ser tratado na revisão do design system.
 - Tema escuro e paleta de gráfico ainda no padrão genérico do shadcn/ui.
 - Escala de espaçamento e sombra ainda não confirmadas no design system.
-- Telas de Recomendações, Home conversacional e Usuário ainda não construídas.
+- `Recomendacoes.tsx` e `Ranking.tsx` passam de 900 linhas cada e concentram
+  tela, estado e formatação no mesmo arquivo. Candidatos naturais a quebra
+  quando alguém for mexer neles.
+
+### Resolvido em 03/09/2026
+
+- **Sessão expirada.** A validade do token agora é guardada em `expiraEm` e
+  conferida na leitura da sessão, e o cliente HTTP trata o 401 de qualquer
+  rota de negócio devolvendo a pessoa ao login com aviso, inclusive no envio
+  de foto, que não passa por `request` porque manda FormData. O 401 do próprio
+  login não entra nesse caminho, porque ele não leva token.
+- **Proxy incompleto.** `/chat`, `/agente` e `/ranking` não eram encaminhados,
+  então conversa e ranking não funcionavam com `npm run dev`.

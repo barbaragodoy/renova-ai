@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 from backend.app.auth.context import resolver_contexto, StatusContexto
 from backend.app.auth.jwt_auth import resolver_email_autenticado
+from backend.app.config import get_settings
 from backend.app.db.databricks_connection import get_engine
 from backend.app.schemas.ranking import (
     ConcorrenteMercado,
@@ -44,6 +45,117 @@ def _validar_contexto(email: str):
     return ctx
 
 
+def _fragmentos_recomendacao(data_source: str) -> dict:
+    """Junção da lista do ranking com a recomendação do médico no ciclo.
+
+    O Databricks usa a tabela histórica; o Postgres local usa
+    `tb_recomendacoes_painel`. Os fragmentos preservam o mesmo contrato para
+    a tela e a mesma garantia de uma única recomendação por médico e ciclo.
+
+    Mesmo espírito do `_fragmentos_dim_medicos` em `routers/recomendacoes.py`.
+
+    **A subconsulta com `ROW_NUMBER` não é enfeite.** Medido em 04/09/2026, a
+    tabela tem 580.911 grupos de matrícula, médico e ciclo com mais de uma
+    linha, quase todos com três, todas `EXPIRADA`. Uma junção direta
+    multiplicaria a linha do médico e a paginação passaria a devolver menos de
+    50 por página, em silêncio. A janela garante uma linha por médico por
+    construção, e não por invariante que o banco não impõe.
+
+    A ordem do desempate é de leitura: pendente primeiro, porque é sobre ela
+    que se age; depois a de atividade mais recente, que é o que o propagandista
+    lembra de ter feito; e por último o identificador, para não haver empate
+    sem critério. Sem esse terceiro nível, duas linhas com a mesma data
+    alternariam entre uma carga e outra.
+
+    `GREATEST` e não `COALESCE` nas datas: `COALESCE` devolve a primeira não
+    nula, que não é a mais recente quando a linha tem aceite e aplicação
+    preenchidos ao mesmo tempo. `GREATEST` ignora nulo no Spark e devolve a
+    data real de última atividade. Achado da revisão independente.
+
+    `SETOR` entra na partição, e não só na junção: uma matrícula pode ter mais
+    de um setor, e sem ele a janela poderia eleger a recomendação do outro
+    setor da mesma pessoa. Essa linha não casaria no `ON`, e o médico apareceria
+    sem selo mesmo tendo recomendação pendente no setor certo. Achado da mesma
+    revisão.
+
+    O `WHERE` da subconsulta corta pela matrícula antes da janela, então ela
+    roda sobre as linhas de uma pessoa e não sobre a tabela inteira.
+
+    Custo medido em 04/09/2026, no maior setor, com `use_cached_result = false`
+    para não medir cache: 0,9 a 1,0 segundo sem esta junção, 1,4 a 1,8 segundo
+    com ela. A conta é a mesma ordem de grandeza de uma ida ao warehouse, que
+    já custa perto de 0,7 segundo mesmo com a engine aberta.
+    """
+    fonte = (data_source or "").lower()
+    if fonte == "local":
+        return {
+            "select": (
+                ",\n                       rec.id_recomendacao     AS id_recomendacao"
+                ",\n                       rec.tipo_recomendacao   AS tipo_recomendacao"
+                ",\n                       rec.status_recomendacao AS status_recomendacao"
+            ),
+            "join": (
+                "\n                LEFT JOIN ("
+                "\n                    SELECT setor, ufcrm, ciclo_referencia,"
+                "\n                           id_recomendacao, tipo_recomendacao, status_recomendacao,"
+                "\n                           ROW_NUMBER() OVER ("
+                "\n                               PARTITION BY setor, ufcrm, ciclo_referencia"
+                "\n                               ORDER BY CASE WHEN status_recomendacao = 'PENDENTE'"
+                "\n                                             THEN 0 ELSE 1 END,"
+                "\n                                        GREATEST(data_aceite,"
+                "\n                                                 data_desconsideracao,"
+                "\n                                                 data_ultima_verificacao) DESC,"
+                "\n                                        id_recomendacao DESC"
+                "\n                           ) AS ordem"
+                "\n                    FROM tb_recomendacoes_painel"
+                "\n                    WHERE rep_matricula = :mat"
+                "\n                ) rec"
+                "\n                       ON rec.setor = r.setor"
+                "\n                      AND rec.ufcrm = r.ufcrm"
+                "\n                      AND rec.ciclo_referencia = r.ciclo_referencia"
+                "\n                      AND rec.ordem = 1"
+            ),
+        }
+    if fonte != "databricks":
+        return {"select": "", "join": ""}
+    return {
+        "select": (
+            ",\n                       rec.ID_RECOMENDACAO     AS id_recomendacao"
+            ",\n                       rec.TIPO_RECOMENDACAO   AS tipo_recomendacao"
+            ",\n                       rec.STATUS_RECOMENDACAO AS status_recomendacao"
+        ),
+        # O ciclo entra na junção porque a mesma dupla setor e médico se repete
+        # a cada ciclo: sem ele, a linha de um ciclo anterior apareceria como
+        # se fosse do atual.
+        #
+        # A matrícula entra porque setor não é chave de pessoa: medido em
+        # 04/09/2026, 5 setores da base têm mais de um propagandista. Sem ela,
+        # a tela ofereceria a recomendação do colega, que o endpoint recusaria
+        # com 403 depois do clique. Achado da revisão independente.
+        "join": (
+            "\n                LEFT JOIN ("
+            "\n                    SELECT SETOR, UFCRM, CICLO_RECOMENDACAO,"
+            "\n                           ID_RECOMENDACAO, TIPO_RECOMENDACAO, STATUS_RECOMENDACAO,"
+            "\n                           ROW_NUMBER() OVER ("
+            "\n                               PARTITION BY SETOR, UFCRM, CICLO_RECOMENDACAO"
+            "\n                               ORDER BY CASE WHEN STATUS_RECOMENDACAO = 'PENDENTE'"
+            "\n                                             THEN 0 ELSE 1 END,"
+            "\n                                        GREATEST(DATA_ACEITE,"
+            "\n                                                 DATA_DESCONSIDERACAO,"
+            "\n                                                 DATA_APLICACAO_DETECTADA) DESC,"
+            "\n                                        ID_RECOMENDACAO DESC"
+            "\n                           ) AS ordem"
+            "\n                    FROM tb_recomendacoes_painel_historico"
+            "\n                    WHERE REP_MATRICULA = :mat"
+            "\n                ) rec"
+            "\n                       ON rec.SETOR = r.setor"
+            "\n                      AND rec.UFCRM = r.ufcrm"
+            "\n                      AND rec.CICLO_RECOMENDACAO = r.ciclo_referencia"
+            "\n                      AND rec.ordem = 1"
+        ),
+    }
+
+
 @router.get("", response_model=ListaRankingResponse)
 def listar_ranking(
     email: Optional[str] = Query(None),
@@ -54,7 +166,15 @@ def listar_ranking(
     ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
 
     filtro_busca = ""
-    params = {"setor": ctx.setor, "limite": _LIMITE_PAGINA, "offset": offset}
+    # `mat` só é usada pela junção com as recomendações, que existe apenas no
+    # Databricks. Passar sempre é inofensivo: parâmetro não citado no SQL é
+    # ignorado pelo driver, e vale mais que duplicar a montagem do dicionário.
+    params = {
+        "setor": ctx.setor,
+        "mat": ctx.matricula,
+        "limite": _LIMITE_PAGINA,
+        "offset": offset,
+    }
     if q and q.strip():
         # Os nomes na tabela têm acento e cedilha; o propagandista digita sem.
         # O translate normaliza os dois lados para a busca não perder nomes
@@ -66,6 +186,8 @@ def listar_ranking(
         termo = q.strip().upper().translate(str.maketrans(
             "ÁÂÃÀÄÉÊÈËÍÎÌÏÓÔÕÒÖÚÛÙÜÇ", "AAAAAEEEEIIIIOOOOOUUUUC"))
         params["busca"] = f"%{termo}%"
+
+    frag = _fragmentos_recomendacao(get_settings().data_source)
 
     with get_engine().connect() as conn:
         cabecalho = conn.execute(
@@ -86,9 +208,9 @@ def listar_ranking(
                        r.nome_medico, r.ufcrm, r.pontos,
                        r.flag_no_painel,
                        dm.especialidade, dm.cidade,
-                       LEFT(r.ufcrm, 2) AS uf
+                       LEFT(r.ufcrm, 2) AS uf""" + frag["select"] + """
                 FROM tb_ranking_medicos_validacao r
-                LEFT JOIN tb_dim_medicos dm ON r.ufcrm = dm.ufcrm
+                LEFT JOIN tb_dim_medicos dm ON r.ufcrm = dm.ufcrm""" + frag["join"] + """
                 WHERE r.setor = :setor
             """ + filtro_busca + """
                 ORDER BY r.posicao_ranking_setor
@@ -107,6 +229,19 @@ def listar_ranking(
             especialidade=r["especialidade"],
             cidade=r["cidade"],
             uf=r["uf"],
+            # O id e o tipo só saem quando há o que fazer. O status sai
+            # sempre: é ele que diz à tela se mostra ação, se mostra o que já
+            # foi decidido, ou se mostra o selo de painel.
+            id_recomendacao_pendente=(
+                str(r["id_recomendacao"])
+                if r.get("status_recomendacao") == "PENDENTE" and r.get("id_recomendacao")
+                else None
+            ),
+            tipo_recomendacao_pendente=(
+                r.get("tipo_recomendacao")
+                if r.get("status_recomendacao") == "PENDENTE" else None
+            ),
+            status_recomendacao=r.get("status_recomendacao"),
         )
         for r in rows
     ]

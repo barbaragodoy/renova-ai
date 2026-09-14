@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronRight, Info, Send } from "lucide-react";
 import {
   ApiError,
+  type MemoriaDeVisitas,
   enriquecerPerfil,
   perguntarAoChat,
   type CardChat,
@@ -9,6 +10,7 @@ import {
   type RespostaChat,
 } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { CardMemoriaDeVisitas } from "@/components/CardMemoriaDeVisitas";
 
 /**
  * Conversa do propagandista com o PedAI.
@@ -95,6 +97,12 @@ type Item =
       cards: CardChat[];
       /** `prontas` nulo significa que o toque num chip monta pergunta nova. */
       prontas: Record<string, string> | null;
+    }
+  | {
+      /** A Memória de Visitas, no lugar do antigo bloco "Como Tratar". */
+      tipo: "memoria";
+      memoria: MemoriaDeVisitas;
+      perfilTexto: string;
     };
 
 /** Intervalo entre um bloco e o seguinte.
@@ -107,26 +115,134 @@ const INTERVALO_ENTRE_BLOCOS = 320;
 
 const espera = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-/** Texto do backend vem com quebras de linha e itens iniciados por "- ".
- *  Reconstruir isso como parágrafo e lista é só apresentação: nenhuma palavra
- *  é alterada aqui. */
+/** Trecho em negrito no meio da linha. O agente escreve **assim**, e no teste
+ *  de 30/08/2026 os asteriscos chegaram crus na tela. Só o negrito é tratado:
+ *  é a única marcação em linha que o agente produz. */
+function ComNegrito({ children }: { children: string }) {
+  const partes = children.split(/(\*\*[^*]+\*\*)/g);
+  return (
+    <>
+      {partes.map((parte, i) =>
+        parte.startsWith("**") && parte.endsWith("**") ? (
+          <strong key={i} className="font-semibold">
+            {parte.slice(2, -2)}
+          </strong>
+        ) : (
+          parte
+        ),
+      )}
+    </>
+  );
+}
+
+/** Uma linha de tabela em barras verticais: "| a | b |" vira ["a", "b"].
+ *
+ *  A barra escapada "\\|" é conteúdo da célula, não divisor de coluna. Sem o
+ *  marcador temporário, "Plano A \\| Plano B" virava duas colunas e
+ *  desalinhava a linha inteira. Achado da revisão independente de 31/08/2026. */
+const BARRA_ESCAPADA = "\uE000";
+
+function celulasDe(linha: string): string[] {
+  return linha
+    .trim()
+    .replace(/\\\|/g, BARRA_ESCAPADA)
+    .replace(/^\|/, "")
+    .replace(/\|$/, "")
+    .split("|")
+    .map((c) => c.replaceAll(BARRA_ESCAPADA, "|").trim());
+}
+
+/** Linha separadora de cabeçalho: "|---|---|", com ou sem dois-pontos.
+ *  Exige ao menos um traço: sem isso, "| |" e "| : |" passavam como
+ *  separador. Achado da segunda rodada da revisão de 31/08/2026. */
+const SEPARADOR_DE_TABELA = /^\s*\|?[\s:|-]*-[\s:|-]*\|?\s*$/;
+
+/** Texto do backend vem com quebras de linha, itens iniciados por "- ",
+ *  negrito entre asteriscos e tabela em barras verticais. Reconstruir isso
+ *  como parágrafo, lista, negrito e tabela é só apresentação: nenhuma palavra
+ *  é alterada aqui.
+ *
+ *  A tabela existe porque o agente responde lista de médicos nesse formato, e
+ *  no teste de 30/08/2026 as barras chegaram cruas na tela. O parser é
+ *  proposital e mínimo: linhas consecutivas começando com "|", com a segunda
+ *  sendo o separador de traços do cabeçalho. Nada além disso é interpretado. */
 function Texto({ children }: { children: string }) {
   const blocos: React.ReactNode[] = [];
   let lista: string[] = [];
+  let tabela: string[] = [];
 
   const fecharLista = (chave: number) => {
     if (!lista.length) return;
     blocos.push(
       <ul key={`l${chave}`} className="mt-2 list-disc space-y-1 pl-5">
         {lista.map((item, i) => (
-          <li key={i}>{item}</li>
+          <li key={i}>
+            <ComNegrito>{item}</ComNegrito>
+          </li>
         ))}
       </ul>,
     );
     lista = [];
   };
 
+  const fecharTabela = (chave: number) => {
+    if (!tabela.length) return;
+    // Só é tabela o que tem cabeçalho e separador de traços na segunda linha.
+    // Sem esta guarda, qualquer linha começando por barra virava uma tabela
+    // de uma célula. Achado da revisão independente de 31/08/2026.
+    if (tabela.length < 2 || !SEPARADOR_DE_TABELA.test(tabela[1])) {
+      const soltas = tabela;
+      tabela = [];
+      soltas.forEach((linha, k) => {
+        blocos.push(
+          <p key={`t${chave}-p${k}`} className="mt-1.5 first:mt-0">
+            <ComNegrito>{linha}</ComNegrito>
+          </p>,
+        );
+      });
+      return;
+    }
+    const [cabecalho, ...resto] = tabela;
+    const corpo = resto.filter((l) => !SEPARADOR_DE_TABELA.test(l));
+    blocos.push(
+      <div key={`t${chave}`} className="mt-2 overflow-x-auto">
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr>
+              {celulasDe(cabecalho).map((c, i) => (
+                <th
+                  key={i}
+                  className="border-b border-[var(--color-border)] px-2 py-1.5 text-left font-semibold"
+                >
+                  <ComNegrito>{c}</ComNegrito>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {corpo.map((linha, i) => (
+              <tr key={i} className={i % 2 ? "bg-[var(--color-muted)]" : undefined}>
+                {celulasDe(linha).map((c, j) => (
+                  <td key={j} className="px-2 py-1.5 align-top">
+                    <ComNegrito>{c}</ComNegrito>
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>,
+    );
+    tabela = [];
+  };
+
   children.split("\n").forEach((linha, i) => {
+    if (linha.trim().startsWith("|")) {
+      fecharLista(i);
+      tabela.push(linha);
+      return;
+    }
+    fecharTabela(i);
     if (linha.startsWith("- ")) {
       lista.push(linha.slice(2));
       return;
@@ -135,11 +251,12 @@ function Texto({ children }: { children: string }) {
     if (linha.trim()) {
       blocos.push(
         <p key={`p${i}`} className="mt-1.5 first:mt-0">
-          {linha}
+          <ComNegrito>{linha}</ComNegrito>
         </p>,
       );
     }
   });
+  fecharTabela(-1);
   fecharLista(-1);
 
   return <>{blocos}</>;
@@ -171,7 +288,10 @@ function DoRenovai({ children }: { children: React.ReactNode }) {
   );
 }
 
-function CardMedico({ card }: { card: CardChat }) {
+function CardMedico({ card, aoIrParaRecomendacoes }: {
+  card: CardChat;
+  aoIrParaRecomendacoes?: () => void;
+}) {
   return (
     <div className="rounded-2xl border border-[var(--color-border)] bg-white p-4 shadow-sm">
       <div className="mb-2 flex items-start justify-between gap-2">
@@ -196,8 +316,7 @@ function CardMedico({ card }: { card: CardChat }) {
             {card.score == null
               ? "sem pontos"
               : card.score.toLocaleString("pt-BR", {
-                  minimumFractionDigits: 2,
-                  maximumFractionDigits: 2,
+                  maximumFractionDigits: 0,
                 })}
           </p>
         </div>
@@ -211,10 +330,34 @@ function CardMedico({ card }: { card: CardChat }) {
             </p>
           </div>
         )}
+        {card.last_visit && (
+          <div>
+            <p className="text-[10px] uppercase tracking-wide text-[var(--color-muted-foreground)]">
+              Última visita
+            </p>
+            <p className="text-sm font-semibold text-[var(--color-foreground)]">
+              {card.last_visit}
+            </p>
+          </div>
+        )}
       </div>
 
       {card.summary && (
         <p className="text-xs text-[var(--color-muted-foreground)]">{card.summary}</p>
+      )}
+
+      {/* Encaminha para a aba onde a recomendação é resolvida. Sem estado nem
+          chamada aqui: o chat sabe falar do médico, não decidir por ele. */}
+      {aoIrParaRecomendacoes && (
+        <button
+          type="button"
+          onClick={aoIrParaRecomendacoes}
+          className="mt-3 inline-flex items-center gap-1 rounded-full border px-3 py-1.5 text-xs font-semibold"
+          style={{ borderColor: ROXO, color: ROXO, background: "white" }}
+        >
+          Ver em Recomendações
+          <ChevronRight className="h-3 w-3" aria-hidden="true" />
+        </button>
       )}
     </div>
   );
@@ -224,8 +367,17 @@ export function Chat({
   nome,
   perguntaPendente,
   aoConsumirPergunta,
+  onIrParaRecomendacoes,
 }: {
   nome?: string | null;
+  /** Leva para a aba Recomendações.
+   *
+   *  O chat **não** resolve a recomendação: quem aceita ou desconsidera é a
+   *  aba própria, que já tem a gaveta de três passos, o motivo e o bloqueio.
+   *  Decisão de George em 04/09/2026, e é a decisão certa: replicar o fluxo
+   *  aqui criaria uma segunda implementação da mesma regra, e a conversa não
+   *  é lugar de formulário. O chat encaminha. */
+  onIrParaRecomendacoes?: () => void;
   /** Pergunta enviada de outra aba, hoje pelo botão da gaveta do Ranking.
    *  Chega como texto, e não como identificador de médico, porque o chat já
    *  sabe interpretar pergunta em linguagem natural e a rota do agente recebe
@@ -241,6 +393,15 @@ export function Chat({
   const [rascunho, setRascunho] = useState("");
   const [aguardando, setAguardando] = useState(false);
   const fim = useRef<HTMLDivElement>(null);
+  // Uma conversa por montagem da tela. Sair do portal desmonta o chat (ver
+  // `sair()` no App), então a próxima pessoa neste aparelho começa com outra
+  // conversa e a memória do backend não vaza entre sessões.
+  const idConversa = useRef<string>(
+    globalThis.crypto?.randomUUID?.() ?? `conversa-${Date.now()}`,
+  );
+  // Cresce a cada envio. Compõe o identificador da interação no log do
+  // agente; ver o comentário em perguntarAoChat.
+  const turno = useRef(0);
 
   useEffect(() => {
     fim.current?.scrollIntoView({ block: "end", behavior: "smooth" });
@@ -265,8 +426,14 @@ export function Chat({
       mensagem: resposta.mensagem,
       cards: resposta.cards,
       // Na desambiguação os chips são nomes de médico, e a resposta deles
-      // ainda não foi buscada.
-      prontas: resposta.status === "MEDICO_AMBIGUO" ? null : resposta.respostas,
+      // ainda não foi buscada. Um `respostas` vazio também vira null: objeto
+      // vazio é verdadeiro em JS, e o chip mostraria uma resposta em branco
+      // em vez de enviar a pergunta.
+      prontas:
+        resposta.status === "MEDICO_AMBIGUO" ||
+        !Object.keys(resposta.respostas ?? {}).length
+          ? null
+          : resposta.respostas,
     };
   }
 
@@ -307,16 +474,41 @@ export function Chat({
         },
       ]);
     }
-    await enriquecer(resposta);
+    // Sem await, de propósito: o enriquecimento agora inclui uma chamada de
+    // modelo que pode levar dezenas de segundos, e aguardá-lo mantinha o
+    // campo de digitação travado até o fim. A memória aparece quando chega.
+    // Achado da revisão independente de 03/09/2026.
+    void enriquecer(resposta);
   }
 
   /** O sexto bloco. Falha e indisponibilidade não viram erro na tela: o
-   *  propagandista já tem os cinco primeiros, que são o essencial. */
+   *  propagandista já tem os cinco primeiros, que são o essencial.
+   *
+   *  Com a Memória de Visitas disponível, ela ocupa o lugar do antigo texto
+   *  de perfil, que vira rodapé dela. Backend antigo, sem o campo `visitas`,
+   *  continua caindo no comportamento anterior. */
   async function enriquecer(resposta: RespostaChat) {
     const ufcrm = resposta.identificacao?.ufcrm;
     if (typeof ufcrm !== "string" || !ufcrm) return;
+    // O enriquecimento roda em segundo plano e o campo já foi liberado. Se o
+    // propagandista mandou outra pergunta nesse meio tempo, o resultado chega
+    // atrasado e apareceria abaixo da conversa de OUTRO médico. O turno
+    // capturado no início denuncia: mudou, descarta. Achado da revisão
+    // independente de 03/09/2026.
+    const turnoDeOrigem = turno.current;
     try {
       const extra = await enriquecerPerfil(ufcrm);
+      if (turno.current !== turnoDeOrigem) return;
+      if (extra.visitas?.disponivel) {
+        acrescentar([
+          {
+            tipo: "memoria",
+            memoria: extra.visitas,
+            perfilTexto: extra.disponivel ? extra.texto.trim() : "",
+          },
+        ]);
+        return;
+      }
       if (!extra.disponivel || !extra.texto.trim()) return;
       acrescentar([
         { tipo: "resposta", mensagem: extra.texto, cards: [], prontas: null },
@@ -333,7 +525,8 @@ export function Chat({
     acrescentar([{ tipo: "pergunta", texto }]);
     setAguardando(true);
     try {
-      const resposta = await perguntarAoChat(texto);
+      turno.current += 1;
+      const resposta = await perguntarAoChat(texto, idConversa.current, turno.current);
       // Backend anterior a 20/08 não manda `blocos`. Sem esta guarda, a tela
       // ficaria vazia entre um deploy e outro.
       if (resposta.blocos?.length) {
@@ -383,6 +576,13 @@ export function Chat({
                 {item.texto}
               </div>
             </div>
+          ) : item.tipo === "memoria" ? (
+            <DoRenovai key={i}>
+              <CardMemoriaDeVisitas
+                memoria={item.memoria}
+                perfilTexto={item.perfilTexto}
+              />
+            </DoRenovai>
           ) : (
             <DoRenovai key={i}>
               {item.mensagem && (
@@ -392,7 +592,14 @@ export function Chat({
               )}
 
               {item.cards.map((card, j) => {
-                if (card.type === "doctor") return <CardMedico key={j} card={card} />;
+                if (card.type === "doctor")
+                  return (
+                    <CardMedico
+                      key={j}
+                      card={card}
+                      aoIrParaRecomendacoes={onIrParaRecomendacoes}
+                    />
+                  );
 
                 if (card.type === "suggestions") {
                   return (

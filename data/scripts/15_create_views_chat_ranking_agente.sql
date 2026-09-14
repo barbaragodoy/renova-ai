@@ -102,3 +102,17 @@ FROM vw_gold_auditpharma g
 GROUP BY g.setor, g.mercado, g.produto, g.referencia;
 
 COMMENT ON VIEW vw_agente_participacao IS 'Participação percentual de produtos por mercado, no setor — mesma lógica de acheinfo_dev.renovai.vw_agente_participacao, sobre a tabela física simplificada vw_gold_auditpharma.';
+
+
+-- =============================================================
+-- vw_visitacao_comentarios
+-- Superfície local da Memória de Visitas. A view real também entrega apenas
+-- visitas efetivas; manter o filtro aqui evita que tentativas sem contato
+-- sejam interpretadas pelo agente como conversa com o médico.
+-- =============================================================
+CREATE OR REPLACE VIEW vw_visitacao_comentarios AS
+SELECT setor, ufcrm, data_visita, visita_tipo, comentarios
+FROM tb_visitacao_medica
+WHERE visita_efetiva = TRUE;
+
+COMMENT ON VIEW vw_visitacao_comentarios IS 'Visitas efetivas com comentários para a Memória de Visitas; equivalente local da view governada no Databricks.';

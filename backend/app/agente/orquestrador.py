@@ -87,6 +87,7 @@ class Resposta:
     ferramentas_usadas: list[str] = field(default_factory=list)
     documentos_citados: list[str] = field(default_factory=list)
     trechos_citados: dict = field(default_factory=dict)
+    sugestoes: list[str] = field(default_factory=list)
     degradada: bool = False
     motivo_degradacao: str = ""
     voltas: int = 0
@@ -129,13 +130,20 @@ class Orquestrador:
 
     # ----------------------------------------------------------------
 
-    def responder(self, pergunta: str) -> Resposta:
+    def responder(self, pergunta: str, historico: list[dict] | None = None) -> Resposta:
         t0 = time.time()
         registro_chamadas: list[Chamada] = []
         registro_modelo: list[dict] = []
         ms_modelo = 0
+        # O histórico entra entre o system e a pergunta, no vocabulário do
+        # modelo. É o que faz "quero a segunda opção" apontar para as opções
+        # que o próprio agente ofereceu no turno anterior. Quem guarda e
+        # entrega o histórico é `memoria.py`; aqui ele só é reenviado.
         mensagens: list[dict] = [
             {"role": "system", "content": composicao.INSTRUCAO},
+            *[m for m in (historico or [])
+              if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+              and (m.get("content") or "").strip()],
             {"role": "user", "content": pergunta},
         ]
         usadas: list[str] = []
@@ -241,16 +249,21 @@ class Orquestrador:
 
     def _fechar(self, texto, chamadas_ferramenta, mensagens, usadas, voltas,
                 registro_modelo) -> Resposta:
+        # A linha SUGESTOES sai antes do verificador: número dentro de sugestão
+        # não é afirmação sobre o dado, e a linha nunca aparece na tela.
+        texto, sugestoes = composicao.extrair_sugestoes(texto)
         if not texto:
             r = Resposta(composicao.MENSAGEM_SEM_RESPOSTA_CONFIAVEL, usadas,
                          degradada=True, motivo_degradacao="modelo não produziu texto",
                          voltas=voltas)
+            r.sugestoes = sugestoes
             r.veredito = composicao.verificar(r.texto, chamadas_ferramenta)
             return r
 
         veredito = composicao.verificar(texto, chamadas_ferramenta)
         if veredito.aprovado:
             r = Resposta(texto, usadas, voltas=voltas)
+            r.sugestoes = sugestoes
             r.veredito = veredito
             return r
 
@@ -276,10 +289,13 @@ class Orquestrador:
             novo = texto_da_mensagem(msg)
             if not novo:
                 break
-            texto = novo
+            texto, novas = composicao.extrair_sugestoes(novo)
+            if novas:
+                sugestoes = novas
             veredito = composicao.verificar(texto, chamadas_ferramenta)
             if veredito.aprovado:
                 r = Resposta(texto, usadas, voltas=voltas)
+                r.sugestoes = sugestoes
                 r.veredito = veredito
                 return r
 
@@ -289,6 +305,7 @@ class Orquestrador:
         if not limpo:
             limpo = composicao.MENSAGEM_SEM_RESPOSTA_CONFIAVEL
         r = Resposta(limpo, usadas, degradada=True, motivo_degradacao=motivo, voltas=voltas)
+        r.sugestoes = sugestoes
         # o veredito e refeito sobre o texto **entregue**: o contrato exige que
         # todo numero em numeros_exibidos tenha linha de verificacao, e o texto
         # degradado ja nao tem os numeros sem origem

@@ -40,7 +40,7 @@ O **RenovAI** é um motor de recomendação que apoia propagandistas farmacêuti
 > ainda **não foi formalmente confirmada como regra intencional** com
 > George/Bruno — ver `docs/context/known-issues.md`.
 
-O propagandista recebe no máximo **5 sugestões por tipo** por ciclo, ordenadas por pontuação. Pode aceitar (ação tomada → `APLICADA`), desconsiderar com justificativa (`DESCONSIDERADA`) ou deixar expirar no fim do ciclo (`EXPIRADA`). **O fluxo de desconsiderar está congelado** (ver seção de Endpoints) — não recebe manutenção nova no momento.
+O propagandista recebe recomendações paginadas, com as cinco primeiras de cada tipo destacadas como prioridade. Pode aceitar (`ACEITA`), desconsiderar com justificativa (`DESCONSIDERADA`) ou deixar expirar no fim do ciclo (`EXPIRADA`). O aceite é intenção, não confirmação: quem marca `APLICADA` é o job diário que compara contra o painel real, e ele continua detectando quem age direto no SalesFarma sem passar pelo portal.
 
 Além das listas, o sistema oferece um **chat analítico em linguagem natural** que traduz perguntas do propagandista em SQL, executa no banco de dados e retorna a resposta sintetizada — simulando localmente o comportamento do Databricks Genie.
 
@@ -92,10 +92,10 @@ Além das listas, o sistema oferece um **chat analítico em linguagem natural** 
 │  tb_hierarquia_gd          │          │  vw_ultima_visita                   │
 └───────────────────────────┘          └────────────────────────────────────┘
 
-Jobs (CLI / cron):
-  gerar_recomendacoes.py  →  roda no início de cada ciclo
-  atualizar_status.py     →  roda diariamente
-  novo_ciclo.py           →  roda no último dia útil do mês
+Jobs locais (CLI, para desenvolvimento; NÃO são o que roda em produção):
+  gerar_recomendacoes.py  →  equivale ao início de cada ciclo
+  atualizar_status.py     →  equivale à atualização diária
+  novo_ciclo.py           →  equivale ao último dia útil do mês
 ```
 
 ### Fluxo NL → SQL (Genie local)
@@ -162,7 +162,7 @@ renovai-local/
 │       │   └── gerencial.py           # Contrato frontend ↔ backend (visão GD)
 │       ├── jobs/
 │       │   ├── gerar_recomendacoes.py # Gera sugestões por ciclo
-│       │   ├── atualizar_status.py    # Atualiza PENDENTE → APLICADA diariamente
+│       │   ├── atualizar_status.py    # Simulador local; produção é notebook SQL
 │       │   └── novo_ciclo.py          # Expira ciclo anterior + abre novo ciclo
 │       └── tests/
 │           ├── conftest.py
@@ -290,7 +290,8 @@ Isso permite rodar a API localmente (`uvicorn` na sua máquina) apontando para o
 | Status | Quando ocorre |
 |---|---|
 | `PENDENTE` | Gerada, aguardando ação |
-| `APLICADA` | Médico entrou/saiu do painel (detectado por `atualizar_status.py`) |
+| `ACEITA` | Propagandista declarou intenção de cumprir a recomendação |
+| `APLICADA` | Médico entrou/saiu do painel (detectado pelo notebook SQL do Hugo) |
 | `DESCONSIDERADA` | Rep ou GD optou por ignorar (com motivo registrado) |
 | `EXPIRADA` | Ciclo encerrado sem ação |
 
@@ -472,7 +473,14 @@ python -m backend.app.jobs.gerar_recomendacoes --ciclo 202507 --dry-run
 
 ### `atualizar_status.py`
 
-Roda diariamente. Detecta médicos que entraram/saíram do painel e atualiza status para `APLICADA`.
+> **Não roda em produção.** Quem marca `APLICADA` no ambiente real é o notebook
+> SQL `nb_dev_atualiza_renovai_tb_recomendacoes_painel_hist`, executado pelo
+> `JOB_ATUALIZACAO_RECOMENDACOES_PAINEL` (`835351173437850`), diariamente às
+> 08:02. Este módulo é uma implementação paralela usada no desenvolvimento e
+> nos testes; alterar este arquivo não muda o comportamento de produção.
+
+Em desenvolvimento, detecta médicos que entraram ou saíram do painel e atualiza
+o status para `APLICADA`.
 
 ```bash
 python -m backend.app.jobs.atualizar_status --ciclo 202507
@@ -543,6 +551,11 @@ docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/07_sim
 docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/08_create_views_gerencial.sql
 docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/09_migrar_colunas_desconsideracao.sql
 docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/10_popular_cenarios_desconsiderar.sql
+docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/14_create_tabelas_chat_ranking_agente.sql
+docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/15_create_views_chat_ranking_agente.sql
+docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/16_popular_cenarios_chat_ranking_agente.sql
+docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/18_migrar_aceite_memoria_visitas.sql
+docker exec -i renovai-postgres psql -U renovai -d renovai < data/scripts/19_popular_memoria_visitas.sql
 ```
 
 ### 4. Criar ambiente Python e instalar dependências

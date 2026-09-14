@@ -386,6 +386,74 @@ Mapeamento para Databricks continua dormente em
 `_COLUNAS_POR_FONTE["databricks"]`, aguardando as mesmas 5 colunas do Hugo
 já formalizadas como pendência na entrada de 2026-08-06.
 
+## 2026-08-26/27 — Chat/Ranking/Agente + Perfil unificado: sincronizado com dev
+Trazido para `renovai-local` o trabalho do George na branch
+`merge/portal-agente-e-recomendacoes` (`AcheInfo_Apps/APP_RENOVAI`):
+agente de chat, aba Chat, aba Ranking, e unificação de `tb_perfil_portal`
+com a edição de nome/foto/limite de painel dele. Diagnóstico prévio
+(mesmo padrão cauteloso de sempre — dev vs. branch do George, arquivo por
+arquivo) confirmou os 4 arquivos centrais da Sprint 6 idênticos entre
+`dev` e a branch do George: sem conflito real, decisão foi copiar/mesclar
+direto, não reconciliar regra de negócio divergente.
+
+**Decisão de arquitetura confirmada durante o port**: o código do George
+não usava a abstração dual-source (`_schema()`/`get_engine()` consciente
+de `DATA_SOURCE`) e tinha 6 padrões de SQL que só funcionam no Databricks
+— corrigidos sem alterar comportamento em nenhuma das duas fontes
+(detalhe técnico completo, achado por achado, em
+`docs/context/known-issues.md`). Decisão: preservar a abstração
+dual-source como padrão obrigatório para todo código novo trazido de
+fora, mesmo quando a origem não segue esse padrão.
+
+**Migração do 318**: o George criou `tb_renovai_parametros` no Databricks
+real em 26/08/2026 como fonte única de parâmetros de negócio
+(`LIMITE_PAINEL_PADRAO`, `JANELA_VISITA_MESES`, `JANELA_PAINEL_CICLOS`).
+Decisão: eliminar todo literal `318` hardcoded no código (Sprint 6 tinha
+introduzido esse literal em 4 lugares) e ler da tabela em tempo real —
+aplicado em `routers/recomendacoes.py`, `jobs/gerar_recomendacoes.py`,
+`genie/nl_to_sql.py`, `auth/perfil.py`. Nota de hardening (não
+implementada, registrada em known-issues.md): o comentário real da
+coluna sugere intenção de "erro declarado" se a tabela ficar
+inacessível, mas a fórmula atual só falha de verdade se a tabela não
+existir — devolve `NULL` silencioso se existir sem a linha `ID=1`.
+
+**Achado de segurança, tratado fora desta sincronização**:
+`acessos.csv.bak-20260820` na branch do George continha e-mail +
+hash de senha reais de funcionários Aché. Não copiado para
+`renovai-local` em nenhuma hipótese, em nenhum commit.
+
+**Publicado**: 6 commits em `renovai-local` (`364e3c0`..`b0ee9b5`), 5
+commits equivalentes em `AcheInfo_Apps/dev` (`0630b17`..`67dd775`) —
+mesmo agrupamento temático nos dois repositórios, mensagens adaptadas
+onde a realidade de `dev` divergia (`requirements.txt`,
+`docs/context/known-issues.md` gitignored em `dev`, aplicado só
+fisicamente). Push confirmado nos dois remotos.
+
+## 2026-08-28 — Integração WhatsApp via Twilio (Sprint 7): SQL cru, sem ORM
+Uma proposta de estrutura de código de outra sessão de trabalho usava
+SQLAlchemy ORM (`Base`, `Column`, `Session`) e pastas `backend/app/
+models/`/`backend/app/api/` — nenhum dos dois existe em qualquer lugar
+deste projeto. Decisão: reescrever seguindo o padrão real (SQL
+parametrizado via `get_engine()` + `text()`, mesmo padrão de
+`services/registro_envio.py`; estrutura de pastas real —
+`routers/`/`services/`/`schemas/`/`db/`), não introduzir ORM nem pastas
+novas fora do padrão estabelecido.
+
+`tb_notificacoes_whatsapp` fica no Postgres local por enquanto — mesmo
+padrão de desenvolvimento das outras sprints, sem tocar Databricks real
+nesta fase (`data/scripts/17_create_tb_notificacoes_whatsapp.sql`).
+
+Configuração da Twilio (`integrations/whatsapp/config.py`) deliberadamente
+isolada de `Settings`/`config.py` central: é credencial de UMA API
+externa, categoria distinta de `DATA_SOURCE` (que escolhe entre duas
+fontes de dado equivalentes e é consumido por quase todo o backend).
+`TWILIO_ENV=production` recusado com erro claro — sem credencial de
+produção configurada ainda (ver `docs/context/known-issues.md`).
+
+Implementado e testado localmente (19 testes novos, suíte completa 360
+passed / 1 failed pré-existente / 3 skipped) — **nada commitado ainda**,
+decisão de divisão de commits fica para sessão seguinte.
+
 ## Próximos passos técnicos (não iniciados)
 - Implementar `llm/genie_provider.py` com Databricks SDK (para promoção a
   produção) — ver `docs/promocao_producao.md`.

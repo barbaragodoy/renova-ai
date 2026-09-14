@@ -12,13 +12,20 @@ export default defineConfig(({ mode }) => {
   // portal e a API na mesma origem, dentro da imagem única.
   const alvo = env.VITE_BACKEND_URL || "http://localhost:8000";
 
+  // Todo prefixo de rota que o front chama precisa estar aqui. O que falta
+  // não vai ao backend: o servidor do Vite devolve o index.html e a chamada
+  // falha sem explicação. `/chat`, `/agente` e `/ranking` faltavam, então
+  // conversa e ranking não funcionavam em desenvolvimento.
   const rotas = [
+    "/agente",
     "/auth",
-    "/recomendacoes",
-    "/prescricoes",
-    "/insight-medico",
+    "/chat",
     "/gerencial",
     "/health",
+    "/insight-medico",
+    "/prescricoes",
+    "/ranking",
+    "/recomendacoes",
   ];
 
   return {

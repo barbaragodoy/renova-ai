@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { Search, TrendingUp, X } from "lucide-react";
+import { Info, Search, TrendingUp, X } from "lucide-react";
 import {
   ApiError,
   classificarMedico,
   CONDUTA_TAMANHO_MAXIMO,
   detalharMedico,
+  enriquecerPerfil,
   listarRanking,
   PERFIS_SEGMENTACAO,
   registrarConduta,
@@ -12,9 +13,12 @@ import {
   type MercadoDetalhe,
   type DetalheMedicoResponse,
   type MedicoRanking,
+  type MemoriaDeVisitas,
   type PerfilSegmentacao,
 } from "@/lib/api";
 import { Alert } from "@/components/ui/alert";
+import { CardMemoriaDeVisitas } from "@/components/CardMemoriaDeVisitas";
+import { GavetaDeAcao } from "@/components/GavetaDeAcao";
 
 /**
  * Aba Ranking do PedAI.
@@ -36,9 +40,11 @@ import { Alert } from "@/components/ui/alert";
  * 4. A gaveta de detalhes ganhou o que o chat já tem mapeado: categorias mais
  *    prescritas com percentual, medicamentos mais prescritos, participação
  *    Aché e o produto da linha para a conversa com até duas opções a mais.
- * 5. O texto "Como o ranking é calculado" do protótipo afirmava critérios não
- *    confirmados (frequência, ciclos consecutivos, potencial de mercado) e
- *    saiu. O que a `SOMA_PONTUACAO` mede segue pendente de confirmação.
+ * 5. O texto "Como o ranking é calculado" do protótipo saiu em 11/08/2026 por
+ *    afirmar critérios não confirmados, e **voltou em 04/09/2026** por decisão
+ *    de George, com o argumento de que o material foi apresentado ao negócio e
+ *    aceito. Ver `SobreORanking` abaixo. O que a `SOMA_PONTUACAO` mede continua
+ *    pendente de confirmação no cofre.
  */
 
 /** Roxo do cartão de cabeçalho no protótipo, sem token no design system. */
@@ -75,8 +81,7 @@ function capitalizarNome(nome: string): string {
 function formatarPontos(valor?: number | null): string {
   if (valor === null || valor === undefined) return "—";
   return `${valor.toLocaleString("pt-BR", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    maximumFractionDigits: 0,
   })} pts`;
 }
 
@@ -135,6 +140,173 @@ function SeloPainel({ noPainel }: { noPainel: boolean }) {
   );
 }
 
+/** Explicação do que é o ranking e de como ele é calculado.
+ *
+ *  Texto literal do protótipo do Figma Make `cuZGbZpvR0aBJhixqBnYYB`, adotado
+ *  por decisão de George em 04/09/2026. Ele já esteve na tela e saiu em
+ *  11/08/2026 porque cinco dos critérios que cita não estão confirmados no
+ *  cofre: demanda do mercado na região, dados de pesquisas, relevância
+ *  estratégica dos produtos, categoria CAT 1/2/3 e pesos por região. George
+ *  optou por publicar assim mesmo, com o argumento de que o material foi
+ *  apresentado e aceito pelo negócio. **Não alterar o texto sem falar com ele**,
+ *  e a origem dos critérios é pergunta para o negócio, não para o código.
+ *
+ *  Começa aberto e fecha por escolha da pessoa: o bloco é explicação, não
+ *  aviso, e quem já entendeu não precisa vê-lo em toda visita à aba. A escolha
+ *  não é persistida de propósito, para não guardar preferência de tela sem
+ *  necessidade. */
+function SobreORanking({ aoFechar }: { aoFechar: () => void }) {
+  return (
+    <div className="space-y-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <Info className="h-4 w-4 flex-shrink-0 text-[var(--color-primary)]" aria-hidden="true" />
+          <p className="text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
+            O que é o ranking?
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={aoFechar}
+          aria-label="Fechar a explicação do ranking"
+          className="flex-shrink-0 rounded-full p-1 text-[var(--color-muted-foreground)]"
+        >
+          <X className="h-4 w-4" aria-hidden="true" />
+        </button>
+      </div>
+
+      <p className="text-xs leading-relaxed text-[var(--color-muted-foreground)]">
+        O ranking ajuda a identificar médicos com maior potencial para cada
+        setor, apoiando a{" "}
+        <span className="font-semibold text-[var(--color-foreground)]">
+          priorização das visitas
+        </span>
+        .
+      </p>
+
+      <p className="pt-1 text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
+        Como ele funciona
+      </p>
+      <p className="text-xs leading-relaxed text-[var(--color-muted-foreground)]">
+        Para definir a posição, são combinadas diferentes informações, como o{" "}
+        <span className="font-semibold text-[var(--color-foreground)]">
+          histórico de prescrições
+        </span>{" "}
+        do médico, a{" "}
+        <span className="font-semibold text-[var(--color-foreground)]">
+          demanda do mercado na região
+        </span>{" "}
+        e{" "}
+        <span className="font-semibold text-[var(--color-foreground)]">
+          dados de pesquisas
+        </span>
+        .
+      </p>
+      <p className="text-xs leading-relaxed text-[var(--color-muted-foreground)]">
+        A pontuação também considera a{" "}
+        <span className="font-semibold text-[var(--color-foreground)]">
+          relevância estratégica dos produtos
+        </span>{" "}
+        para cada linha e a categoria do médico (CAT 1, 2 ou 3). Esses
+        indicadores podem ter pesos diferentes conforme o mercado e a região, e
+        a combinação desses fatores gera uma pontuação, que determina a posição
+        do médico no ranking.
+      </p>
+
+      <div className="mt-1 rounded-xl bg-[var(--color-muted)] p-3">
+        <p className="text-xs leading-relaxed" style={{ color: ROXO_HEADER }}>
+          O ranking funciona como um{" "}
+          <span className="font-semibold">apoio à tomada de decisão</span>,
+          indicando oportunidades com base nos dados e critérios disponíveis.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Rótulo da recomendação pendente na lista, no lugar do selo de painel.
+ *
+ *  Decisão de George em 04/09/2026: médico que deve permanecer não mostra
+ *  nada. O selo só aparece quando existe recomendação pendente sobre a qual
+ *  agir, e ele é o convite para a ação. Sem recomendação, volta o selo antigo
+ *  de painel, que é informação e não ação. */
+const SELO_DA_RECOMENDACAO: Record<string, { texto: string; fundo: string; cor: string }> = {
+  ENTRADA_PAINEL: { texto: "Incluir no painel", fundo: "var(--color-accent)", cor: "var(--color-primary)" },
+  REVISAO_PAINEL: { texto: "Rever no painel", fundo: "#FEF3C7", cor: "#92400E" },
+};
+
+/** Tipo que a tela não conhece ainda assim tem ação: o registro existe e pode
+ *  ser aceito ou desconsiderado. Sem este padrão, um tipo novo vindo do backend
+ *  quebrava a renderização da lista inteira antes de qualquer texto aparecer.
+ *  Achado da revisão independente de 04/09/2026. */
+const SELO_PADRAO = {
+  texto: "Recomendação pendente",
+  fundo: "var(--color-muted)",
+  cor: "var(--color-muted-foreground)",
+};
+
+function seloDaRecomendacao(tipo: string) {
+  return SELO_DA_RECOMENDACAO[tipo] ?? SELO_PADRAO;
+}
+
+/** O que a linha mostra quando a recomendação do ciclo já foi resolvida.
+ *
+ *  Sem isto, resolver a recomendação fazia a linha voltar ao selo de painel,
+ *  como se nada tivesse acontecido, e o propagandista não via a própria
+ *  decisão. `EXPIRADA` e `INELEGIVEL` ficam de fora de propósito: não são
+ *  decisão dele, são estado do sistema, e para elas o selo de painel continua
+ *  sendo a informação mais útil. */
+const SELO_DO_ESTADO: Record<string, { texto: string; fundo: string; cor: string }> = {
+  ACEITA: { texto: "Aceita", fundo: "var(--color-accent)", cor: "var(--color-primary)" },
+  DESCONSIDERADA: { texto: "Desconsiderada", fundo: "var(--color-muted)", cor: "var(--color-muted-foreground)" },
+  APLICADA: { texto: "Aplicada", fundo: "#DCFCE7", cor: "#166534" },
+};
+
+/** Invólucro da gaveta de ação para o Ranking.
+ *
+ *  A gaveta em si é compartilhada com a aba Recomendações
+ *  (`components/GavetaDeAcao`), por decisão de George em 04/09/2026: as duas
+ *  telas resolvem a mesma recomendação, e ter duas implementações significaria
+ *  as duas divergirem no dia em que um texto mudasse.
+ *
+ *  O que é específico daqui é a frase: a lista do ranking não traz o motivo da
+ *  recomendação, então este invólucro busca o detalhe do médico e usa
+ *  `fraseDaRecomendacao`, a mesma do resto da tela. */
+function GavetaDeAcaoDoRanking({
+  medico,
+  email,
+  onFechar,
+  onResolvida,
+}: {
+  medico: MedicoRanking;
+  email: string;
+  onFechar: () => void;
+  onResolvida: (statusNovo: string | null) => void;
+}) {
+  const [frase, setFrase] = useState<string | null>(null);
+
+  useEffect(() => {
+    let ativo = true;
+    detalharMedico(email, medico.ufcrm)
+      .then((d) => ativo && setFrase(fraseDaRecomendacao(d)))
+      .catch(() => ativo && setFrase(""));
+    return () => {
+      ativo = false;
+    };
+  }, [email, medico.ufcrm]);
+
+  return (
+    <GavetaDeAcao
+      nome={capitalizarNome(medico.nome_medico)}
+      idRecomendacao={medico.id_recomendacao_pendente!}
+      tipoRecomendacao={medico.tipo_recomendacao_pendente}
+      frase={frase}
+      onFechar={onFechar}
+      onResolvida={onResolvida}
+    />
+  );
+}
+
 interface RankingProps {
   email: string;
   setor: string;
@@ -152,6 +324,11 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
   const [carregandoMais, setCarregandoMais] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [ufcrmAberto, setUfcrmAberto] = useState<string | null>(null);
+  const [sobreAberto, setSobreAberto] = useState(true);
+  // Médico cuja recomendação pendente está sendo resolvida na gaveta de ação.
+  // Separado de `ufcrmAberto`, que abre a gaveta de detalhes: tocar no selo
+  // age sobre a recomendação, tocar no resto da linha abre o detalhe.
+  const [acaoAberta, setAcaoAberta] = useState<MedicoRanking | null>(null);
 
   // A busca espera a pessoa parar de digitar para não disparar uma consulta
   // ao warehouse por tecla.
@@ -244,6 +421,8 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
         </div>
       </div>
 
+      {sobreAberto && <SobreORanking aoFechar={() => setSobreAberto(false)} />}
+
       {/* Busca */}
       <div className="flex items-center gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] px-4 py-2.5 shadow-sm">
         <Search className="h-4 w-4 flex-shrink-0 text-[var(--color-muted-foreground)]" aria-hidden="true" />
@@ -267,31 +446,69 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
 
       {/* Lista */}
       <div className="space-y-2">
+        {/* Duas ações na mesma linha, então dois elementos irmãos e não um
+            dentro do outro: botão dentro de botão é HTML inválido e o leitor
+            de tela não sabe qual anunciar. A linha abre o detalhe; o selo da
+            recomendação resolve a recomendação. */}
         {medicos.map((medico) => (
-          <button
+          <div
             key={medico.ufcrm}
-            type="button"
-            onClick={() => setUfcrmAberto(medico.ufcrm)}
-            className="flex w-full items-center gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] px-4 py-3 text-left shadow-sm transition-opacity active:opacity-75"
+            className="flex w-full items-center gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] px-4 py-3 shadow-sm"
           >
-            <span className="w-10 flex-shrink-0 text-center text-sm font-bold text-[var(--color-muted-foreground)]">
-              {medico.posicao}
-            </span>
-            <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-semibold text-[var(--color-foreground)]">
-                {capitalizarNome(medico.nome_medico)}
-              </p>
-              <p className="text-xs text-[var(--color-muted-foreground)]">
-                {medico.especialidade ? capitalizarNome(medico.especialidade) : medico.ufcrm}
-              </p>
-            </div>
+            <button
+              type="button"
+              onClick={() => setUfcrmAberto(medico.ufcrm)}
+              className="flex min-w-0 flex-1 items-center gap-3 text-left transition-opacity active:opacity-75"
+            >
+              <span className="w-10 flex-shrink-0 text-center text-sm font-bold text-[var(--color-muted-foreground)]">
+                {medico.posicao}
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-semibold text-[var(--color-foreground)]">
+                  {capitalizarNome(medico.nome_medico)}
+                </p>
+                <p className="text-xs text-[var(--color-muted-foreground)]">
+                  {medico.especialidade ? capitalizarNome(medico.especialidade) : medico.ufcrm}
+                </p>
+              </div>
+            </button>
+
             <div className="flex flex-shrink-0 flex-col items-end gap-1">
               <p className="text-sm font-bold text-[var(--color-primary)]">
                 {formatarPontos(medico.pontos)}
               </p>
-              <SeloPainel noPainel={medico.no_painel} />
+              {/* Recomendação pendente vira ação; sem ela, volta o selo de
+                  painel, que é informação. Médico que deve permanecer não
+                  mostra nada de ação, decisão de George em 04/09/2026. */}
+              {medico.id_recomendacao_pendente && medico.tipo_recomendacao_pendente ? (
+                <button
+                  type="button"
+                  aria-label={`Resolver recomendação de ${capitalizarNome(medico.nome_medico)}`}
+                  onClick={() => setAcaoAberta(medico)}
+                  className="flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold transition-opacity active:opacity-75"
+                  style={{
+                    background: seloDaRecomendacao(medico.tipo_recomendacao_pendente).fundo,
+                    color: seloDaRecomendacao(medico.tipo_recomendacao_pendente).cor,
+                  }}
+                >
+                  {seloDaRecomendacao(medico.tipo_recomendacao_pendente).texto}
+                </button>
+              ) : medico.status_recomendacao &&
+                SELO_DO_ESTADO[medico.status_recomendacao] ? (
+                <span
+                  className="flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold"
+                  style={{
+                    background: SELO_DO_ESTADO[medico.status_recomendacao].fundo,
+                    color: SELO_DO_ESTADO[medico.status_recomendacao].cor,
+                  }}
+                >
+                  {SELO_DO_ESTADO[medico.status_recomendacao].texto}
+                </span>
+              ) : (
+                <SeloPainel noPainel={medico.no_painel} />
+              )}
             </div>
-          </button>
+          </div>
         ))}
 
         {medicos.length === 0 && (
@@ -315,8 +532,36 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
         )}
       </div>
 
+      {acaoAberta && (
+        <GavetaDeAcaoDoRanking
+          key={acaoAberta.ufcrm}
+          medico={acaoAberta}
+          email={email}
+          onFechar={() => setAcaoAberta(null)}
+          // A recomendação deixou de estar pendente, então o selo de ação
+          // some da linha sem precisar recarregar a lista inteira.
+          onResolvida={(statusNovo) =>
+            setMedicos((atuais) =>
+              atuais.map((m) =>
+                m.ufcrm === acaoAberta.ufcrm
+                  ? {
+                      ...m,
+                      id_recomendacao_pendente: null,
+                      tipo_recomendacao_pendente: null,
+                      status_recomendacao: statusNovo,
+                    }
+                  : m,
+              ),
+            )
+          }
+        />
+      )}
+
       {ufcrmAberto && (
         <GavetaMedico
+          // Remonta a gaveta a cada médico: nenhum estado interno (detalhe,
+          // memória, rascunho de conduta) atravessa de um médico para outro.
+          key={ufcrmAberto}
           email={email}
           ufcrm={ufcrmAberto}
           onFechar={() => setUfcrmAberto(null)}
@@ -379,6 +624,9 @@ function rotularPerfil(perfil?: string | null): string {
 function GavetaMedico({ email, ufcrm, onFechar, onConversar }: GavetaMedicoProps) {
   const [detalhe, setDetalhe] = useState<DetalheMedicoResponse | null>(null);
   const [erro, setErro] = useState<string | null>(null);
+  // A Memória de Visitas chega por outra rota e depois do detalhe, que é
+  // instantâneo. Falha aqui não mostra nada: a gaveta continua inteira.
+  const [memoria, setMemoria] = useState<MemoriaDeVisitas | null>(null);
   const [salvandoPerfil, setSalvandoPerfil] = useState(false);
   const [erroPerfil, setErroPerfil] = useState<string | null>(null);
   // Perfil escolhido e ainda não confirmado. Um clique sozinho não grava: a
@@ -456,6 +704,10 @@ function GavetaMedico({ email, ufcrm, onFechar, onConversar }: GavetaMedicoProps
 
   useEffect(() => {
     let ativo = true;
+    // Se a mesma instância receber outro médico, a memória anterior não pode
+    // continuar na tela enquanto a nova não chega, nem sobreviver a uma nova
+    // chamada que falhe ou volte indisponível.
+    setMemoria(null);
     detalharMedico(email, ufcrm)
       .then((resp) => ativo && setDetalhe(resp))
       .catch((excecao) => {
@@ -465,6 +717,13 @@ function GavetaMedico({ email, ufcrm, onFechar, onConversar }: GavetaMedicoProps
             ? excecao.message
             : "Não foi possível carregar os detalhes.",
         );
+      });
+    enriquecerPerfil(ufcrm)
+      .then((extra) => {
+        if (ativo && extra.visitas?.disponivel) setMemoria(extra.visitas);
+      })
+      .catch(() => {
+        /* silencioso: a seção simplesmente não aparece */
       });
     return () => {
       ativo = false;
@@ -649,6 +908,10 @@ function GavetaMedico({ email, ufcrm, onFechar, onConversar }: GavetaMedicoProps
                 ))}
               </div>
             </div>
+
+            {/* Memória de visitas: o mesmo conteúdo do chat, resumido. O card
+                traz o próprio título e o selo do momento da relação. */}
+            {memoria && <CardMemoriaDeVisitas memoria={memoria} resumido />}
 
             {/* Como Trata --------------------------------------------------- */}
             <div>

@@ -159,7 +159,7 @@ def test_e2e_04_desconsiderar_sai_da_lista():
     conn1.execute.side_effect = _exec
     eng1.return_value.connect.return_value = conn1
 
-    body = {"motivo": "SEM_INTERESSE_COMERCIAL", "bloquear_novas_recomendacoes": False}
+    body = {"motivo": "FORA_DO_PLANEJAMENTO", "bloquear_novas_recomendacoes": False}
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", eng1):
             resp = CLIENT.post(

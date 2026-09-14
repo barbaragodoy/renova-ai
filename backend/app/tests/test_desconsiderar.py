@@ -34,8 +34,8 @@ _CTX = ContextoResponse(
 
 _ID = str(uuid.uuid4())
 
-_BODY_BLOQUEAR_TRUE = {"motivo": "MEDICO_APOSENTADO", "bloquear_novas_recomendacoes": True}
-_BODY_BLOQUEAR_FALSE = {"motivo": "SEM_INTERESSE_COMERCIAL", "bloquear_novas_recomendacoes": False}
+_BODY_BLOQUEAR_TRUE = {"motivo": "SEM_PERFIL_PARA_O_PAINEL", "bloquear_novas_recomendacoes": True}
+_BODY_BLOQUEAR_FALSE = {"motivo": "AGUARDAR_PROXIMO_CICLO", "bloquear_novas_recomendacoes": False}
 _BODY_OUTROS = {
     "motivo": "OUTROS",
     "motivo_outros_texto": "Médico mudou de especialidade",
@@ -303,3 +303,27 @@ def test_desconsiderar_integracao_real_some_da_lista_revisao():
     assert resp_lista.status_code == 200
     ids = [item["id_recomendacao"] for item in resp_lista.json()["recomendacoes"]]
     assert _ID_CENARIO_REVISAO not in ids
+
+
+def test_motivos_antigos_sao_recusados_e_os_novos_aceitos():
+    """A lista trocou em 04/09/2026 pela do prototipo. Codigo antigo nao entra
+    mais em gravacao nova; os cinco novos e OUTROS continuam valendo.
+
+    Pelo HTTP, e nao instanciando o modelo: o que importa e o que a rota
+    aceita e recusa. Achado da revisao independente de 04/09/2026."""
+    from backend.app.schemas.recomendacoes import (
+        MOTIVOS_DESCONSIDERACAO,
+        MOTIVOS_DESCONSIDERACAO_HISTORICOS,
+    )
+    for antigo in MOTIVOS_DESCONSIDERACAO_HISTORICOS:
+        assert antigo not in MOTIVOS_DESCONSIDERACAO
+        resp = _post({"motivo": antigo, "bloquear_novas_recomendacoes": False})
+        assert resp.status_code == 422, antigo
+
+    for novo in MOTIVOS_DESCONSIDERACAO:
+        corpo = {"motivo": novo, "bloquear_novas_recomendacoes": False}
+        if novo == "OUTROS":
+            corpo["motivo_outros_texto"] = "motivo livre de teste"
+        resp = _post(corpo)
+        assert resp.status_code == 200, (novo, resp.text)
+        assert resp.json()["status_recomendacao"] == "DESCONSIDERADA"

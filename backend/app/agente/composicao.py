@@ -59,6 +59,34 @@ def sem_marcadores_de_lista(texto: str) -> str:
     """
     return _MARCADOR_DE_LISTA.sub("", texto or "")
 
+
+# A linha de sugestões que a regra 8 pede ao modelo. Sai do texto antes do
+# verificador de números e antes da tela: número dentro de sugestão não é
+# afirmação sobre o dado, e o usuário vê botões, nunca a linha.
+_SUGESTOES = re.compile(r"(?mi)^\s*SUGEST(?:Õ|O)ES\s*:\s*(.+?)\s*$")
+
+MAX_SUGESTOES = 3
+
+
+def extrair_sugestoes(texto: str) -> tuple[str, list[str]]:
+    """Separa o texto da resposta da linha de sugestões, se houver.
+
+    Devolve o texto sem a linha e a lista de sugestões, na ordem em que o
+    modelo escreveu, sem vazios e sem repetição. O texto volta com as bordas
+    aparadas para a remoção não deixar linha em branco no fim.
+    """
+    achados: list[str] = []
+
+    def _coletar(m: re.Match) -> str:
+        for parte in m.group(1).split("|"):
+            rotulo = parte.strip(" .;·-")
+            if rotulo and rotulo.lower() not in (a.lower() for a in achados):
+                achados.append(rotulo)
+        return ""
+
+    limpo = _SUGESTOES.sub(_coletar, texto or "").strip()
+    return limpo, achados[:MAX_SUGESTOES]
+
 # Números que o texto pode usar sem estar em retorno de ferramenta: são
 # aritmética de linguagem, não afirmação sobre o dado.
 _LIVRES = {Decimal(0), Decimal(1), Decimal(2)}
@@ -127,6 +155,16 @@ def _canonico(v: Decimal) -> str:
     return str(v.normalize())
 
 
+# Campo cujo texto não autoriza número na resposta. O comentário da visita é
+# relato livre do propagandista: "retornar em 15 dias" autorizava o modelo a
+# escrever "15%" sobre participação, porque o verificador guarda só o valor,
+# sem a unidade. Achado da revisão independente de 02/09/2026. O custo é
+# conservador e deliberado: número que só exista dentro de uma observação é
+# removido pela degradação se o modelo o afirmar solto; melhor perder uma
+# citação do que validar um número inventado com a unidade errada.
+CAMPOS_SEM_AUTORIDADE_NUMERICA = frozenset({"COMENTARIOS"})
+
+
 def universo_de_numeros(retornos: Iterable[tuple[str, list[dict[str, Any]]]]) -> set[str]:
     """Tudo que o modelo tem permissão de escrever como número.
 
@@ -139,7 +177,9 @@ def universo_de_numeros(retornos: Iterable[tuple[str, list[dict[str, Any]]]]) ->
     for _, linhas in retornos:
         universo.add(_canonico(Decimal(len(linhas))))
         for linha in linhas:
-            for valor in linha.values():
+            for campo, valor in linha.items():
+                if campo in CAMPOS_SEM_AUTORIDADE_NUMERICA:
+                    continue
                 if isinstance(valor, bool) or valor is None:
                     continue
                 if isinstance(valor, (int, float, Decimal)):
@@ -164,24 +204,41 @@ CONTAGEM_DE_LINHAS = "<contagem_de_linhas>"
 ARGUMENTO = "<argumento>"
 
 
-def _procurar_origem(valor: Decimal, chamadas: Iterable[Chamada]):
+def _procurar_origem(valor: Decimal, chamadas: Iterable[Chamada],
+                     precisa_percentual: bool = False):
     """Qual chamada e qual campo autorizam este numero. Primeira que servir.
 
     So chamada com sucesso conta: o contrato recusa verificacao apoiada em
     chamada que falhou, e com razao. Numero tirado de retorno de erro nao e
     dado, e coincidencia.
+
+    `precisa_percentual` fecha o golpe de unidade apontado pela revisao
+    independente de 02/09/2026: "15" numa data ou cinco linhas de retorno
+    autorizavam a afirmacao "15%". Numero seguido de % na resposta so e
+    autorizado por ocorrencia com % na origem, que nas ferramentas existe
+    apenas nas strings formatadas por _formatar_percentual e nos campos
+    numericos cujo nome declara a unidade, como PARTICIPACAO_ACHE_PCT.
+    Contagem de linhas, argumento e campo numerico sem PCT no nome nunca
+    autorizam percentual.
     """
     alvo = _canonico(valor)
     for ch in chamadas:
         if not ch.sucesso:
             continue
-        if _canonico(Decimal(len(ch.linhas))) == alvo:
+        if not precisa_percentual and _canonico(Decimal(len(ch.linhas))) == alvo:
             return ch, CONTAGEM_DE_LINHAS
         for linha in ch.linhas:
             for campo, bruto in linha.items():
+                if campo in CAMPOS_SEM_AUTORIDADE_NUMERICA:
+                    continue
                 if isinstance(bruto, bool) or bruto is None:
                     continue
                 if isinstance(bruto, (int, float, Decimal)):
+                    # Campo numérico só autoriza percentual quando o próprio
+                    # nome declara a unidade, como PARTICIPACAO_ACHE_PCT.
+                    # POSICAO_RANKING ou uma contagem nunca autorizam "N%".
+                    if precisa_percentual and "PCT" not in campo.upper()                             and "PERCENT" not in campo.upper():
+                        continue
                     d = _para_decimal(str(bruto))
                     if d is not None and (_canonico(d) == alvo or
                                           (d == d.to_integral_value() and
@@ -190,6 +247,8 @@ def _procurar_origem(valor: Decimal, chamadas: Iterable[Chamada]):
                 elif isinstance(bruto, str):
                     for m in _NUMERO.finditer(bruto):
                         if _e_codigo(m.group(1)):
+                            continue
+                        if precisa_percentual and not re.match(r"\s*%", bruto[m.end():]):
                             continue
                         d = _para_decimal(m.group(1))
                         if d is not None and _canonico(d) == alvo:
@@ -203,15 +262,16 @@ def _procurar_origem(valor: Decimal, chamadas: Iterable[Chamada]):
     # registros de chamada: o universo passou a ignorar os argumentos, e a frase
     # com o número do filtro voltava a ser removida. Achado do julgamento
     # independente de 20/08.
-    for ch in chamadas:
-        if not ch.sucesso:
-            continue
-        for m in _NUMERO.finditer(ch.parametros or ""):
-            if _e_codigo(m.group(1)):
+    if not precisa_percentual:
+        for ch in chamadas:
+            if not ch.sucesso:
                 continue
-            d = _para_decimal(m.group(1))
-            if d is not None and _canonico(d) == alvo:
-                return ch, ARGUMENTO
+            for m in _NUMERO.finditer(ch.parametros or ""):
+                if _e_codigo(m.group(1)):
+                    continue
+                d = _para_decimal(m.group(1))
+                if d is not None and _canonico(d) == alvo:
+                    return ch, ARGUMENTO
     return None, ""
 
 
@@ -222,14 +282,17 @@ def verificar(texto: str, chamadas: Iterable[Chamada]) -> Veredito:
     itens: list[dict] = []
     vistos: set[str] = set()
 
-    for m in _NUMERO.finditer(sem_marcadores_de_lista(texto)):
+    limpo = sem_marcadores_de_lista(texto)
+    for m in _NUMERO.finditer(limpo):
         bruto = m.group(1)
         if _e_codigo(bruto):
             continue
         d = _para_decimal(bruto)
         if d is None:
             continue
-        ch, campo = _procurar_origem(d, chamadas)
+        com_percentual = bool(re.match(r"\s*%", limpo[m.end():]))
+        ch, campo = _procurar_origem(d, chamadas,
+                                     precisa_percentual=com_percentual)
         if ch is not None:
             if bruto not in vistos:
                 vistos.add(bruto)
@@ -238,7 +301,9 @@ def verificar(texto: str, chamadas: Iterable[Chamada]) -> Veredito:
                     "chamada_id": ch.chamada_id, "campo": campo,
                     "resultado_hash": ch.resultado_hash, "confere": True,
                 })
-        elif d not in _LIVRES:
+        elif com_percentual or d not in _LIVRES:
+            # 0, 1 e 2 são livres como quantidade, nunca como percentual:
+            # "1%" é afirmação sobre o dado e exige origem com a unidade.
             sem_origem.append(bruto)
 
     baixo = (texto or "").lower()
@@ -298,6 +363,16 @@ COMO RESPONDER
   obter o UFCRM, e depois as outras ferramentas com esse UFCRM.
 - Combine as ferramentas que a pergunta pedir. Uma pergunta sobre abordagem
   costuma precisar do perfil, dos produtos e da participação.
+- Para "o que conversamos", "o que ele pediu", "o que ficou combinado" ou
+  preparação de visita, use observacoes_do_medico e cite a data de cada
+  observação no corpo da frase ("na visita de 14/08 ele pediu..."). Anotação
+  pessoal que ajude o relacionamento entra na resposta como sugestão de
+  abertura de conversa, nunca escondida. Observação de visita NÃO é dado do
+  painel: a linha final "Dados de <valor>." não se aplica a ela e continua
+  valendo apenas quando você usar dado do painel na mesma resposta. Número
+  escrito dentro de uma observação é relato do propagandista, não dado
+  verificado: prefira reproduzir o trecho da observação a afirmar o número
+  por conta própria.
 
 REGRAS QUE NÃO TÊM EXCEÇÃO
 1. Todo número que você escrever tem que aparecer literalmente em algum
@@ -316,7 +391,17 @@ REGRAS QUE NÃO TÊM EXCEÇÃO
    desistir, tente uma segunda vez com o termo completado ou corrigido.
    Quando usar conteúdo da base de conhecimento, diga de onde veio, citando o
    documento que a ferramenta devolveu em "documentos".
-6. Se a pergunta não for sobre o painel, sobre visitas, sobre participação ou
-   sobre produtos da linha, recuse com honestidade e diga o que você faz.
+6. Recuse somente o que não tem relação nenhuma com o trabalho de campo,
+   como futebol, política ou assunto pessoal. Para todo o resto, tente
+   responder com as ferramentas ou com a busca de conhecimento antes de
+   desistir. Ao recusar ou ao não encontrar, nunca pare na negativa: diga em
+   uma frase o que você consegue fazer e termine com sugestões concretas.
 7. Nunca elogie um profissional que a recomendação manda tirar do painel.
+8. Termine toda resposta com uma linha no formato exato
+   `SUGESTOES: opção um | opção dois | opção três`, com duas ou três
+   continuações que você consegue responder com as ferramentas desta
+   conversa. Escreva cada opção como o propagandista escreveria, citando o
+   nome do médico quando houver um em contexto. Nunca sugira algo que as
+   ferramentas não cobrem. Essa linha não aparece para o usuário: ela vira
+   botões na tela.
 """

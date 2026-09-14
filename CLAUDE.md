@@ -162,6 +162,80 @@ forma totalmente independente disso.
 **Ainda não existe no Databricks real** — será criada lá em sessão separada
 (ver `docs/context/databricks-schema-real.md`).
 
+## Status ativo — Chat/Ranking/Agente + Perfil unificado — CONCLUÍDA E PUBLICADA
+
+Concluída e publicada em 2026-08-26/27: trouxe para `renovai-local` o
+trabalho do George na branch `merge/portal-agente-e-recomendacoes`
+(`AcheInfo_Apps/APP_RENOVAI`) — agente de chat (`backend/app/agente/`,
+`routers/agente.py`), aba Chat (`chat/perfil_medico.py`,
+`routers/chat.py`), aba Ranking (`routers/ranking.py`), e unificou
+`tb_perfil_portal` com a edição de nome/foto/limite de painel do George
+(`auth/perfil.py`, `auth/foto.py`). Diagnóstico prévio confirmou os 4
+arquivos centrais da Sprint 6 idênticos entre `dev` e a branch do George
+— sem conflito real, só merge de superset.
+
+**6 correções aplicadas durante o port**, achadas via teste de fumaça
+real (API rodando de ponta a ponta, não só suíte mockada) — código do
+George assumia só Databricks e quebrava contra Postgres local:
+qualificação de catálogo (`acheinfo_dev.renovai.`), maiúsculas
+inconsistentes entre objetos reais, sintaxe de `MERGE` (`UPDATE SET
+destino.col=` não existe no Postgres 15), `current_timestamp()` com
+parênteses, `uuid()` (só Databricks), `CAST(:x AS STRING)` (tipo não
+existe no Postgres). Detalhe completo, achado por achado, em
+`docs/context/known-issues.md` (entrada "dialeto SQL Databricks vs
+Postgres", 26/08/2026).
+
+Também migrado: o literal `318` (default de `LIMITE_PAINEL`, Sprint 6)
+passou a vir de `tb_renovai_parametros` (tabela criada pelo George no
+Databricks real em 26/08/2026, mesmo valor confirmado via `DESCRIBE`) em
+vez de hardcoded — aplicado em `routers/recomendacoes.py`,
+`jobs/gerar_recomendacoes.py`, `genie/nl_to_sql.py` e `auth/perfil.py`.
+
+Schema local novo: `tb_conduta_medico`, `tb_perfil_medico_setor`,
+`tb_ranking_medicos_validacao`, `tb_renovai_parametros`,
+`tb_segmentacao_medico`, `tb_dim_medicos`, `tb_agente_persona`,
+`tb_agente_log`, `vw_gold_auditpharma`/`vw_agente_produtos`
+(simplificados, fonte real é externa) e 3 views reais
+(`vw_segmentacao_efetiva`, `vw_agente_medico`, `vw_agente_participacao`)
+— `data/scripts/14` a `16`.
+
+**Publicado nos dois repositórios**: 6 commits em `renovai-local`
+(`364e3c0`..`b0ee9b5`), 5 commits equivalentes em
+`AcheInfo_Apps/dev` (`0630b17`..`67dd775`, push confirmado,
+`origin/dev` atualizado). Limitação conhecida remanescente: `GET/PUT
+/auth/perfil` não roda contra Postgres local — `tb_propagandistas`
+local não tem as ~11 colunas que `auth/perfil.py` já exigia
+(pré-existente, fora do escopo desta sincronização).
+
+## Status ativo — Integração WhatsApp via Twilio (Sprint 7) — IMPLEMENTADA, AINDA NÃO COMMITADA
+
+Implementada em 2026-08-28, ambiente sandbox: `backend/app/integrations/
+whatsapp/` (`config.py`, `client.py`, `templates.py`, `service.py`),
+`backend/app/services/registro_notificacao_whatsapp.py` (SQL cru via
+`get_engine()`/`text()`, mesmo padrão de `registro_envio.py` — sem ORM,
+não existe `Base`/`Column`/`Session` em nenhum lugar deste projeto) e
+`backend/app/routers/webhooks_twilio.py` (callback de status,
+`POST /webhooks/twilio/status`, registrado em `main.py`).
+
+`tb_notificacoes_whatsapp` no Postgres local (`data/scripts/17`) —
+decisão explícita de não tocar Databricks real nesta fase.
+`send_whatsapp_notification()` está pronta mas **sem gatilho** — mesma
+situação de `registrar_envio_recomendacoes()` na Sprint 5, nada chama
+automaticamente ainda.
+
+**PRECISA DE REVISÃO HUMANA**: conteúdo dos 2 templates
+(`entrada_painel`/`revisao_painel` em `templates.py`) é placeholder
+estrutural, não aprovado; nenhum dos dois foi submetido para aprovação
+de Template na Meta (obrigatório fora da janela de 24h). `TWILIO_ENV=
+production` bloqueado de propósito (`TwilioConfigError` clara) — sem
+credencial de produção configurada ainda, ver
+`docs/context/known-issues.md`.
+
+19 testes novos, suíte completa em 360 passed / 1 failed (pré-existente,
+sem relação) / 3 skipped. **Nada commitado ainda** — próxima sessão
+precisa decidir a divisão de commits (git status mostra os arquivos
+novos/modificados) antes de seguir.
+
 ## Índice — ler sob demanda conforme a tarefa
 
 - `docs/context/decisions-log.md` — decisões de negócio/arquitetura datadas

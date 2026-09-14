@@ -1,5 +1,24 @@
 """
 Job: atualizar_status
+
+**ESTE ARQUIVO NÃO RODA EM PRODUÇÃO.** Conferido em 04/09/2026 nos jobs do
+Databricks: quem marca `APLICADA` no ambiente real é o notebook **SQL**
+`/Workspace/Users/3vlhugo@ache.com.br/nb_dev_atualiza_renovai_tb_recomendacoes_painel_hist`,
+executado pelo `JOB_ATUALIZACAO_RECOMENDACOES_PAINEL` (835351173437850), diário
+às 08:02. Este módulo é uma implementação paralela em Python, usada só pelos
+testes de `test_ciclo.py`.
+
+Consequência prática, e é a armadilha: **alterar este arquivo não muda o
+comportamento de produção.** Quem precisar mexer na detecção de `APLICADA`
+mexe no notebook. Foi o que aconteceu em 04/09/2026, quando o status `ACEITA`
+entrou: a mudança foi feita lá, não aqui.
+
+Duas diferenças conhecidas em relação ao notebook, mantidas de propósito para
+não fingir paridade que não existe:
+
+- o notebook considera `PENDENTE`, `INELEGIVEL` e `ACEITA`; aqui só `PENDENTE`;
+- o notebook compara contra o painel real; aqui a lógica é mais simples.
+
 Roda diariamente para verificar recomendações PENDENTE e atualizar status para APLICADA.
 
 Execução manual:

@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, login } from "@/lib/api";
 import { gravarSessao, type Sessao } from "@/auth/sessao";
 import { USA_SENHA } from "@/auth/modo";
@@ -9,6 +9,9 @@ import { Label } from "@/components/ui/label";
 
 interface LoginProps {
   onEntrar: (sessao: Sessao) => void;
+  /** Motivo pelo qual a pessoa voltou para cá, hoje só a sessão vencida.
+   *  Some assim que ela tenta entrar de novo. */
+  aviso?: string | null;
 }
 
 /**
@@ -21,10 +24,18 @@ interface LoginProps {
  * No modo `entra_id`, os dois campos dão lugar a um botão de acesso
  * corporativo. O layout permanece o mesmo. Ver `src/auth/modo.ts`.
  */
-export function Login({ onEntrar }: LoginProps) {
+export function Login({ onEntrar, aviso }: LoginProps) {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
-  const [erro, setErro] = useState<string | null>(null);
+  const [erro, setErro] = useState<string | null>(aviso ?? null);
+
+  // Aviso que chega depois da montagem também precisa aparecer. Hoje o Login
+  // é sempre remontado quando a sessão cai, então o estado inicial bastaria,
+  // mas isso é acidente do desenho atual e não contrato. Achado da revisão
+  // independente de 03/09/2026.
+  useEffect(() => {
+    if (aviso) setErro(aviso);
+  }, [aviso]);
   const [carregando, setCarregando] = useState(false);
 
   const podeEnviar = email.trim() !== "" && senha.trim() !== "";
@@ -43,6 +54,9 @@ export function Login({ onEntrar }: LoginProps) {
         nome: resposta.nome ?? null,
         setor: resposta.setor,
         token: resposta.access_token,
+        // `expira_em` vem como duração em segundos; a sessão guarda o
+        // instante absoluto, que é o que a leitura precisa comparar.
+        expiraEm: Date.now() + resposta.expira_em * 1000,
       };
       gravarSessao(sessao);
       onEntrar(sessao);

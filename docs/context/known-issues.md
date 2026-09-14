@@ -656,6 +656,27 @@ explicitamente ignorado (`--ignore=backend/app/tests/test_golden_set.py`).
 Não corrigido nesta sincronização — fora de escopo, só registrado para não
 ser confundido com problema novo.
 
+## ABERTO — Twilio/WhatsApp: sem credencial de produção — Sprint 7, 28/08/2026
+`TWILIO_ENV=production` não é suportado hoje por decisão explícita, não
+por esquecimento: `get_twilio_config()`
+(`backend/app/integrations/whatsapp/config.py`) recusa esse valor com
+`TwilioConfigError` clara em vez de deixar a Twilio devolver um erro de
+autenticação confuso na hora do envio. Não existe conta/número de
+WhatsApp de produção aprovado ainda — só o ambiente sandbox está
+configurado. Quando a conta de produção existir, `get_twilio_config()`
+precisa ganhar o caminho `production` de verdade (hoje só sandbox lê
+`TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/etc. do ambiente).
+
+**Achado colateral, não bloqueante:** nesta sessão, `env | grep -i
+twilio` não mostrou nenhuma variável `TWILIO_*`, apesar de a
+instrução da task afirmar que já estavam exportadas localmente. Não
+investigado a fundo — mais provável escopo de subprocesso do Bash tool
+não herdando o shell interativo onde as variáveis foram exportadas do
+que ausência real. Não bloqueou o desenvolvimento (nenhum teste
+automatizado bate na API real — ver `test_whatsapp_service.py`), mas
+quem for rodar `data/scripts/testar_envio_whatsapp_sandbox.py` precisa
+confirmar que as variáveis estão visíveis no shell usado para isso.
+
 ## Próxima ação
 1. ~~`NOME_MEDICO` nulo em `ENTRADA_PAINEL`~~ — **RESOLVIDO NA ORIGEM em
    2026-07-31**, ver seção acima. Nenhuma ação pendente neste item; o

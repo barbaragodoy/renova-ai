@@ -2,6 +2,9 @@
 Testes dos endpoints GET /recomendacoes/entrada e /recomendacoes/revisao.
 Usa banco local via SQLAlchemy (requer Docker rodando).
 """
+import uuid
+from datetime import datetime, timezone
+
 import pytest
 from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
@@ -53,6 +56,9 @@ def test_lista_entrada_vazia():
             mock_conn.__enter__ = lambda s: s
             mock_conn.__exit__ = MagicMock(return_value=False)
             mock_conn.execute.return_value.mappings.return_value.fetchall.return_value = []
+            # Desde 04/09/2026 o total vem de um COUNT proprio, e nao mais do
+            # tamanho da pagina: a lista mostra todas as pendencias paginadas.
+            mock_conn.execute.return_value.scalar.return_value = 0
             mock_eng.return_value.connect.return_value = mock_conn
             resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO)
     assert resp.status_code == 200
@@ -66,12 +72,15 @@ def test_propagandista_nao_encontrado():
 
 
 @pytest.mark.requer_banco
-def test_limite_5_registros():
-    """Nunca deve retornar mais de 5 recomendações."""
+def test_limite_da_pagina_e_destaques():
+    """A página tem até 50 itens; apenas os cinco primeiros são destaques."""
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         resp = CLIENT.get("/recomendacoes/entrada", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO)
     assert resp.status_code == 200
-    assert len(resp.json()["recomendacoes"]) <= 5
+    corpo = resp.json()
+    assert len(corpo["recomendacoes"]) <= 50
+    assert corpo["total"] >= len(corpo["recomendacoes"])
+    assert corpo["destaques"] == 5
 
 
 def test_entrada_nome_medico_nulo_aplica_fallback():
@@ -311,6 +320,13 @@ def test_lista_desconsideradas_filtra_por_status_e_matricula_autenticada():
 
 
 def test_lista_desconsideradas_ordenacao_desc_por_data():
+    """Ordena pela data da decisao, mais recente primeiro.
+
+    Desde 04/09/2026 a aba virou Historico e mostra desconsideradas e aceitas,
+    entao a data vem de um COALESCE das duas colunas: aceita nao tem data de
+    desconsideracao. O id desempata, senao decisoes de mesma data alternariam
+    de ordem entre consultas.
+    """
     capturados = []
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(captured=capturados)):
@@ -318,8 +334,24 @@ def test_lista_desconsideradas_ordenacao_desc_por_data():
                 "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
             )
     assert resp.status_code == 200
-    sql = capturados[0]["sql"]
-    assert "ORDER BY data_desconsideracao DESC" in sql
+    sql = " ".join(capturados[0]["sql"].split())
+    assert "ORDER BY COALESCE(data_desconsideracao, data_aceite) DESC" in sql
+    assert "id_recomendacao DESC" in sql
+
+
+def test_historico_traz_desconsideradas_e_aceitas():
+    """A aba passou a mostrar as duas decisoes: quem confere o que decidiu no
+    ciclo nao separa 'o que recusei' de 'o que aceitei'."""
+    capturados = []
+    with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
+        with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(captured=capturados)):
+            CLIENT.get(
+                "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
+            )
+    sql = " ".join(capturados[0]["sql"].split())
+    assert "status_recomendacao IN ('DESCONSIDERADA', 'ACEITA')" in sql
+    assert "AS status_recomendacao" in sql
+    assert "AS data_decisao" in sql
 
 
 def test_lista_desconsideradas_vazia_nao_da_erro():
@@ -642,3 +674,118 @@ def test_meses_sem_visita_so_aparece_em_revisao_e_desconsideradas(monkeypatch):
 
     assert "meses_sem_visita" in capturas["desconsideradas"]
     assert "CASE WHEN" in capturas["desconsideradas"]
+
+
+# --------------------------------------------------------------------------- #
+# Paginacao e ordenacao das listas ativas (decisao de George em 04/09/2026).
+# --------------------------------------------------------------------------- #
+
+
+def _sql_da_lista(rota, params=None):
+    """Devolve o SQL da primeira consulta (a da pagina) e os parametros."""
+    with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
+        with patch("backend.app.routers.recomendacoes._engine") as mock_eng:
+            conn = MagicMock()
+            conn.__enter__ = lambda s: s
+            conn.__exit__ = MagicMock(return_value=False)
+            conn.execute.return_value.mappings.return_value.fetchall.return_value = []
+            conn.execute.return_value.scalar.return_value = 137
+            mock_eng.return_value.connect.return_value = conn
+            resp = CLIENT.get(
+                rota,
+                params={"email": "ana.silva@ache.com.br", **(params or {})},
+                headers=CABECALHO,
+            )
+    chamada = conn.execute.call_args_list[-2]
+    return " ".join(str(chamada.args[0]).split()), chamada.args[1], resp.json()
+
+
+def test_entrada_ordena_da_melhor_para_a_pior_posicao():
+    """Na entrada a prioridade e quem esta mais alto no ranking do setor.
+    Antes de 04/09/2026 ordenava por pontuacao, que diverge de posicao para
+    quem atende mais de um setor."""
+    sql, _, _ = _sql_da_lista("/recomendacoes/entrada")
+    assert "ORDER BY posicao_ranking ASC NULLS LAST, id_recomendacao ASC" in sql
+    assert "soma_pontuacao DESC" not in sql
+
+
+def test_exclusao_ordena_da_pior_para_a_melhor_posicao():
+    sql, _, _ = _sql_da_lista("/recomendacoes/revisao")
+    assert "ORDER BY posicao_ranking DESC NULLS LAST, id_recomendacao ASC" in sql
+
+
+@pytest.mark.parametrize("rota", ["/recomendacoes/entrada", "/recomendacoes/revisao"])
+def test_ordenacao_tem_desempate_unico_para_a_paginacao_nao_pular_item(rota):
+    """A posicao repete entre setores e e nula em parte das linhas. Sem um
+    criterio unico, o banco pode devolver os empatados em ordem diferente a
+    cada consulta, e na fronteira das paginas isso repete ou some com item.
+    Achado da revisao independente de 04/09/2026."""
+    sql, _, _ = _sql_da_lista(rota)
+    ordem = sql.split("ORDER BY", 1)[1].split("LIMIT", 1)[0]
+    assert "id_recomendacao" in ordem
+
+
+@pytest.mark.parametrize("rota", ["/recomendacoes/entrada", "/recomendacoes/revisao"])
+def test_lista_e_paginada_e_nao_cortada_em_cinco(rota):
+    """O corte de 5 escondia mais de 96% das pendencias, medido em 04/09/2026:
+    mediana de 132 por pessoa e tipo, maximo de 629."""
+    sql, params, corpo = _sql_da_lista(rota)
+    assert "LIMIT :limite OFFSET :offset" in sql
+    assert params["limite"] == 50
+    assert params["offset"] == 0
+    # O total e a contagem real do ciclo, nao o tamanho da pagina.
+    assert corpo["total"] == 137
+    assert corpo["destaques"] == 5
+
+
+@pytest.mark.parametrize("rota", ["/recomendacoes/entrada", "/recomendacoes/revisao"])
+def test_offset_chega_na_consulta(rota):
+    _, params, _ = _sql_da_lista(rota, {"offset": 50})
+    assert params["offset"] == 50
+
+
+@pytest.mark.parametrize("rota", ["/recomendacoes/entrada", "/recomendacoes/revisao"])
+def test_offset_negativo_e_recusado(rota):
+    with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
+        resp = CLIENT.get(
+            rota,
+            params={"email": "ana.silva@ache.com.br", "offset": -1},
+            headers=CABECALHO,
+        )
+    assert resp.status_code == 422
+
+
+def test_historico_aceita_sem_motivo_nao_quebra():
+    """Aceita nao tem motivo nem data de desconsideracao. Com o schema exigindo
+    string, o endpoint devolvia 500 na primeira aceita do propagandista.
+    Achado da revisao independente de 04/09/2026."""
+    linha = {
+        "id_recomendacao": uuid.uuid4(),
+        "nome_medico": "MEDICO ACEITO",
+        "ufcrm": "SP0000009",
+        "tipo_recomendacao": "ENTRADA_PAINEL",
+        "motivo_recomendacao": None,
+        "motivo_desconsideracao": None,
+        "bloquear_novas_recomendacoes": None,
+        "status_recomendacao": "ACEITA",
+        "data_desconsideracao": None,
+        "data_decisao": datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc),
+        "ciclo_recomendacao": "202609",
+        "uf": "SP",
+        "especialidade": None,
+        "cidade": None,
+        "meses_sem_visita": None,
+    }
+    with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
+        with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(rows=[linha])):
+            resp = CLIENT.get(
+                "/recomendacoes/desconsideradas",
+                params={"email": "ana.silva@ache.com.br"},
+                headers=CABECALHO,
+            )
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["recomendacoes"][0]
+    assert item["status_recomendacao"] == "ACEITA"
+    assert item["motivo_desconsideracao"] is None
+    assert item["data_desconsideracao"] is None
+    assert item["data_decisao"]

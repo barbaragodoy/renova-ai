@@ -1,4 +1,4 @@
-"""As seis ferramentas da via 1, e o recorte que o modelo não consegue expressar.
+"""As sete ferramentas da via 1, e o recorte que o modelo não consegue expressar.
 
 O ponto central deste módulo é o que **não** existe nele: nenhuma ferramenta
 declara `setor` como parâmetro. O modelo não tem como pedir dado de outro setor
@@ -19,6 +19,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
+from backend.app.db.sql_dialect import formatar_data_sql
+
 
 # Limites de linha por ferramenta. Existem para o retorno caber na janela do
 # modelo e para o verificador de número ter um conjunto pequeno onde conferir.
@@ -26,6 +28,7 @@ LIMITE_BUSCA = 8
 LIMITE_VISITAS = 15
 LIMITE_PARTICIPACAO = 10
 LIMITE_PRODUTOS = 8
+LIMITE_OBSERVACOES = 5
 
 
 @dataclass(frozen=True)
@@ -235,6 +238,61 @@ class Ferramentas:
 
     # ---------------------------------------------------------------- 6
 
+    def observacoes_do_medico(self, ufcrm: str) -> list[dict[str, Any]]:
+        """As últimas observações escritas pelo propagandista sobre o médico.
+
+        Fonte: `vw_visitacao_comentarios`, view em `acheinfo_dev.renovai`
+        sobre a `propagandistas_visitacao_medica` do domínio SalesFarma.
+
+        **Não lê a tabela direto, e o motivo não é estilo.** O service
+        principal do portal não tem `USE CATALOG` em `dmn_produtividade_dev`:
+        medido em 04/09/2026 autenticando com `oauth_service_principal`, ele
+        não é membro de nenhum grupo `user-renovai-*` e a leitura direta falha
+        com `INSUFFICIENT_PERMISSIONS`. A view tem o grupo
+        `user-renovai-engineering` como dono e já filtra `VISITA_EFETIVA`;
+        view do Unity Catalog roda com a permissão do dono, então o service
+        principal lê por ela o que não lê direto. Mesmo mecanismo de
+        `vw_gold_auditpharma` e `vw_segmentacao_efetiva`.
+
+        **É contorno.** Quando o service principal entrar no grupo de
+        engenharia, pedido do Orlando ao Flávio em 04/09/2026, a leitura pode
+        voltar a ser direta.
+
+        Medido em 01/09/2026: 581 mil visitas com comentário por
+        ciclo, 74% com texto único, média de 190 caracteres, e o médico
+        mediano com 35 visitas comentadas de histórico. É o registro do que
+        foi conversado, prometido e pedido, incluindo o aspecto pessoal que o
+        propagandista anotou e que é decisão de produto priorizar, não
+        esconder.
+
+        O filtro `VISITA_EFETIVA = 'S'` continua valendo, e é obrigatório: a
+        tabela mistura visita realizada e não realizada, e as não realizadas
+        carregam texto automático de fechamento. Ele saiu daqui porque agora
+        mora na definição da view, aplicado uma vez para todos os leitores.
+
+        O setor vem do contexto autenticado, como em todas as ferramentas:
+        observação de um propagandista não vaza para outro.
+        """
+        # O ORDER BY qualifica a coluna original: o alias DATA_VISITA da
+        # projeção é texto dd/MM/yyyy, e ordenar o texto colocaria 31/01/2025
+        # acima de 01/12/2026. Achado da revisão independente de 02/09/2026.
+        return self.executor.query(
+            """
+            SELECT {data_visita} AS DATA_VISITA,
+                   v.VISITA_TIPO, v.COMENTARIOS
+            FROM vw_visitacao_comentarios AS v
+            WHERE v.SETOR = :setor AND v.UFCRM = :ufcrm
+            ORDER BY v.DATA_VISITA DESC
+            LIMIT {limite}
+            """.format(
+                data_visita=formatar_data_sql("v.DATA_VISITA"),
+                limite=LIMITE_OBSERVACOES,
+            ),
+            {"setor": self.ctx.setor, "ufcrm": (ufcrm or "").strip().upper()},
+        )
+
+    # ---------------------------------------------------------------- 7
+
     def buscar_conhecimento(self, pergunta: str) -> list[dict[str, Any]]:
         """Knowledge Assistant do piloto. Falha degrada, não estoura.
 
@@ -299,6 +357,17 @@ class Ferramentas:
                 "A lista nunca esconde produto: ela ordena.",
                 obj({"ufcrm": {"type": "string", "description": "UFCRM exato"}}, ["ufcrm"]),
                 self.produtos_para_medico,
+            ),
+            Ferramenta(
+                "observacoes_do_medico",
+                "As últimas observações que o propagandista escreveu sobre este "
+                "profissional nas visitas anteriores: o que foi conversado, o que ele "
+                "pediu, compromissos e anotações pessoais. Use quando a pergunta for "
+                "sobre visitas passadas, sobre o que foi combinado, ou para preparar a "
+                "próxima visita. Cite a data da observação ao usar o conteúdo. "
+                "Precisa do UFCRM devolvido por buscar_medico.",
+                obj({"ufcrm": {"type": "string", "description": "UFCRM exato"}}, ["ufcrm"]),
+                self.observacoes_do_medico,
             ),
             Ferramenta(
                 "buscar_conhecimento",

@@ -10,6 +10,7 @@ from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.config import get_settings
 from backend.app.db.databricks_connection import get_engine
 from backend.app.schemas.recomendacoes import (
+    AceitarResponse,
     DesconsideradaItem,
     DesconsiderarRequest,
     DesconsiderarResponse,
@@ -20,6 +21,11 @@ from backend.app.schemas.recomendacoes import (
 )
 
 router = APIRouter()
+
+# Mesma página do Ranking. A lista deixou de ser cortada em 5 por decisão de
+# George em 04/09/2026, e sem paginação a tela receberia até 629 cards de uma
+# vez, que é o máximo medido por pessoa e tipo no ciclo atual.
+_LIMITE_PAGINA = 50
 
 # Mapeamento tabela/coluna por fonte de dados — ver de-para completo em
 # docs/context/databricks-schema-real.md. As chaves de _COLUNAS_POR_FONTE
@@ -58,19 +64,20 @@ _COLUNAS_POR_FONTE = {
         # (ver docs/context/decisions-log.md, entrada de 26/08/2026).
         "tabela_parametros": "tb_renovai_parametros",
         "limite_painel_padrao": "LIMITE_PAINEL_PADRAO",
-        # Colunas de desconsideração (task 161830/163626) — AINDA NÃO existem
-        # na tabela real, pendência formal com o Hugo (ver
-        # docs/context/known-issues.md). Mapeadas aqui como de-para de nomes
-        # pronto para quando as colunas forem criadas, mesmo padrão já usado
-        # nas colunas de leitura acima (BARBARA-04/05).
+        # Colunas de desconsideração (task 161830/163626). A pendência com o
+        # Hugo foi resolvida: conferido por DESCRIBE em 04/09/2026 que as cinco
+        # existem em acheinfo_dev.renovai.tb_recomendacoes_painel_historico.
         "motivo_desconsideracao": "MOTIVO_DESCONSIDERACAO",
         "desconsiderado_por": "DESCONSIDERADO_POR",
         "data_desconsideracao": "DATA_DESCONSIDERACAO",
         "qtd_vezes_desconsiderado": "QTD_VEZES_DESCONSIDERADO",
         "bloquear_novas_recomendacoes": "BLOQUEAR_NOVAS_RECOMENDACOES",
+        # Colunas do aceite, criadas em 04/09/2026 junto com o status ACEITA
+        # (ALTER TABLE conferido: 20 colunas antes, 22 depois).
+        "aceito_por": "ACEITO_POR",
+        "data_aceite": "DATA_ACEITE",
         # LEFT JOIN com tb_dim_medicos (espelho local do Databricks, ver
-        # known-issues.md — "RESOLVIDO POR VIA ALTERNATIVA") — só existe
-        # nesta fonte, sem equivalente no Postgres local.
+        # known-issues.md — "RESOLVIDO POR VIA ALTERNATIVA").
         "tabela_dim_medicos": "tb_dim_medicos",
         "especialidade": "dm.especialidade",
         "cidade": "dm.cidade",
@@ -106,12 +113,17 @@ _COLUNAS_POR_FONTE = {
         "data_desconsideracao": "data_desconsideracao",
         "qtd_vezes_desconsiderado": "qtd_vezes_desconsiderado",
         "bloquear_novas_recomendacoes": "bloquear_novas_recomendacoes",
-        # Sem tabela equivalente a tb_dim_medicos nem coluna equivalente a
-        # DATA_ULTIMA_VISITA_CONSIDERADA no Postgres local — especialidade,
-        # cidade e meses_sem_visita ficam sempre None nessa fonte.
-        "tabela_dim_medicos": None,
-        "especialidade": None,
-        "cidade": None,
+        # Espelho local das colunas do aceite. A tabela local precisa delas
+        # (`aceito_por text`, `data_aceite timestamptz`) para POST /aceitar
+        # funcionar fora do Databricks.
+        "aceito_por": "aceito_por",
+        "data_aceite": "data_aceite",
+        # tb_dim_medicos faz parte do espelho local criado pelo script 14.
+        # DATA_ULTIMA_VISITA_CONSIDERADA ainda não existe na recomendação
+        # local, então apenas meses_sem_visita continua indisponível.
+        "tabela_dim_medicos": "tb_dim_medicos",
+        "especialidade": "dm.especialidade",
+        "cidade": "dm.cidade",
         "data_ultima_visita_considerada": None,
     },
 }
@@ -182,11 +194,8 @@ def _limite_painel(matricula: str, col: dict) -> int:
 
 def _fragmentos_dim_medicos(col: dict) -> dict:
     """Monta os fragmentos SQL condicionais do LEFT JOIN com
-    tb_dim_medicos (só existe no Databricks — espelho local criado pelo
-    George para contornar bloqueio de USE CATALOG cruzado, ver
-    known-issues.md, "RESOLVIDO POR VIA ALTERNATIVA"). Retorna strings
-    vazias quando a fonte não suporta (Postgres local), para o SQL
-    continuar válido sem o JOIN nem as colunas.
+    tb_dim_medicos, disponível nas duas fontes. No Postgres ela é criada por
+    data/scripts/14_create_tabelas_chat_ranking_agente.sql.
 
     uf não faz parte daqui: é calculado como LEFT(ufcrm, 2) direto na
     query, funciona nas duas fontes sem depender do espelho.
@@ -274,11 +283,11 @@ def _validar_contexto(email: str):
 def listar_entrada(
     email: Optional[str] = Query(None),
     ciclo: str = Query(None),
+    offset: int = Query(0, ge=0),
     authorization: Optional[str] = Header(None),
 ):
     ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
-    limite = settings.limite_sugestoes
     col = _schema(settings.data_source)
     ciclo = ciclo or _ciclo_mais_recente(col)
     dm = _fragmentos_dim_medicos(col)
@@ -299,28 +308,47 @@ def listar_entrada(
           AND {col['tipo_recomendacao']} = 'ENTRADA_PAINEL'
           AND {col['status_recomendacao']} = 'PENDENTE'
           AND {col['ciclo_referencia']} = :ciclo
-        ORDER BY soma_pontuacao DESC NULLS LAST
-        LIMIT :limite
+        -- Melhor colocado primeiro: na entrada, prioridade é quem está mais
+        -- alto no ranking do setor. Decisão de George em 04/09/2026, no lugar
+        -- da ordenação por pontuação. Os dois quase coincidem, porque a
+        -- posição vem da pontuação, mas divergem para quem atende mais de um
+        -- setor: por pontuação, os setores se intercalam; por posição, o
+        -- primeiro de cada setor aparece junto, que é como a pessoa lê.
+        -- O identificador desempata, e não é detalhe: a posição repete entre
+        -- setores e é nula em parte das linhas, e sem um critério único o
+        -- banco pode devolver os empatados em ordem diferente a cada consulta.
+        -- Na fronteira das páginas isso repete ou some com item. Achado da
+        -- revisão independente de 04/09/2026.
+        ORDER BY posicao_ranking ASC NULLS LAST, id_recomendacao ASC
+        LIMIT :limite OFFSET :offset
     """)
 
     with _engine().connect() as conn:
         rows = conn.execute(
-            query, {"mat": ctx.matricula, "ciclo": ciclo, "limite": limite}
+            query,
+            {"mat": ctx.matricula, "ciclo": ciclo,
+             "limite": _LIMITE_PAGINA, "offset": offset},
         ).mappings().fetchall()
+        total = _total_pendentes(conn, col, ctx.matricula, ciclo, "ENTRADA_PAINEL")
 
     items = [RecomendacaoItem(**_aplicar_fallback_nome_medico(r)) for r in rows]
-    return ListaRecomendacoesResponse(tipo="ENTRADA_PAINEL", total=len(items), recomendacoes=items)
+    return ListaRecomendacoesResponse(
+        tipo="ENTRADA_PAINEL",
+        total=total,
+        recomendacoes=items,
+        destaques=settings.limite_sugestoes,
+    )
 
 
 @router.get("/revisao", response_model=ListaRecomendacoesResponse)
 def listar_revisao(
     email: Optional[str] = Query(None),
     ciclo: str = Query(None),
+    offset: int = Query(0, ge=0),
     authorization: Optional[str] = Header(None),
 ):
     ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
-    limite = settings.limite_sugestoes
     col = _schema(settings.data_source)
     ciclo = ciclo or _ciclo_mais_recente(col)
     dm = _fragmentos_dim_medicos(col)
@@ -357,18 +385,58 @@ def listar_revisao(
           AND {col['status_recomendacao']} = 'PENDENTE'
           AND {col['ciclo_referencia']} = :ciclo
           {filtro_painel_limite}
-        ORDER BY posicao_ranking DESC NULLS LAST
-        LIMIT :limite
+        -- Pior colocado primeiro: na exclusão, prioridade é quem está mais no
+        -- fundo do ranking do setor. Já era assim antes de 04/09/2026 e foi
+        -- confirmado por George nessa data.
+        -- Mesmo desempate da entrada, pelo mesmo motivo.
+        ORDER BY posicao_ranking DESC NULLS LAST, id_recomendacao ASC
+        LIMIT :limite OFFSET :offset
     """)
 
     with _engine().connect() as conn:
         rows = conn.execute(
             query,
-            {"mat": ctx.matricula, "ciclo": ciclo, "limite": limite, "limite_painel": limite_painel},
+            {"mat": ctx.matricula, "ciclo": ciclo,
+             "limite": _LIMITE_PAGINA, "offset": offset,
+             "limite_painel": limite_painel},
         ).mappings().fetchall()
+        total = _total_pendentes(
+            conn, col, ctx.matricula, ciclo, "REVISAO_PAINEL",
+            filtro_extra=filtro_painel_limite,
+            params_extra={"limite_painel": limite_painel},
+        )
 
     items = [RecomendacaoItem(**_aplicar_fallback_nome_medico(r)) for r in rows]
-    return ListaRecomendacoesResponse(tipo="REVISAO_PAINEL", total=len(items), recomendacoes=items)
+    return ListaRecomendacoesResponse(
+        tipo="REVISAO_PAINEL",
+        total=total,
+        recomendacoes=items,
+        destaques=settings.limite_sugestoes,
+    )
+
+
+def _total_pendentes(conn, col: dict, matricula: str, ciclo: str, tipo: str,
+                     filtro_extra: str = "", params_extra: Optional[dict] = None) -> int:
+    """Quantas recomendações pendentes existem no ciclo, e não quantas vieram
+    na página.
+
+    Existe porque a lista deixou de ser cortada em 5: sem a contagem, a tela
+    não teria como dizer "50 de 132" nem saber que há mais para carregar. O
+    `filtro_extra` recebe o mesmo recorte de painel que a exclusão aplica, para
+    o total bater com o que a lista realmente devolve.
+    """
+    consulta = text(f"""
+        SELECT COUNT(*) AS total
+        FROM {col['tabela']}
+        WHERE {col['rep_matricula']} = :mat
+          AND {col['tipo_recomendacao']} = :tipo
+          AND {col['status_recomendacao']} = 'PENDENTE'
+          AND {col['ciclo_referencia']} = :ciclo
+          {filtro_extra}
+    """)
+    params = {"mat": matricula, "ciclo": ciclo, "tipo": tipo}
+    params.update(params_extra or {})
+    return int(conn.execute(consulta, params).scalar() or 0)
 
 
 def _formatar_motivo_desconsideracao(motivo: str, motivo_outros_texto: Optional[str]) -> str:
@@ -464,17 +532,120 @@ def desconsiderar(
     )
 
 
+@router.post("/{id_recomendacao}/aceitar", response_model=AceitarResponse)
+def aceitar(
+    id_recomendacao: UUID,
+    email: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """POST /recomendacoes/{id_recomendacao}/aceitar.
+
+    O propagandista declara que vai cumprir a recomendação. **Isto é intenção,
+    não é fato:** quem confirma que o médico entrou ou saiu do painel continua
+    sendo o `JOB_ATUALIZACAO_RECOMENDACOES_PAINEL`, que compara contra o painel
+    real e marca `APLICADA`. Por isso o aceite não pula para `APLICADA`: entre
+    os dois vai existir a exportação por CSV, e afirmar o fato antes dele
+    acontecer seria o portal mentindo sobre o painel.
+
+    Espelha o desconsiderar em tudo que é regra de segurança: identidade só do
+    token, ID só do path, data gerada aqui, `UPDATE` atômico com o status
+    esperado repetido no `WHERE`.
+
+    Sem corpo: aceitar não tem parâmetro nenhum.
+
+    Só recomendação `PENDENTE` pode ser aceita. `INELEGIVEL` fica de fora de
+    propósito: é o médico que deixou de ser recomendado no ranking, e aceitar
+    uma recomendação que o próprio sistema já retirou não faz sentido.
+    """
+    ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
+    settings = get_settings()
+    col = _schema(settings.data_source)
+    id_str = str(id_recomendacao)
+
+    with _engine().connect() as conn:
+        row = conn.execute(
+            text(f"""
+                SELECT {col['rep_matricula']}       AS rep_matricula,
+                       {col['status_recomendacao']} AS status_recomendacao
+                FROM {col['tabela']}
+                WHERE {col['id_recomendacao']} = :id
+            """),
+            {"id": id_str},
+        ).mappings().fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Recomendação não encontrada.")
+
+    # Mensagem genérica: não revela status/detalhe de recomendação de terceiro.
+    if row["rep_matricula"] != ctx.matricula:
+        raise HTTPException(status_code=403, detail="Não autorizado a aceitar esta recomendação.")
+
+    status_atual = row["status_recomendacao"]
+    if status_atual == "ACEITA":
+        raise HTTPException(status_code=409, detail="Recomendação já foi aceita.")
+    if status_atual != "PENDENTE":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Recomendação em estado incompatível para aceite: '{status_atual}'.",
+        )
+
+    agora = datetime.now(timezone.utc)
+
+    # Mesmo padrão do desconsiderar: o WHERE repete o status já conferido acima,
+    # então dois cliques simultâneos gravam uma vez só e o segundo recebe
+    # rowcount == 0, tratado como 409 abaixo, sem lock explícito.
+    with _engine().connect() as conn:
+        resultado = conn.execute(
+            text(f"""
+                UPDATE {col['tabela']}
+                SET {col['status_recomendacao']} = 'ACEITA',
+                    {col['aceito_por']}          = :mat,
+                    {col['data_aceite']}         = :agora
+                WHERE {col['id_recomendacao']} = :id
+                  AND {col['status_recomendacao']} = 'PENDENTE'
+            """),
+            {"mat": ctx.matricula, "agora": agora, "id": id_str},
+        )
+        conn.commit()
+
+    if resultado.rowcount == 0:
+        # Diferente do 409 acima, que sabe que o status era ACEITA. Aqui o
+        # SELECT viu PENDENTE e o UPDATE não pegou linha: outra requisição
+        # mudou o estado no meio, e ela pode ter aceitado, desconsiderado ou
+        # a virada de ciclo pode ter expirado. Afirmar "já foi aceita" seria
+        # inventar qual das três. Achado da revisão independente de 04/09/2026.
+        raise HTTPException(
+            status_code=409,
+            detail="A recomendação não está mais pendente.",
+        )
+
+    return AceitarResponse(
+        success=True,
+        message="Recomendação aceita com sucesso.",
+        id_recomendacao=id_str,
+        status_recomendacao="ACEITA",
+        data_aceite=agora.isoformat(),
+    )
+
+
 @router.get("/desconsideradas", response_model=ListaDesconsideradasResponse)
 def listar_desconsideradas(
     email: Optional[str] = Query(None),
     authorization: Optional[str] = Header(None),
 ):
-    """GET /recomendacoes/desconsideradas — aba Arquivadas (consulta).
+    """GET /recomendacoes/desconsideradas — aba Histórico.
 
-    Histórico completo (sem LIMIT, diferente de /entrada e /revisao, que
-    limitam a `settings.limite_sugestoes` por serem sugestões priorizadas)
-    das recomendações que o propagandista autenticado já desconsiderou,
-    mais recente primeiro.
+    Histórico completo, sem LIMIT, das recomendações que o propagandista
+    autenticado já **resolveu**, mais recente primeiro.
+
+    Até 04/09/2026 trazia só as desconsideradas, porque desconsiderar era a
+    única decisão possível. Com o aceite, a aba passou a se chamar Histórico e
+    a mostrar as duas, por decisão de George: quem quer conferir o que decidiu
+    no ciclo não separa mentalmente "o que recusei" de "o que aceitei".
+
+    `data_decisao` unifica as duas datas, e `status_recomendacao` diz qual foi
+    a decisão. O nome da rota fica como está: renomear quebraria o contrato
+    publicado no OpenAPI sem ganho para quem consome.
     """
     ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
@@ -490,7 +661,10 @@ def listar_desconsideradas(
                {col['motivo_revisao']}                  AS motivo_recomendacao,
                {col['motivo_desconsideracao']}           AS motivo_desconsideracao,
                {col['bloquear_novas_recomendacoes']}     AS bloquear_novas_recomendacoes,
+               {col['status_recomendacao']}              AS status_recomendacao,
                {col['data_desconsideracao']}             AS data_desconsideracao,
+               COALESCE({col['data_desconsideracao']},
+                        {col['data_aceite']})            AS data_decisao,
                {col['ciclo_referencia']}                 AS ciclo_recomendacao,
                LEFT({col['tabela']}.{col['ufcrm']}, 2) AS uf
                {dm['especialidade']}
@@ -499,8 +673,12 @@ def listar_desconsideradas(
         FROM {col['tabela']}
         {dm['join']}
         WHERE {col['rep_matricula']} = :mat
-          AND {col['status_recomendacao']} = 'DESCONSIDERADA'
-        ORDER BY {col['data_desconsideracao']} DESC
+          AND {col['status_recomendacao']} IN ('DESCONSIDERADA', 'ACEITA')
+        -- `id_recomendacao` desempata: sem ele, decisões com a mesma data
+        -- alternariam de ordem entre consultas.
+        ORDER BY COALESCE({col['data_desconsideracao']},
+                          {col['data_aceite']}) DESC,
+                 {col['id_recomendacao']} DESC
     """)
 
     with _engine().connect() as conn:

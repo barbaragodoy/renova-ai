@@ -441,7 +441,9 @@ def test_bloco_de_relacao_so_existe_na_permanencia():
 def test_bloco_de_relacao_traz_o_que_nao_existe_em_outro_lugar():
     texto = pm.bloco_relacao(CONTINUAR)
     assert "No seu painel há 3 ciclos, a janela inteira que a base cobre" in texto
-    assert "Última visita em 03/08/2026" in texto
+    # A data absoluta saiu em 03/09/2026: a resposta já a traz na Memória de
+    # Visitas, e o tempo relativo fica no bloco "Tempo sem visita".
+    assert "Última visita" not in texto
     assert "Prescreveu em 28 categorias diferentes, com 82 produtos" in texto
     # A linha mais útil: quando o médico parou de prescrever na categoria do
     # produto que o propagandista vai levar.
@@ -805,8 +807,8 @@ def test_sem_data_de_visita_nunca_vira_zero():
     Medido em 20/08/2026, e confirmado por `FLAG_SEM_VISITA_REGISTRADA` na
     `tb_ranking_medicos_validacao`, que em 1 cobre exatamente as mesmas linhas.
     """
-    texto = pm.bloco_visita({"DATA_ULTIMA_VISITA": None, "MESES_DESDE_ULTIMA_VISITA": 0})
-    assert "Sem visita registrada" in texto
+    texto = pm.tempo_de_visita({"DATA_ULTIMA_VISITA": None, "MESES_DESDE_ULTIMA_VISITA": 0})
+    assert texto == "sem registro"
     assert "0" not in texto
 
 
@@ -819,10 +821,23 @@ def test_o_tempo_sem_visita_e_contado_contra_hoje():
     """
     from datetime import date, timedelta
     hoje = date.today()
-    assert "hoje" in pm.bloco_visita({"DATA_ULTIMA_VISITA": hoje})
-    assert "ontem" in pm.bloco_visita({"DATA_ULTIMA_VISITA": hoje - timedelta(days=1)})
-    assert "há 17 dias" in pm.bloco_visita({"DATA_ULTIMA_VISITA": hoje - timedelta(days=17)})
-    assert "meses" in pm.bloco_visita({"DATA_ULTIMA_VISITA": hoje - timedelta(days=200)})
+    assert pm.tempo_de_visita({"DATA_ULTIMA_VISITA": hoje}) == "hoje"
+    assert pm.tempo_de_visita({"DATA_ULTIMA_VISITA": hoje - timedelta(days=1)}) == "ontem"
+    assert pm.tempo_de_visita({"DATA_ULTIMA_VISITA": hoje - timedelta(days=17)}) == "há 17 dias"
+    assert "meses" in pm.tempo_de_visita({"DATA_ULTIMA_VISITA": hoje - timedelta(days=200)})
+
+
+def test_o_tempo_de_visita_mora_no_card_e_o_bloco_so_avisa_risco():
+    """Pedido de George em 03/09/2026: a última visita entra no card do
+    médico, e o bloco "Tempo sem visita" só existe com aviso de risco."""
+    from datetime import date, timedelta
+    recente = dict(CONTINUAR)
+    recente["DATA_ULTIMA_VISITA"] = (date.today() - timedelta(days=17)).isoformat()
+    assert pm.bloco_visita(recente) == ""
+    assert pm.montar_payload(recente).cards[0].last_visit == "há 17 dias"
+    sem_data = dict(CONTINUAR, DATA_ULTIMA_VISITA=None)
+    assert pm.bloco_visita(sem_data) == ""
+    assert pm.montar_payload(sem_data).cards[0].last_visit == "sem registro"
 
 
 def test_o_ranking_nao_cita_o_numero_do_painel():
@@ -999,3 +1014,194 @@ def test_cadastro_sem_setor_e_recusado_na_porta():
         assert resp.json()["detail"]["status"] == "SETOR_AUSENTE"
     finally:
         app.dependency_overrides.clear()
+
+
+# --------------------------------------------------------------------------- #
+# Continuidade da conversa, correções do teste de campo de 30/08/2026
+# --------------------------------------------------------------------------- #
+
+
+def test_sobra_de_palavras_sem_medico_vira_fora_do_escopo():
+    """"Quero a lista de pendências" virava busca por um médico chamado "lista
+    pendências" e morria em "não encontrei ninguém". Continuação de conversa
+    desce para o agente, que tem o histórico e as ferramentas."""
+    executor = FakeExecutor(localiza=[])
+    r = pm.resolver_perfil("quero a lista de pendências", executor, setor_autenticado=SETOR)
+    assert r.status == "FORA_DO_ESCOPO"
+    assert "termo sem correspondencia" in r.identificacao["motivo"]
+
+
+def test_escolha_de_opcao_tambem_desce_para_o_agente():
+    executor = FakeExecutor(localiza=[])
+    r = pm.resolver_perfil("quero a segunda opção", executor, setor_autenticado=SETOR)
+    assert r.status == "FORA_DO_ESCOPO"
+
+
+def test_crm_explicito_inexistente_continua_nao_encontrado_e_com_saida():
+    """Identificador explícito que não existe é "não encontrado" na hora, sem
+    gastar modelo. Mas nunca em beco sem saída: a resposta orienta e sugere."""
+    executor = FakeExecutor(localiza=[])
+    r = pm.resolver_perfil("34827", executor, setor_autenticado=SETOR)
+    assert r.status == "MEDICO_NAO_ENCONTRADO"
+    assert "outras formas" in r.mensagem
+    sugestoes = [c for c in r.cards if c.type == "suggestions"]
+    assert sugestoes and len(sugestoes[0].items) >= 2
+
+
+# --------------------------------------------------------------------------- #
+# Saudação, teste de campo de 02/09/2026
+# --------------------------------------------------------------------------- #
+
+
+def test_saudacao_nao_vira_busca_de_medico():
+    """"Olá" virava busca por substring e encontrava PAOLA. Saudação responde
+    na hora, com chips, sem tocar o banco e sem gastar modelo. As formas com
+    aspas tipográficas e emoji entraram pela revisão de 02/09/2026, que
+    reproduziu o defeito original com elas na primeira versão do léxico."""
+    executor = FakeExecutor()
+    formas = ("Olá", "olá!", "Oi", "bom dia", "Boa tarde!", "tudo bem?",
+              "valeu", "\u201cOl\u00e1\u201d", "Ol\u00e1 \U0001f44b", "ol\u00e1!!!", "OLA...",
+              "Ol\u00e1\u2026")
+    for mensagem in formas:
+        r = pm.resolver_perfil(mensagem, executor, setor_autenticado=SETOR)
+        assert r.status == "SAUDACAO", mensagem
+        assert executor.chamadas == [], mensagem
+        chips = [c for c in r.cards if c.type == "suggestions"]
+        assert chips and len(chips[0].items) >= 2, mensagem
+
+
+def test_saudacao_seguida_de_nome_vira_busca_limpa():
+    """"Bom dia paola" buscava por %BOM DIA PAOLA% e não encontrava ninguém.
+    O prefixo de cumprimento sai do termo e a busca vira %PAOLA%."""
+    r = pm.rotear("bom dia paola")
+    assert r.intencao == "briefing_medico"
+    assert r.motivo == "identificador seco"
+    assert r.termo == "paola"
+
+
+def test_saudacao_com_crm_junto_continua_sendo_busca():
+    """"Oi 34827" descartava o dígito na normalização por letras e devolvia
+    boas-vindas sem consultar o médico. A saudação só vence sem identificador.
+    Achado da revisão independente de 02/09/2026."""
+    r = pm.rotear("oi 34827")
+    assert r.intencao == "briefing_medico"
+    assert r.crm_numero == "34827"
+    r = pm.rotear("bom dia 34827")
+    assert r.intencao == "briefing_medico"
+    assert r.crm_numero == "34827"
+    r = pm.rotear("olá SP0462552")
+    assert r.intencao == "briefing_medico"
+    assert r.ufcrm == "SP0462552"
+
+
+def test_saudacao_com_setor_junto_vira_resumo_do_setor():
+    """"Oi 010101050553" engolia o código do setor. Com a guarda incluindo o
+    setor, o fluxo segue para o resumo, como no código seco, e o termo de
+    busca calculado com o cumprimento dentro é anulado."""
+    r = pm.rotear("oi 010101050553")
+    assert r.intencao == "resumo_setor"
+    assert r.setor == "010101050553"
+    assert r.termo is None
+
+
+def test_saudacao_com_identificador_rotulado_nao_vaza():
+    """"Oi setor 010101050553" gerava termo "oi" e virava busca de médico; "oi
+    crm 34827" caía no agente. O rótulo estrutural sai pela sobra e o prefixo
+    de cumprimento sai pelo laço, então cada identificador segue seu fluxo."""
+    r = pm.rotear("oi setor 010101050553")
+    assert r.intencao == "resumo_setor"
+    assert r.setor == "010101050553"
+    assert r.termo is None
+    r = pm.rotear("oi codigo 010101050553")
+    assert r.intencao == "resumo_setor"
+    r = pm.rotear("oi crm 34827")
+    assert r.intencao == "briefing_medico"
+    assert r.crm_numero == "34827"
+    assert r.termo is None
+
+
+def test_saudacoes_encadeadas_continuam_saudacao():
+    r = pm.rotear("oi bom dia")
+    assert r.intencao == "saudacao"
+
+
+def test_saudacao_capitalizada_antes_de_nome_nao_vira_nome():
+    """"Oi Paola" casava com a regex de nome capitalizado e buscava por
+    %OI PAOLA%. O prefixo agora é consumido antes de qualquer extração."""
+    r = pm.rotear("Oi Paola")
+    assert r.intencao == "briefing_medico"
+    assert r.nome is None
+    assert r.termo == "paola"
+    r = pm.rotear("Olá Paola Silva")
+    assert r.intencao == "briefing_medico"
+    assert r.nome == "Paola Silva"
+
+
+def test_saudacoes_encadeadas_seguidas_de_nome_viram_busca():
+    """"Oi bom dia paola" tinha quatro palavras na sobra, nunca ganhava termo
+    e caía no agente. Com o consumo antecipado, sobra só o nome."""
+    r = pm.rotear("oi bom dia paola")
+    assert r.intencao == "briefing_medico"
+    assert r.termo == "paola"
+
+
+def test_palavra_repetida_fora_do_prefixo_sobrevive():
+    """O corte é posicional: em "bom dia dia", só o cumprimento sai, e o
+    segundo "dia" permanece como termo de busca."""
+    r = pm.rotear("bom dia dia")
+    assert r.termo == "dia"
+
+
+def test_busca_curta_e_crm_sobrevivem_ao_lexico():
+    """"Leo" com três letras é busca legítima, e "34827" continua CRM: a
+    normalização por letra derruba o dígito para vazio, e vazio não é
+    saudação."""
+    r = pm.rotear("Leo")
+    assert r.intencao == "briefing_medico"
+    assert r.termo == "leo"
+    r = pm.rotear("34827")
+    assert r.intencao == "briefing_medico"
+    assert r.crm_numero == "34827"
+
+
+def test_sobrenome_igual_a_cortesia_continua_sendo_busca():
+    """Medido na vw_agente_medico em 02/09/2026 por palavra exata do nome:
+    Beleza 49 médicos, Perfeito 46, Salve 24, Legal 10, Opa 7. Esses termos ficaram
+    fora do léxico e a mensagem inteira igual a eles segue como busca de
+    nome, com o termo preservado."""
+    for termo in ("Salve", "Show", "Legal", "Beleza", "Perfeito", "Ótimo", "Opa"):
+        r = pm.rotear(termo)
+        assert r.intencao == "briefing_medico", termo
+        assert r.termo == pm._sem_acento(termo), termo
+
+
+def test_pontuacao_interna_nao_quebra_a_saudacao():
+    """"Oi,bom dia" tem duas palavras dentro do mesmo token. A sexta rodada
+    da revisão de 02/09/2026 mostrou a regressão de comparar o token inteiro:
+    a comparação agora é palavra a palavra, com mapa de volta ao token."""
+    for mensagem in ("oi,bom dia", "bom-dia", "tudo-bem?"):
+        assert pm.rotear(mensagem).intencao == "saudacao", mensagem
+    r = pm.rotear("oi,bom dia paola")
+    assert r.intencao == "briefing_medico"
+    assert r.termo == "paola"
+
+
+def test_palavra_com_digito_nunca_e_cumprimento():
+    """"Oi2" normalizava para "oi" e era consumido. Palavra de token com
+    dígito não é consumível, então segue como busca."""
+    r = pm.rotear("oi2")
+    assert r.intencao != "saudacao"
+
+
+def test_ruido_puro_ganha_boas_vindas_em_vez_de_agente():
+    """Mensagem só de emoji ou pontuação não tem o que rotear nem o que
+    perguntar ao modelo: boas-vindas com chips custam zero e orientam."""
+    for mensagem in ("\U0001f44b", "...", "???"):
+        assert pm.rotear(mensagem).intencao == "saudacao", mensagem
+
+
+def test_consumo_no_meio_do_token_nao_corta_nada():
+    """"Oi,paola" pararia no meio do token. Sem corte limpo, nada é cortado e
+    a mensagem segue o fluxo normal de busca."""
+    r = pm.rotear("oi,paola")
+    assert r.intencao == "briefing_medico"

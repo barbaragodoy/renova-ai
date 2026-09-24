@@ -12,6 +12,7 @@ import { cn } from "@/lib/utils";
 import {
   configurarAoExpirarSessao,
   configurarProvedorDeToken,
+  configurarSessaoEntraIdAtiva,
   configurarVerComo,
   obterSessaoAdmin,
 } from "@/lib/api";
@@ -22,12 +23,22 @@ import {
   type Sessao,
   type VerComo,
 } from "@/auth/sessao";
+import { USA_SENHA } from "@/auth/modo";
+import { encerrarLoginMicrosoft } from "@/auth/entraId";
 
 // Sessão atual em módulo, para o cliente HTTP ler o token sem depender do
 // ciclo de renderização do React. Toda escrita passa por aplicarSessao().
-let sessaoAtual: Sessao | null = lerSessao();
+//
+// Em AUTH_MODE=entra_id não há sessionStorage nenhum para ler aqui: a
+// identidade nunca é guardada localmente, só confirmada contra o cookie do
+// Easy Auth a cada carregamento (Login.tsx chama resolverEntrada() ao
+// montar). Ler sessionStorage nesse modo reaproveitaria uma sessão sem
+// reconfirmar com o servidor — o F5 deixaria de perguntar de novo, que é
+// exatamente o que este modo não deve fazer.
+let sessaoAtual: Sessao | null = USA_SENHA ? lerSessao() : null;
 configurarProvedorDeToken(() => sessaoAtual?.token ?? null);
 configurarVerComo(sessaoAtual?.verComo?.setor ?? null);
+configurarSessaoEntraIdAtiva(() => !USA_SENHA && sessaoAtual !== null);
 
 /** Abas do portal, na ordem do protótipo, menos uma.
  *
@@ -125,7 +136,7 @@ export default function App() {
    *  carregado: quem entrar depois neste aparelho não pode ver o ranking nem
    *  a conversa de quem estava antes. */
   function encerrarSessao(aviso: string | null) {
-    limparSessao();
+    if (USA_SENHA) limparSessao();
     configurarVerComo(null);
     sessaoAtual = null;
     setSessao(null);
@@ -164,7 +175,10 @@ export default function App() {
   function verComo(alvo: VerComo | null) {
     if (!sessao) return;
     const nova: Sessao = { ...sessao, verComo: alvo };
-    gravarSessao(nova);
+    // Ver comentário em `sessaoAtual` acima: em entra_id, sessionStorage
+    // nunca guarda a identidade — só a escolha de "ver como" seria uma
+    // exceção sem necessidade real, então fica de fora nos dois modos.
+    if (USA_SENHA) gravarSessao(nova);
     configurarVerComo(alvo?.setor ?? null);
     sessaoAtual = nova;
     setSessao(nova);
@@ -175,6 +189,14 @@ export default function App() {
   if (!sessao) return <Login onEntrar={aplicarSessao} aviso={avisoDeSessao} />;
 
   function sair() {
+    if (!USA_SENHA) {
+      // Encerrar só o estado do React deixaria o cookie do Easy Auth de pé:
+      // a próxima conferência (resolverEntrada, em Login.tsx) reconheceria a
+      // mesma pessoa e a devolveria ao portal sem ela pedir. Navega para
+      // fora — não há estado do React para limpar depois disso.
+      encerrarLoginMicrosoft();
+      return;
+    }
     encerrarSessao(null);
   }
 

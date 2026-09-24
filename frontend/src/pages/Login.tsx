@@ -2,11 +2,19 @@ import { useEffect, useState, type FormEvent } from "react";
 import { ApiError, login } from "@/lib/api";
 import { gravarSessao, type Sessao } from "@/auth/sessao";
 import { USA_SENHA } from "@/auth/modo";
+import {
+  encerrarLoginMicrosoft,
+  resolverEntrada,
+  URL_LOGIN_MICROSOFT,
+  type Entrada,
+} from "@/auth/entraId";
+import { AcessoBloqueado } from "@/pages/AcessoBloqueado";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { PontinhosDeCarregamento } from "@/components/ui/loading";
 
 interface LoginProps {
   onEntrar: (sessao: Sessao) => void;
@@ -29,6 +37,12 @@ export function Login({ onEntrar, aviso }: LoginProps) {
   const [email, setEmail] = useState("");
   const [senha, setSenha] = useState("");
   const [erro, setErro] = useState<string | null>(aviso ?? null);
+  // 403 ACESSO_BLOQUEADO em POST /auth/login (modo senha). Mensagem vinda do
+  // backend, não texto fixo aqui — única fonte é
+  // backend/app/auth/status_acesso.py, ver AcessoBloqueado.tsx.
+  const [bloqueado, setBloqueado] = useState<string | null>(null);
+  // Modo entra_id: null enquanto GET /auth/contexto não respondeu.
+  const [entrada, setEntrada] = useState<Entrada | null>(null);
 
   // Aviso que chega depois da montagem também precisa aparecer. Hoje o Login
   // é sempre remontado quando a sessão cai, então o estado inicial bastaria,
@@ -38,6 +52,28 @@ export function Login({ onEntrar, aviso }: LoginProps) {
     if (aviso) setErro(aviso);
   }, [aviso]);
   const [carregando, setCarregando] = useState(false);
+
+  // Modo entra_id: sem formulário — a conferência roda ao abrir a tela,
+  // contra o cookie do Easy Auth (GET /auth/contexto via resolverEntrada()),
+  // nunca contra um token guardado localmente. A mesma consulta cobre os
+  // dois lados do redirecionamento: `anonimo` na primeira visita,
+  // `autenticado` na volta do login da Microsoft.
+  useEffect(() => {
+    if (USA_SENHA) return;
+    let cancelado = false;
+    resolverEntrada().then((resultado) => {
+      if (cancelado) return;
+      if (resultado.estado === "autenticado") {
+        onEntrar(resultado.sessao);
+        return;
+      }
+      setEntrada(resultado);
+    });
+    return () => {
+      cancelado = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const podeEnviar = email.trim() !== "" && senha.trim() !== "";
 
@@ -62,6 +98,11 @@ export function Login({ onEntrar, aviso }: LoginProps) {
       gravarSessao(sessao);
       onEntrar(sessao);
     } catch (excecao) {
+      if (excecao instanceof ApiError && excecao.codigo === "ACESSO_BLOQUEADO") {
+        setBloqueado(excecao.message);
+        setSenha("");
+        return;
+      }
       setErro(
         excecao instanceof ApiError
           ? excecao.message
@@ -72,6 +113,22 @@ export function Login({ onEntrar, aviso }: LoginProps) {
     } finally {
       setCarregando(false);
     }
+  }
+
+  if (bloqueado) {
+    return (
+      <AcessoBloqueado
+        mensagem={bloqueado}
+        onSair={() => {
+          setBloqueado(null);
+          setSenha("");
+        }}
+      />
+    );
+  }
+
+  if (!USA_SENHA) {
+    return <TelaEntraId entrada={entrada} />;
   }
 
   return (
@@ -172,6 +229,91 @@ export function Login({ onEntrar, aviso }: LoginProps) {
             <p id="microsoft-login-status" className="mt-2 text-center text-xs text-[var(--color-destructive)]">
               Funcionalidade em desenvolvimento
             </p>
+          </Card>
+        </div>
+      </main>
+
+      <aside
+        aria-hidden="true"
+        className="relative hidden overflow-hidden bg-[var(--color-primary)] lg:block"
+      >
+        <span className="absolute -top-32 -right-40 h-[26rem] w-[26rem] rounded-full border border-white/15" />
+        <span className="absolute -bottom-32 -left-36 h-80 w-80 rounded-full border border-white/15" />
+
+        <div className="relative flex h-full flex-col justify-center px-14 text-white">
+          <p className="text-6xl leading-none font-bold tracking-tight">achē</p>
+          <p className="mt-4 text-lg">mais vida para você</p>
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+/**
+ * Tela de acesso do modo `entra_id`: sem formulário, sem senha. `entrada`
+ * é o resultado de `resolverEntrada()` (`null` enquanto ainda não voltou).
+ *
+ * O bloqueio (`ACESSO_BLOQUEADO`) é tratado em `Login` (mesmo componente
+ * `AcessoBloqueado` do modo senha) antes de chegar aqui — este componente só
+ * recebe os demais estados.
+ */
+function TelaEntraId({ entrada }: { entrada: Entrada | null }) {
+  return (
+    <div className="grid min-h-dvh grid-cols-1 lg:grid-cols-[1fr_minmax(0,44%)]">
+      <main className="flex flex-col justify-center px-6 py-12 sm:px-10 lg:px-16">
+        <div className="mx-auto w-full max-w-md">
+          <Card className="p-6 sm:p-8">
+            <p className="text-sm font-semibold tracking-[0.08em] text-[var(--color-primary)] uppercase">
+              PedAI
+            </p>
+
+            <h1 className="mt-6 text-3xl leading-tight font-semibold sm:text-4xl">
+              Acessar o portal
+            </h1>
+            <p className="mt-2 text-sm text-[var(--color-muted-foreground)]">
+              Use sua conta corporativa Microsoft.
+            </p>
+
+            {entrada === null && (
+              <div className="mt-8 flex items-center justify-center py-4">
+                <PontinhosDeCarregamento texto="Verificando sua conta..." />
+              </div>
+            )}
+
+            {entrada?.estado === "recusado" && (
+              <Alert className="mt-8">
+                <span>{entrada.mensagem}</span>
+              </Alert>
+            )}
+
+            {entrada?.estado === "erro" && (
+              <Alert className="mt-8">
+                <span>{entrada.mensagem}</span>
+              </Alert>
+            )}
+
+            {(entrada === null ||
+              entrada.estado === "anonimo" ||
+              entrada.estado === "recusado" ||
+              entrada.estado === "erro") && (
+              <a
+                href={URL_LOGIN_MICROSOFT}
+                className="mt-8 inline-flex h-12 w-full items-center justify-center gap-2 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card)] px-6 text-base font-medium text-[var(--color-foreground)] hover:bg-[var(--color-muted)]"
+              >
+                <img src="/microsoft.svg" alt="" className="h-4 w-4 shrink-0" />
+                Entrar com a conta Microsoft
+              </a>
+            )}
+
+            {(entrada?.estado === "recusado" || entrada?.estado === "erro") && (
+              <button
+                type="button"
+                onClick={encerrarLoginMicrosoft}
+                className="mt-4 w-full text-center text-xs text-[var(--color-muted-foreground)] underline underline-offset-2"
+              >
+                Sair e tentar com outra conta
+              </button>
+            )}
           </Card>
         </div>
       </main>

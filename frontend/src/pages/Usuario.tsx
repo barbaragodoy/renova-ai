@@ -265,9 +265,15 @@ export function Usuario({ email }: UsuarioProps) {
   const primeira = perfil.atribuicoes[0];
   const setores = perfil.atribuicoes.map((a) => a.setor).join(" · ");
 
-  // Item 1.4: com setor, `Ativo`. A `tb_propagandistas` só contém quem tem
-  // setor, então na prática o outro estado não chega a aparecer.
-  const status = primeira.setor ? "Ativo" : "Sem setor";
+  // Item 1.4, atualizado pela task de bloqueio de acesso: vem de
+  // tb_perfil_portal.STATUS_ACESSO, não mais derivado da existência de
+  // setor. `status_acesso` ausente/nulo (sem linha) mostra "Bloqueado",
+  // mesmo critério deny-by-default do backend — quem chega até aqui e vê
+  // essa tela só entrou porque já passou pela checagem de acesso, mas o
+  // campo reflete a pessoa do perfil sendo exibido (pode ser outra, em
+  // sessão de conferência de administrador), não necessariamente quem
+  // autenticou.
+  const status = perfil.status_acesso === "ATIVO" ? "Ativo" : "Bloqueado";
 
   const cidades = resumir(perfil.cidades);
   const cidadeEstado =

@@ -28,6 +28,19 @@ export function configurarAoExpirarSessao(callback: () => void) {
   aoExpirar = callback;
 }
 
+/** Em AUTH_MODE=entra_id não há Bearer token — a autoridade é o cookie do
+ *  Easy Auth, que o navegador manda sozinho. Sem isto, um 401 depois do
+ *  cookie expirar (sessão viva, mas vencida no meio do uso) não tinha como
+ *  se distinguir de um 401 na primeira consulta anônima de `/auth/contexto`
+ *  (essa é tratada dentro de `resolverEntrada()`, antes de chegar aqui, e
+ *  não deve soar como "sessão expirou" para quem nunca teve sessão). App.tsx
+ *  alimenta isto com `!USA_SENHA && sessaoAtual !== null`. */
+let sessaoEntraIdAtiva: () => boolean = () => false;
+
+export function configurarSessaoEntraIdAtiva(provedor: () => boolean) {
+  sessaoEntraIdAtiva = provedor;
+}
+
 /** Setor que um administrador escolheu visualizar. Vai no header
  *  `X-Ver-Como` de toda chamada; o backend troca a identidade efetiva pela
  *  do propagandista daquele setor e recusa qualquer escrita enquanto o header
@@ -43,6 +56,11 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** Código estruturado do erro (ex.: "ACESSO_BLOQUEADO"), quando o
+     *  backend devolve `detail` como objeto `{codigo, detail}` em vez de
+     *  string — ver `backend/app/auth/status_acesso.py`. Detecção por
+     *  código, não por texto da mensagem, que pode mudar. */
+    readonly codigo?: string,
   ) {
     super(message);
     this.name = "ApiError";
@@ -66,25 +84,35 @@ async function request<T>(caminho: string, init: RequestInit = {}): Promise<T> {
     );
   }
 
-  // 401 numa chamada que levou token é sessão vencida ou revogada, e não
-  // credencial errada: o login não manda token, então ele nunca cai aqui e
-  // continua mostrando "e-mail ou senha inválidos" na própria tela.
-  if (resposta.status === 401 && token) {
+  // 401 numa chamada que levou token (modo senha) ou numa chamada feita com
+  // sessão entra_id já ativa é sessão vencida ou revogada, e não credencial
+  // errada: o login por senha não manda token, e a consulta inicial de
+  // /auth/contexto em entra_id (antes de qualquer sessão existir) não conta
+  // como "ativa" — então nenhuma das duas cai aqui indevidamente.
+  if (resposta.status === 401 && (token || sessaoEntraIdAtiva())) {
     aoExpirar();
     throw new ApiError("Sua sessão expirou. Entre novamente.", 401);
   }
 
   if (!resposta.ok) {
-    // O FastAPI devolve o erro em `detail`, que pode ser texto ou lista de
-    // erros de validação do Pydantic.
+    // O FastAPI devolve o erro em `detail`, que pode ser texto, lista de
+    // erros de validação do Pydantic, ou objeto estruturado `{codigo,
+    // detail}` — formato padronizado de auth/status_acesso.py para
+    // ACESSO_BLOQUEADO, único hoje que usa esse formato.
     let detalhe = `Erro ${resposta.status} ao consultar o servidor.`;
+    let codigo: string | undefined;
     try {
       const corpo = await resposta.json();
-      if (typeof corpo?.detail === "string") detalhe = corpo.detail;
+      if (typeof corpo?.detail === "string") {
+        detalhe = corpo.detail;
+      } else if (corpo?.detail && typeof corpo.detail === "object") {
+        if (typeof corpo.detail.detail === "string") detalhe = corpo.detail.detail;
+        if (typeof corpo.detail.codigo === "string") codigo = corpo.detail.codigo;
+      }
     } catch {
       /* resposta sem corpo JSON: mantém a mensagem padrão */
     }
-    throw new ApiError(detalhe, resposta.status);
+    throw new ApiError(detalhe, resposta.status, codigo);
   }
 
   return (await resposta.json()) as T;
@@ -103,16 +131,22 @@ export interface ContextoResponse {
   setor?: string | null;
   nome?: string | null;
   mensagem?: string | null;
+  /** E-mail corporativo real (tb_propagandistas.rep_email). Único jeito da
+   *  interface aprender o e-mail de quem entrou no modo entra_id, que não
+   *  tem formulário — ver backend/app/auth/context.py e src/auth/entraId.ts. */
+  email?: string | null;
 }
 
 /**
  * Resolve matrícula, setor e nome do propagandista.
  *
  * Em DEV/HMG (`AUTH_REQUIRE_JWT=false`) o e-mail vai por query string. Em
- * produção o backend passa a extrair o e-mail do Bearer token do Entra ID e
- * ignora este parâmetro, sem alteração de contrato.
+ * `AUTH_MODE=entra_id` o backend ignora este parâmetro e extrai a identidade
+ * dos headers do Easy Auth (`X-MS-CLIENT-PRINCIPAL-NAME`) — por isso `email`
+ * é opcional aqui: `src/auth/entraId.ts` chama sem argumento nenhum, a
+ * identidade nunca é conhecida no cliente antes desta resposta.
  */
-export function obterContexto(email: string) {
+export function obterContexto(email?: string) {
   const query = email ? `?email=${encodeURIComponent(email)}` : "";
   return request<ContextoResponse>(`/auth/contexto${query}`);
 }
@@ -175,7 +209,14 @@ export interface ListaPropagandistasAdmin {
 /** Diz se quem entrou pode abrir o portal no lugar de um propagandista. Não é
  *  decisão de segurança, que fica no servidor a cada chamada; só evita
  *  desenhar um seletor que a pessoa não pode usar. */
-export function obterSessaoAdmin(email: string) {
+/**
+ * `email` é opcional pelo mesmo motivo de `obterContexto`: em
+ * `AUTH_MODE=entra_id` o parâmetro é ignorado, a identidade vem dos headers
+ * do Easy Auth. `src/auth/entraId.ts` chama sem argumento — é o único jeito
+ * de confirmar se uma conta corporativa sem propagandista vinculado é
+ * administradora, antes de existir qualquer `Sessao`.
+ */
+export function obterSessaoAdmin(email?: string) {
   const query = email ? `?email=${encodeURIComponent(email)}` : "";
   return request<SessaoAdminResponse>(`/admin/sessao${query}`);
 }
@@ -228,6 +269,11 @@ export interface PerfilResponse {
   login?: string | null;
   /** Caminho da foto. Sempre nulo enquanto o armazenamento não for definido. */
   foto_path?: string | null;
+
+  /** "Status da conta" (bloco 1) — "ATIVO" ou "BLOQUEADO", de
+   *  tb_perfil_portal.STATUS_ACESSO. `null`/ausente quando não há linha:
+   *  tratar como bloqueado, mesmo critério deny-by-default do backend. */
+  status_acesso?: string | null;
 
   /* Bloco 3 da aba. Todos saem da mesma linha de `tb_propagandistas`. */
   cargo?: string | null;

@@ -18,19 +18,24 @@ UFCRM = "SP00001"
 # ---------------------------------------------------------------------------
 
 def _mock_limite_e_painel_size(sql: str):
-    """Sprint 6: gerar_recomendacoes agora consulta tb_perfil_portal (limite
-    por propagandista) e o tamanho do painel antes de decidir revisão — duas
-    queries novas que os mocks pré-existentes deste arquivo não previam.
-    Resposta fixa (limite=318, painel vazio) para não interferir na lógica
-    original que estes testes já cobriam (ENTRADA_PAINEL/recorrência), já
-    que painel=0 nunca é > limite, então a guarda de revisão simplesmente
-    não dispara — mesmo comportamento de antes desta mudança para esses
-    cenários, que nunca tiveram intenção de exercitar REVISAO_PAINEL.
-    Retorna None se `sql` não for nenhuma das duas queries novas."""
-    if "tb_perfil_portal" in sql:
+    """gerar_recomendacoes consulta o limite do painel e o tamanho do painel
+    antes de decidir revisão — duas queries que os mocks pré-existentes
+    deste arquivo não previam. Resposta fixa (limite=300, painel vazio) para
+    não interferir na lógica que estes testes cobrem (ENTRADA_PAINEL e
+    recorrência): painel=0 nunca é > limite, então a guarda de revisão não
+    dispara.
+
+    Desde 18/09/2026 o limite vem só de tb_renovai_parametros, via
+    `.scalar()`. Uma consulta a tb_perfil_portal aqui é defeito.
+    Retorna None se `sql` não for nenhuma das duas queries."""
+    if "tb_renovai_parametros" in sql:
         result = MagicMock()
-        result.mappings.return_value.fetchone.return_value = {"limite": 318}
+        result.scalar.return_value = 300
         return result
+    if "tb_perfil_portal" in sql:
+        raise AssertionError(
+            "tb_perfil_portal não deve mais ser consultada para o limite do painel"
+        )
     if "tb_painel_medico" in sql and "COUNT(*)" in sql:
         result = MagicMock()
         result.scalar.return_value = 0

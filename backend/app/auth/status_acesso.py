@@ -43,7 +43,7 @@ def levantar_acesso_bloqueado(mensagem: str = _MENSAGEM_BLOQUEADO) -> None:
 
 
 def resolver_status_acesso(
-    identidade: str, settings: Optional[Settings] = None
+    identidade: str, settings: Optional[Settings] = None, *, por_email: bool = False
 ) -> StatusAcesso:
     """Resolve status_acesso e perfil_acesso para a identidade autenticada.
 
@@ -68,7 +68,10 @@ def resolver_status_acesso(
     bloqueado (deny-by-default) — ver `exigir_acesso_liberado`.
     """
     settings = settings or get_settings()
-    coluna = coluna_identidade_para_auth_mode(settings)
+    # `por_email=True`: a aba Usuário (auth/perfil.py) consulta o status da
+    # pessoa exibida pelo REP_EMAIL da linha dela, em qualquer modo. Esse
+    # valor nunca é a identidade autenticada, então não vale a regra do modo.
+    coluna = "rep_email" if por_email else coluna_identidade_para_auth_mode(settings)
     assert coluna in ("rep_login", "rep_email")  # só pode vir da ternária acima
 
     # Mesma extração de auth/context.py::resolver_contexto(): em entra_id o

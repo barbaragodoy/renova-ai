@@ -318,5 +318,105 @@ def test_tag_da_aba_usuario_reflete_status_acesso():
         ) as mock_status:
             perfil = resolver_perfil(linha["rep_email"])
 
-    mock_status.assert_called_once_with(linha["rep_email"])
+    mock_status.assert_called_once_with(linha["rep_email"], por_email=True)
     assert perfil.status_acesso == "BLOQUEADO"
+
+
+# ------------------------------------- personificação em AUTH_MODE=entra_id ----
+# hmg, 24/09/2026: em entra_id, a busca normal é por REP_LOGIN. A
+# personificação devolve o REP_EMAIL do propagandista escolhido, e o prefixo
+# do e-mail não bate com o login (`sandro.menezes` x `MSandro`). Com isso,
+# ranking e recomendações respondiam 403 para todo administrador.
+
+
+def _personificar_em_entra_id(email_alvo: str) -> str:
+    from backend.app.auth import administrativo
+
+    registrar_alvo("SP_CAPITAL")
+    with patch.object(administrativo, "email_do_setor", return_value=email_alvo):
+        return resolver_email_autenticado(
+            None,
+            None,
+            _settings("entra_id"),
+            client_principal=_principal("admin.ativo.teste@ache.com.br"),
+        )
+
+
+def test_personificacao_em_entra_id_resolve_contexto_pelo_rep_email():
+    from backend.app.auth.context import StatusContexto, resolver_contexto
+
+    try:
+        alvo = _personificar_em_entra_id("ana.lima@ache.com.br")
+        contexto = resolver_contexto(alvo, coluna_identidade="rep_login")
+        status = resolver_status_acesso(alvo, _settings("entra_id"), por_email=True)
+    finally:
+        registrar_alvo(None)
+
+    assert alvo == "ana.lima@ache.com.br"
+    assert contexto.status == StatusContexto.SETOR_RESOLVIDO
+    assert contexto.matricula == "REP001"
+    assert status.status_acesso == "ATIVO"
+
+
+def test_sem_personificacao_email_nao_vale_como_login_em_entra_id():
+    """A troca de coluna vale só para o e-mail marcado na personificação."""
+    from backend.app.auth.context import StatusContexto, resolver_contexto
+
+    registrar_alvo(None)
+    contexto = resolver_contexto("ana.lima@ache.com.br", coluna_identidade="rep_login")
+
+    assert contexto.status == StatusContexto.PROPAGANDISTA_NAO_ENCONTRADO
+
+
+def test_propagandista_pedindo_personificacao_nao_troca_de_coluna():
+    """X-Ver-Como vindo de quem não é administrador é ignorado e não deixa
+    marca: a identidade continua sendo resolvida por REP_LOGIN."""
+    from backend.app.auth.administrativo import eh_identidade_personificada
+
+    registrar_alvo("SP_INTERIOR")
+    try:
+        identidade = resolver_email_autenticado(
+            None,
+            None,
+            _settings("entra_id"),
+            client_principal=_principal("ana.lima.upn@ache.com.br"),
+        )
+        marcada = eh_identidade_personificada(identidade)
+    finally:
+        registrar_alvo(None)
+
+    assert identidade == "ana.lima.upn@ache.com.br"
+    assert marcada is False
+
+
+# ------------------------------------ perfil e foto em AUTH_MODE=entra_id ----
+# Perfil e foto guardam dados por REP_EMAIL. Em entra_id a identidade é o UPN,
+# que precisa ser trocado pelo e-mail cadastrado antes das consultas.
+
+
+@pytest.mark.parametrize(
+    "identidade,modo,esperado",
+    [
+        pytest.param("ana.lima.upn@ache.com.br", "entra_id", "ana.lima@ache.com.br", id="upn-vira-email"),
+        pytest.param("ANA.LIMA.UPN@ache.com.br", "entra_id", "ana.lima@ache.com.br", id="upn-maiusculo"),
+        pytest.param("admin.ativo.teste@ache.com.br", "entra_id", "admin.ativo.teste@ache.com.br", id="admin-sem-propagandista"),
+        pytest.param("ana.lima@ache.com.br", "senha", "ana.lima@ache.com.br", id="senha-nao-muda"),
+    ],
+)
+def test_email_cadastrado(identidade, modo, esperado):
+    from backend.app.auth.context import email_cadastrado
+
+    registrar_alvo(None)
+    assert email_cadastrado(identidade, _settings(modo)) == esperado
+
+
+def test_email_cadastrado_nao_mexe_na_identidade_personificada():
+    from backend.app.auth.context import email_cadastrado
+
+    try:
+        alvo = _personificar_em_entra_id("ana.lima@ache.com.br")
+        resultado = email_cadastrado(alvo, _settings("entra_id"))
+    finally:
+        registrar_alvo(None)
+
+    assert resultado == "ana.lima@ache.com.br"

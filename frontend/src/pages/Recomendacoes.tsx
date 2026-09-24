@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Award, CheckCircle, Info, ListChecks, TrendingUp, X } from "lucide-react";
+import { CheckCircle, Info, MapPin, X } from "lucide-react";
 import {
   ApiError,
   listarDesconsideradas,
@@ -15,6 +15,7 @@ import { PontinhosDeCarregamento } from "@/components/ui/loading";
 import { rotuloMotivoDesconsideracao } from "@/lib/motivos";
 import { GavetaDeAcao } from "@/components/GavetaDeAcao";
 import { GavetaMedico } from "@/pages/Ranking";
+import type { BuscaDeMedico } from "@/pages/Home";
 
 /**
  * Aba Recomendações do Ped.AI.
@@ -61,6 +62,16 @@ import { GavetaMedico } from "@/pages/Ranking";
 /** Laranja da faixa de Exclusão no protótipo. Sem token no design system do
  *  portal, entra cru pelo mesmo motivo das cores do avatar da aba Usuário. */
 const LARANJA_EXCLUSAO = "#F59E0B";
+const FUNDO_LISTA = "#F7F7FA";
+const BORDA_FILTRO = "#E0E0E0";
+const BORDA_BOTAO = "#D1D5DB";
+const TEXTO_BOTAO = "#374151";
+const TEXTO_BOTAO_SECUNDARIO = "#4A5565";
+const TEXTO_AVISO = "#9B1B5A";
+const VERDE_PONTUACAO = "#16A34A";
+const AZUL_STATUS = "#3B82F6";
+const ROXO_TEXTO = "#4B3B8C";
+const ROXO_CLARO = "#EDE8F5";
 
 
 type TipoAba = "entrada" | "exclusao";
@@ -89,22 +100,6 @@ function fraseDaVisita(meses?: number | null): string {
   return meses ? `não recebe visita há ${meses} meses` : "não tem visita registrada";
 }
 
-function resumoDoCard(item: RecomendacaoItem, tipo: TipoAba): string {
-  if (tipo === "entrada") {
-    return "Médico com forte prescrição no setor e ainda fora do seu painel.";
-  }
-  switch (item.motivo_revisao) {
-    case MOTIVO_RANKING:
-      return "Caiu no ranking do setor e passou do limite do seu painel ideal.";
-    case MOTIVO_VISITA:
-      return `Está dentro do limite do seu painel ideal, mas ${fraseDaVisita(item.meses_sem_visita)}.`;
-    case MOTIVO_AMBOS:
-      return `Caiu no ranking do setor, passou do limite do seu painel ideal e ${fraseDaVisita(item.meses_sem_visita)}.`;
-    default:
-      return "Elegível para revisão neste ciclo.";
-  }
-}
-
 export function motivoDoDetalhe(item: RecomendacaoItem, tipo: TipoAba): string {
   const nome = capitalizarNome(item.nome_medico);
   if (tipo === "entrada") {
@@ -120,12 +115,6 @@ export function motivoDoDetalhe(item: RecomendacaoItem, tipo: TipoAba): string {
     default:
       return `${nome} está elegível para revisão neste ciclo.`;
   }
-}
-
-function acaoDoCard(tipo: TipoAba): string {
-  return tipo === "entrada"
-    ? "Avaliar a inclusão do médico no seu painel."
-    : "Avaliar a permanência do médico no seu painel.";
 }
 
 /** A tabela guarda o nome em caixa alta; a tela mostra com inicial maiúscula,
@@ -160,29 +149,28 @@ export function formatarPontos(valor?: number | null): string {
 function CardRecomendacaoEsqueleto() {
   return (
     <div
-      className="overflow-hidden rounded-lg bg-[var(--color-card)] shadow-sm"
-      style={{ border: "1px solid var(--color-border)", borderLeft: "4px solid var(--color-border)" }}
+      className="rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm"
       aria-hidden="true"
     >
-      <div className="space-y-3 p-4">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0 flex-1 space-y-2">
-            <div className="h-3.5 w-2/3 rounded-sm skeleton-shimmer" />
-            <div className="h-3 w-1/3 rounded-sm skeleton-shimmer" />
-          </div>
-          <div className="h-6 w-16 flex-shrink-0 rounded-lg skeleton-shimmer" />
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="h-3.5 w-2/3 rounded-sm skeleton-shimmer" />
+          <div className="h-3 w-1/3 rounded-sm skeleton-shimmer" />
+          <div className="h-3 w-1/4 rounded-sm skeleton-shimmer" />
         </div>
-
-        <div className="flex gap-3">
-          <div className="h-12 flex-1 rounded-lg skeleton-shimmer" />
-          <div className="h-12 flex-1 rounded-lg skeleton-shimmer" />
-        </div>
-
-        <div className="space-y-1.5">
-          <div className="h-3 w-full rounded-sm skeleton-shimmer" />
-          <div className="h-3 w-4/5 rounded-sm skeleton-shimmer" />
-        </div>
+        <div className="h-6 w-10 flex-shrink-0 rounded-full skeleton-shimmer" />
       </div>
+
+      <div className="mt-3 flex gap-4">
+        <div className="h-9 w-28 rounded-sm skeleton-shimmer" />
+        <div className="h-9 w-20 rounded-sm skeleton-shimmer" />
+      </div>
+
+      <div className="mt-3 flex gap-2">
+        <div className="h-8.5 flex-1 rounded-lg skeleton-shimmer" />
+        <div className="h-8.5 flex-1 rounded-lg skeleton-shimmer" />
+      </div>
+      <div className="mt-2 h-9 w-full rounded-lg skeleton-shimmer" />
     </div>
   );
 }
@@ -235,9 +223,10 @@ interface RecomendacoesProps {
    *  (ver Faixa), então é isto, e não a montagem, que diz quando ela voltou
    *  a abrir a aba. */
   ativa: boolean;
+  onMaisDetalhes?: (busca: BuscaDeMedico) => void;
 }
 
-export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
+export function Recomendacoes({ email, setor, ativa, onMaisDetalhes }: RecomendacoesProps) {
   const [entrada, setEntrada] = useState<RecomendacaoItem[]>([]);
   const [exclusao, setExclusao] = useState<RecomendacaoItem[]>([]);
   // Quantas pendências existem no ciclo, contra quantas já foram carregadas.
@@ -256,7 +245,7 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
   const [desconsiderando, setDesconsiderando] = useState<RecomendacaoItem | null>(null);
   // Em que passo a gaveta de ação abre: "escolha" (aceitar ou desconsiderar)
   // ou direto no "motivo". Os botões do card do médico pedem um ou outro.
-  const [passoAcao, setPassoAcao] = useState<"escolha" | "motivo">("escolha");
+  const [passoAcao, setPassoAcao] = useState<"confirmar" | "motivo">("confirmar");
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(true);
 
@@ -341,7 +330,7 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
       .then((p) => {
         if (!ativo) return;
         const cidade = p.cidades?.[0];
-        const partes = [p.nome, cidade, p.uf].filter(Boolean);
+        const partes = [cidade, p.uf].filter(Boolean);
         setOndeAtua(partes.length ? partes.join(", ") : null);
       })
       .catch(() => {
@@ -356,7 +345,7 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
   // sentido pagar essa chamada extra em todo carregamento da tela para quem
   // nunca visita essa aba.
   useEffect(() => {
-    if (aba !== "arquivadas" || jaCarregouArquivadas) return;
+    if (jaCarregouArquivadas) return;
     let ativo = true;
     setCarregandoArquivadas(true);
     setErroArquivadas(null);
@@ -378,7 +367,7 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
     return () => {
       ativo = false;
     };
-  }, [aba, email, jaCarregouArquivadas]);
+  }, [email, jaCarregouArquivadas]);
 
   const lista = aba === "entrada" ? entrada : aba === "exclusao" ? exclusao : [];
   const totalDaAba = aba === "entrada" ? totalEntrada : aba === "exclusao" ? totalExclusao : 0;
@@ -417,11 +406,12 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
       setExclusao((atual) => atual.filter((item) => item.id_recomendacao !== id));
       setTotalExclusao((n) => Math.max(0, n - 1));
     }
+    setJaCarregouArquivadas(false);
   }
 
   function abrirDesconsiderar(item: RecomendacaoItem, passo: "escolha" | "motivo" = "escolha") {
     setDetalhe(null);
-    setPassoAcao(passo);
+    setPassoAcao(passo === "motivo" ? "motivo" : "confirmar");
     setDesconsiderando(item);
   }
 
@@ -481,7 +471,7 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
 
   if (carregando) {
     return (
-      <div className="space-y-3 py-4 px-2 md:px-20 sm:px-6">
+      <div className="min-h-full space-y-3 px-4 py-4" style={{ background: FUNDO_LISTA }}>
         <PontinhosDeCarregamento texto="Carregando recomendações" />
         {[0, 1, 2].map((i) => (
           <CardRecomendacaoEsqueleto key={i} />
@@ -499,110 +489,78 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
   }
 
   return (
-    <div className="mx-auto w-full">
+    <div className="mx-auto min-h-full w-full" style={{ background: FUNDO_LISTA }}>
       {mostrarSobreATela && (
         <SobreATelaDeRecomendacoes aoFechar={() => setMostrarSobreATela(false)} />
       )}
 
-      {/* Cabeçalho da tela */}
-      <div className="border-b border-[var(--color-border)] bg-[var(--color-card)] px-4 pb-4 pt-5 sm:px-6">
+      <div className="border-b border-[var(--color-border)] bg-[var(--color-card)] px-4 pb-4 pt-5">
         <p className="mb-1 text-xs text-[var(--color-muted-foreground)]">
           Recomendações
         </p>
         <p className="text-lg font-bold leading-tight text-[var(--color-foreground)]">
           Recomendações do seu setor
         </p>
-        {/* A frase "as decisões tomadas aqui não alteram o SalesFarma" saiu em
-            04/09/2026, por decisão de George: o destino é o aceite alimentar a
-            carga, e o aviso passa a contradizer o produto. Quem diz que não é
-            instantâneo é o texto do próprio aceite, "acontece na próxima
-            carga". */}
-        {/* Quem e onde, antes do código do setor. O protótipo mostra "Sugestões
-            de D. Porto Alegre, RS"; aqui entra também o nome da pessoa e o
-            setor, porque um propagandista pode atender mais de um e o código é
-            o que ele usa para se orientar. Confirmado com George em
-            04/09/2026. A base não tem nome legível para o setor, só o número. */}
-        <p className="mt-1 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
-          {ondeAtua ? `Sugestões de ${ondeAtua} · ` : "Sugestões do "}
-          Setor {setor}.
+        <p className="mt-1.5 text-xs leading-relaxed text-[var(--color-muted-foreground)]">
+          {ondeAtua ? `Sugestões de ${ondeAtua}.` : `Sugestões do Setor ${setor}.`} Suas decisões
+          são integradas automaticamente ao Sales Pharma.
         </p>
 
-        {/* Total pendente em destaque, no desenho do protótipo do Figma Make.
-            Antes disso o número aparecia só como "5 pendentes" ao lado dos
-            filtros, e com a lista cortada em 5 ele nem era o total real. */}
-        {totalPendente > 0 && (
-          <div
-            className="mt-4 flex items-center gap-2.5 rounded-lg px-3 py-2"
-            style={{ background: "var(--color-accent)" }}
-          >
-            <div
-              className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full"
-              style={{ background: "var(--color-primary)" }}
+        <div className="mt-4 flex flex-wrap gap-1.5">
+          {(
+            [
+              { id: "entrada", rotulo: "Inclusão", contagem: null },
+              { id: "exclusao", rotulo: "Exclusão", contagem: null },
+              {
+                id: "arquivadas",
+                rotulo: "Histórico",
+                contagem: desconsideradas.length > 0 ? desconsideradas.length : null,
+              },
+            ] as const
+          ).map(({ id, rotulo, contagem }) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setAba(id)}
+              className="rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors"
+              style={
+                aba === id
+                  ? {
+                      background: "var(--color-primary)",
+                      color: "var(--color-primary-foreground)",
+                      borderColor: "var(--color-primary)",
+                    }
+                  : {
+                      background: "var(--color-card)",
+                      color: "var(--color-muted-foreground)",
+                      borderColor: BORDA_FILTRO,
+                    }
+              }
             >
-              <ListChecks className="h-3.5 w-3.5 text-white" aria-hidden="true" />
-            </div>
-            <div className="min-w-0">
-              <p className="text-xs font-semibold leading-snug text-[var(--color-foreground)]">
-                {totalPendente}{" "}
-                {totalPendente === 1 ? "recomendação pendente" : "recomendações pendentes"}
-              </p>
-              <p className="text-[11px] leading-snug text-[var(--color-muted-foreground)]">
-                Aguardando sua avaliação
-              </p>
-            </div>
+              {rotulo}
+              {contagem !== null ? ` (${contagem})` : ""}
+            </button>
+          ))}
+        </div>
+
+        {totalPendente > 0 && (
+          <div className="mt-3.5 flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-3 py-2">
+            <span className="flex h-5 min-w-5 flex-shrink-0 items-center justify-center rounded-full bg-[var(--color-primary)] px-1 text-[11px] font-bold text-[var(--color-primary-foreground)]">
+              {totalPendente}
+            </span>
+            <p className="text-xs font-semibold leading-5" style={{ color: TEXTO_AVISO }}>
+              {totalPendente}{" "}
+              {totalPendente === 1
+                ? "recomendação pendente aguardando sua avaliação"
+                : "recomendações pendentes aguardando sua avaliação"}
+            </p>
           </div>
         )}
-
-        {/* Filtros + contagem */}
-        <div className="mt-4 flex items-center justify-between gap-2">
-          <div className="flex gap-1.5">
-            {(
-              [
-                // Cada aba mostra o próprio número, decisão de George em
-                // 04/09/2026: com a lista inteira à vista, saber quantas são
-                // de entrada e quantas são de exclusão é o que orienta por
-                // onde começar. O histórico não conta, porque é consulta e
-                // não fila de trabalho.
-                { id: "entrada", rotulo: "Entrada", contagem: totalEntrada },
-                { id: "exclusao", rotulo: "Exclusão", contagem: totalExclusao },
-                { id: "arquivadas", rotulo: "Histórico", contagem: null },
-              ] as const
-            ).map(({ id, rotulo }) => (
-              <button
-                key={id}
-                type="button"
-                onClick={() => setAba(id)}
-                className="rounded-lg border px-3 py-1.5 text-xs font-semibold transition-colors"
-                style={
-                  aba === id
-                    ? {
-                        background: "var(--color-primary)",
-                        color: "white",
-                        borderColor: "var(--color-primary)",
-                      }
-                    : {
-                        background: "var(--color-card)",
-                        color: "var(--color-muted-foreground)",
-                        borderColor: "var(--color-border)",
-                      }
-                }
-              >
-                {rotulo}
-                {/* {contagem !== null && contagem > 0 ? ` (${contagem})` : ""} */}
-              </button>
-            ))}
-          </div>
-          <span className="flex-shrink-0 text-xs font-bold text-black">
-            {aba === "arquivadas"
-              ? `${desconsideradas.length} no histórico`
-              : `${totalDaAba} pendente${totalDaAba !== 1 ? "s" : ""}`}
-          </span>
-        </div>
       </div>
 
       {/* Cards — Entrada/Exclusão */}
       {aba !== "arquivadas" && (
-        <div className="space-y-3 py-4 px-2 md:px-20 sm:px-6">
+        <div className="space-y-3 px-4 py-4">
           {lista.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-center">
               <CheckCircle
@@ -624,6 +582,7 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
                   item={item}
                   tipo={tipoAtual}
                   onDetalhes={() => setDetalhe(item)}
+                  onResolver={(passo) => abrirDesconsiderar(item, passo)}
                 />
               ))}
 
@@ -696,6 +655,14 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
           }}
           onFechar={() => setDetalhe(null)}
           onResolver={(passo) => abrirDesconsiderar(detalhe, passo)}
+          onMaisDetalhes={
+            onMaisDetalhes
+              ? () => {
+                  onMaisDetalhes({ nome: detalhe.nome_medico ?? detalhe.ufcrm, ufcrm: detalhe.ufcrm });
+                  setDetalhe(null);
+                }
+              : undefined
+          }
           variante="recomendacao"
         />
       )}
@@ -711,6 +678,10 @@ export function Recomendacoes({ email, setor, ativa }: RecomendacoesProps) {
           // não há detalhe a buscar, diferente do Ranking.
           frase={motivoDoDetalhe(desconsiderando, tipoAtual)}
           passoInicial={passoAcao}
+          ufcrm={desconsiderando.ufcrm}
+          especialidade={
+            desconsiderando.especialidade ? capitalizarNome(desconsiderando.especialidade) : null
+          }
           onFechar={() => setDesconsiderando(null)}
           // Só tira da lista. Fechar é do `onFechar`, acionado pelo botão da
           // etapa "Pronto": fechar aqui pularia a confirmação que a gaveta
@@ -728,97 +699,94 @@ interface CardRecomendacaoProps {
   item: RecomendacaoItem;
   tipo: TipoAba;
   onDetalhes: () => void;
+  onResolver: (passo: "escolha" | "motivo") => void;
 }
 
-function CardRecomendacao({ item, tipo, onDetalhes }: CardRecomendacaoProps) {
+function CardRecomendacao({ item, tipo, onDetalhes, onResolver }: CardRecomendacaoProps) {
   const cor = tipo === "entrada" ? "var(--color-primary)" : LARANJA_EXCLUSAO;
   return (
-    <div
-      className="overflow-hidden rounded-lg bg-[var(--color-card)] shadow-sm"
-      // Sem destaque de prioridade do ciclo: saiu por decisão de George em
-      // 20/09/2026, junto com a marcação e a tag. Fica só a faixa do tipo.
-      style={{ border: "1px solid var(--color-border)", borderLeft: `4px solid ${cor}` }}
-    >
-      <div className="space-y-3 p-4">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
+    <div className="rounded-[var(--radius-xl)] border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
+      <div className="flex items-start justify-between gap-2">
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <p className="text-sm font-semibold leading-snug text-[var(--color-foreground)]">
               {capitalizarNome(item.nome_medico)}
             </p>
+            <span
+              className="rounded-full px-2 py-0.5 text-[10px] font-bold text-white"
+              style={{ background: cor }}
+            >
+              {tipo === "entrada" ? "Inclusão" : "Exclusão"}
+            </span>
+          </div>
+          {item.especialidade && (
             <p className="mt-0.5 text-xs text-[var(--color-muted-foreground)]">
-              {item.ufcrm}
-              {item.especialidade ? ` · ${capitalizarNome(item.especialidade)}` : ""}
+              {capitalizarNome(item.especialidade)}
             </p>
-            {item.cidade && (
-              <p className="text-xs text-[var(--color-muted-foreground)]">
-                {capitalizarNome(item.cidade)}
-                {item.uf ? `, ${item.uf}` : ""}
-              </p>
-            )}
-          </div>
-          <span
-            className="flex-shrink-0 rounded-lg px-2.5 py-1 text-xs font-bold text-white"
-            style={{ background: cor }}
-          >
-            {tipo === "entrada" ? "Entrada" : "Exclusão"}
-          </span>
+          )}
+          {item.cidade && (
+            <p className="mt-0.5 flex items-center gap-1 text-xs text-[var(--color-muted-foreground)]">
+              <MapPin className="h-3 w-3 flex-shrink-0" aria-hidden="true" />
+              {capitalizarNome(item.cidade)}
+              {item.uf ? `, ${item.uf}` : ""}
+            </p>
+          )}
         </div>
-
-        <div className="flex flex-wrap items-center gap-2">
+        {item.posicao_ranking != null && (
           <span
-            className="rounded-lg px-2.5 py-1 text-[11px] font-medium"
-            style={{ background: "#EFF6FF", color: "#3B82F6" }}
+            className="flex-shrink-0 rounded-full px-2 py-1 text-xs font-bold"
+            style={{ background: ROXO_CLARO, color: ROXO_TEXTO }}
           >
+            #{item.posicao_ranking}
+          </span>
+        )}
+      </div>
+
+      <div className="mt-3 flex gap-4">
+        <div>
+          <p className="text-[11px] font-medium uppercase text-[var(--color-muted-foreground)]">
+            Pontuação
+          </p>
+          <p className="text-[15px] font-bold leading-tight" style={{ color: VERDE_PONTUACAO }}>
+            {formatarPontos(item.soma_pontuacao)}
+          </p>
+        </div>
+        <div>
+          <p className="text-[11px] font-medium uppercase text-[var(--color-muted-foreground)]">
+            Status
+          </p>
+          <p className="text-[15px] font-semibold leading-tight" style={{ color: AZUL_STATUS }}>
             Pendente
-          </span>
-          <span className="rounded-lg bg-[var(--color-muted)] px-2.5 py-1 text-[11px] font-medium text-[var(--color-muted-foreground)]">
-            Ciclo {item.ciclo_referencia}
-          </span>
+          </p>
         </div>
+      </div>
 
-        <div className="flex gap-3">
-          <div className="flex-1 rounded-lg bg-[var(--color-muted)] px-3 py-2">
-            <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-[var(--color-muted-foreground)]">
-              <TrendingUp className="h-3 w-3" aria-hidden="true" />
-              Ranking
-            </p>
-            <p className="mt-0.5 text-base font-bold text-[var(--color-foreground)]">
-              {item.posicao_ranking ?? "—"}
-            </p>
-          </div>
-          <div className="flex-1 rounded-lg bg-[var(--color-accent)] px-3 py-2">
-            <p className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-[#9B1B5A]">
-              <Award className="h-3 w-3" aria-hidden="true" />
-              Pontuação
-            </p>
-            <p className="mt-0.5 text-sm font-bold text-[var(--color-primary)]">
-              {formatarPontos(item.soma_pontuacao)}
-            </p>
-          </div>
-        </div>
-
-        <p className="text-xs leading-relaxed text-[var(--color-muted-foreground)]">
-          {resumoDoCard(item, tipo)}
-        </p>
-
-        <p className="text-xs leading-relaxed text-[var(--color-foreground)]">
-          <span className="font-semibold">Ação sugerida:</span>{" "}
-          {acaoDoCard(tipo)}
-        </p>
-
+      <div className="mt-3 flex gap-2">
         <button
           type="button"
           onClick={onDetalhes}
-          className="w-full rounded-lg border py-2.5 text-sm font-semibold transition-colors active:opacity-80"
-          style={{
-            borderColor: "var(--color-primary)",
-            color: "var(--color-primary)",
-            background: "var(--color-card)",
-          }}
+          className="h-8.5 flex-1 rounded-lg border bg-[var(--color-card)] text-xs font-semibold transition-colors active:opacity-80"
+          style={{ borderColor: BORDA_BOTAO, color: TEXTO_BOTAO }}
         >
           Ver detalhes
         </button>
+        <button
+          type="button"
+          onClick={() => onResolver("motivo")}
+          className="h-8.5 flex-1 rounded-lg bg-[var(--color-secondary)] text-xs font-semibold transition-colors active:opacity-80"
+          style={{ color: TEXTO_BOTAO_SECUNDARIO }}
+        >
+          Desconsiderar
+        </button>
       </div>
+      <button
+        type="button"
+        onClick={() => onResolver("escolha")}
+        className="mt-2 h-9 w-full rounded-lg text-xs font-semibold text-white transition-colors active:opacity-80"
+        style={{ background: cor }}
+      >
+        Aceitar recomendação
+      </button>
     </div>
   );
 }
@@ -1027,7 +995,7 @@ function SobreATelaDeRecomendacoes({ aoFechar }: { aoFechar: () => void }) {
               </p>
             </div>
             <div className="border-t border-[var(--color-border)] pt-3">
-              <p className="text-xs font-bold uppercase tracking-wide text-[var(--color-primary)]">
+              <p className="text-xs font-bold uppercase tracking-wide text-[var(--color-muted-foreground)]">
                 Desconsiderar sugestão
               </p>
               <p className="mt-1 text-xs leading-relaxed text-[var(--color-muted-foreground)]">

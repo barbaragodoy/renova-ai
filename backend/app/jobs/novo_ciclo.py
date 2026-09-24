@@ -87,7 +87,7 @@ def transicionar_ciclo(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Encerra ciclo vigente e abre novo ciclo RenovAI.")
+    parser = argparse.ArgumentParser(description="Encerra ciclo vigente e abre novo ciclo Ped.AI.")
     parser.add_argument("--ciclo-atual", default=None, help="Ciclo a encerrar (ex: 202507).")
     parser.add_argument("--ciclo-novo", default=None, help="Novo ciclo a abrir (ex: 202508). Calculado se omitido.")
     parser.add_argument("--dry-run", action="store_true", help="Simula sem gravar no banco.")

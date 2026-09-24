@@ -62,6 +62,39 @@ def coluna_identidade_para_auth_mode(
     return "rep_login" if settings.auth_mode == "entra_id" else "rep_email"
 
 
+def email_cadastrado(identidade: str, settings: Optional[Settings] = None) -> str:
+    """REP_EMAIL do propagandista autenticado, para quem guarda dados por e-mail.
+
+    Perfil e foto usam o REP_EMAIL como chave, em `tb_propagandistas` e em
+    `tb_perfil_portal`. Em AUTH_MODE=entra_id a identidade autenticada é o
+    UPN (`MSandro@...`), que nunca bate com o e-mail (`sandro.menezes@...`).
+    Esta função troca o UPN pelo e-mail cadastrado para o mesmo REP_LOGIN.
+
+    Devolve a identidade sem mudança quando ela já é um e-mail: no modo senha,
+    na personificação (que já entrega o REP_EMAIL do alvo) e quando o login
+    não tem exatamente um e-mail cadastrado, como no caso de administradores
+    sem propagandista. Nesse último caso, perfil e foto seguem respondendo 404.
+    """
+    from backend.app.auth.administrativo import eh_identidade_personificada
+
+    if coluna_identidade_para_auth_mode(settings) != "rep_login":
+        return identidade
+    if eh_identidade_personificada(identidade):
+        return identidade
+
+    with _get_engine().connect() as conn:
+        emails = conn.execute(
+            text(
+                "SELECT DISTINCT LOWER(rep_email) FROM tb_propagandistas "
+                "WHERE LOWER(rep_login) = LOWER(:login)"
+            ),
+            {"login": extrair_login_do_upn(identidade)},
+        ).fetchall()
+    if len(emails) != 1 or not emails[0][0]:
+        return identidade
+    return emails[0][0]
+
+
 def resolver_contexto(
     email: str,
     tabela: str = "tb_propagandistas",
@@ -92,6 +125,15 @@ def resolver_contexto(
         raise ValueError(f"Tabela não permitida: {tabela}")
     if coluna_identidade not in _COLUNAS_IDENTIDADE_PERMITIDAS:
         raise ValueError(f"Coluna de identidade não permitida: {coluna_identidade}")
+
+    # Na personificação, `email` é o REP_EMAIL do propagandista escolhido,
+    # não um login. Por isso a busca é sempre por REP_EMAIL, em qualquer modo.
+    # A marca só existe depois de a identidade real ser confirmada como
+    # administrador, então um login comum nunca troca de coluna.
+    from backend.app.auth.administrativo import eh_identidade_personificada
+
+    if eh_identidade_personificada(email):
+        coluna_identidade = "rep_email"
 
     # A checagem de STATUS_ACESSO NÃO fica aqui, apesar do que a primeira
     # leitura da task sugeria. Todo chamador real deste módulo passa

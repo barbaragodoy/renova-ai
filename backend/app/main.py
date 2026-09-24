@@ -27,7 +27,7 @@ logger = logging.getLogger("renovai")
 settings = get_settings()
 
 app = FastAPI(
-    title="RenovAI API",
+    title="Ped.AI API",
     version="0.1.0",
     dependencies=[Depends(capturar_cabecalhos_easy_auth)],
 )
@@ -42,6 +42,44 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def acesso_administrativo(request: Request, call_next):
+    """Registra o setor pedido no header e barra escrita durante conferência.
+
+    Aqui só se lê o header; a permissão é conferida em
+    `auth/administrativo.aplicar_personificacao`, que é o único ponto com a
+    identidade real do token em mãos. Um header enviado por quem não está na
+    lista é ignorado e registrado lá.
+
+    A recusa de escrita é feita antes da autenticação de propósito: vale para
+    qualquer requisição que carregue o header, inclusive as que nem chegariam a
+    autenticar. Uma sessão de conferência que gravasse um aceite ou uma
+    desconsideração deixaria o registro no nome do propagandista, e a pergunta
+    "quem decidiu isto" ficaria sem resposta.
+    """
+    setor_alvo = request.headers.get(HEADER_VER_COMO)
+    registrar_alvo(setor_alvo)
+
+    if setor_alvo and request.method.upper() not in METODOS_SOMENTE_LEITURA:
+        logger.warning(
+            "escrita bloqueada em sessao personificada | method=%s path=%s setor=%s",
+            request.method,
+            request.url.path,
+            setor_alvo,
+        )
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": (
+                    "Sessão de conferência é somente leitura. "
+                    "Saia do modo de visualização para registrar uma ação."
+                )
+            },
+        )
+
+    return await call_next(request)
 
 
 @app.middleware("http")
@@ -103,6 +141,7 @@ app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(perfil_router, prefix="/auth", tags=["auth"])
 app.include_router(foto_router, prefix="/auth", tags=["auth"])
 app.include_router(sessao_router, prefix="/auth", tags=["auth"])
+app.include_router(admin_router, prefix="/admin", tags=["admin"])
 app.include_router(prescricoes.router, prefix="/prescricoes", tags=["prescricoes"])
 app.include_router(recomendacoes.router, prefix="/recomendacoes", tags=["recomendacoes"])
 app.include_router(ranking.router, prefix="/ranking", tags=["ranking"])

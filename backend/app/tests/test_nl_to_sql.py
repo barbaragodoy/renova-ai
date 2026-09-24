@@ -29,17 +29,15 @@ class _LLMFake:
         return "Resposta simulada."
 
 
-def _mock_create_engine(ciclo_max: str, limite_painel: int = 318, limite_painel_padrao: int = 318):
+def _mock_create_engine(ciclo_max: str, limite_painel_padrao: int = 300):
     """Substitui create_engine (usado por _ciclo_mais_recente(),
-    _limite_painel() e pela execução do SQL gerado, linha 151) — distingue
-    as quatro consultas por string matching no SQL, mesmo padrão de
+    _limite_painel() e pela execução do SQL gerado) — distingue as
+    consultas por string matching no SQL, mesmo padrão de
     test_recomendacoes.py.
 
-    `limite_painel_padrao` (tb_renovai_parametros, via `.scalar()`) é
-    consultado sempre que `_limite_painel()` roda, com ou sem matrícula —
-    fonte única do default desde a Fase 3.5 de 26/08/2026, substituindo o
-    318 que antes era literal no código. `limite_painel` (tb_perfil_portal,
-    via `.fetchone()`) só é consultado quando há matrícula."""
+    `limite_painel_padrao` (tb_renovai_parametros, via `.scalar()`) é o
+    único limite desde 18/09/2026. Uma consulta a tb_perfil_portal aqui é
+    defeito: a personalização por propagandista saiu."""
 
     def _factory(*args, **kwargs):
         mock_eng = MagicMock()
@@ -53,7 +51,9 @@ def _mock_create_engine(ciclo_max: str, limite_painel: int = 318, limite_painel_
             if "tb_renovai_parametros" in sql:
                 result.scalar.return_value = limite_painel_padrao
             elif "tb_perfil_portal" in sql:
-                result.fetchone.return_value = MagicMock(limite=limite_painel)
+                raise AssertionError(
+                    "tb_perfil_portal não deve mais ser consultada para o limite do painel"
+                )
             elif "MAX(" in sql:
                 result.fetchone.return_value = MagicMock(ciclo=ciclo_max)
             else:
@@ -108,37 +108,36 @@ async def test_consultar_reflete_mudanca_de_ciclo_entre_chamadas():
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_consultar_injeta_limite_painel_do_propagandista_autenticado():
-    """Propagandista com limite personalizado (450, ver tb_perfil_portal) —
-    o prompt deve refletir esse valor, não 100 nem 400 fixos."""
+async def test_consultar_injeta_o_limite_unico_no_prompt():
+    """O prompt reflete o valor de tb_renovai_parametros, não 100 nem 400
+    fixos, e não passa por tb_perfil_portal."""
     llm = _LLMFake()
-    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608", limite_painel=450)):
+    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608", limite_painel_padrao=300)):
         resultado = await nl_to_sql.consultar(
             "Quantas recomendações tenho pendentes?", matricula="REP002", llm=llm
         )
     assert resultado["status"] == "OK"
     prompt = llm.chamadas[0]
-    assert "posicao_ranking <= 450" in prompt
-    assert "posicao_ranking > 450" in prompt
+    assert "posicao_ranking <= 300" in prompt
+    assert "posicao_ranking > 300" in prompt
     assert "<= 100" not in prompt
     assert "<= 400" not in prompt
 
 
 @pytest.mark.asyncio
-async def test_consultar_dois_propagandistas_limites_diferentes_geram_prompts_diferentes():
-    """Comparativo: matrículas diferentes, limites diferentes, prompts
-    diferentes entre si — confirma que não há valor fixo compartilhado."""
+async def test_consultar_dois_propagandistas_recebem_o_mesmo_limite():
+    """O oposto do que valia até 18/09/2026: matrículas diferentes, mesmo
+    limite no prompt."""
     llm1 = _LLMFake()
-    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608", limite_painel=250)):
+    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608")):
         await nl_to_sql.consultar("Quantas recomendações tenho pendentes?", matricula="REP001", llm=llm1)
 
     llm2 = _LLMFake()
-    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608", limite_painel=450)):
+    with patch("backend.app.genie.nl_to_sql.create_engine", side_effect=_mock_create_engine("202608")):
         await nl_to_sql.consultar("Quantas recomendações tenho pendentes?", matricula="REP002", llm=llm2)
 
-    assert "posicao_ranking <= 250" in llm1.chamadas[0]
-    assert "posicao_ranking <= 450" in llm2.chamadas[0]
-    assert llm1.chamadas[0] != llm2.chamadas[0]
+    assert "posicao_ranking <= 300" in llm1.chamadas[0]
+    assert "posicao_ranking <= 300" in llm2.chamadas[0]
 
 
 @pytest.mark.asyncio

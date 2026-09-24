@@ -1,6 +1,6 @@
 """Perfil do médico por setor, em cards, sem LLM.
 
-Este módulo entrega a resposta que o Portal RenovAI mostra ao propagandista.
+Este módulo entrega a resposta que o Portal Ped.AI mostra ao propagandista.
 Ele substituiu o fluxo por etapas `/insight-medico`, encerrado em 10/08/2026,
 por três motivos.
 

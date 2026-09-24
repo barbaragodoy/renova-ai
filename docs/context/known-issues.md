@@ -719,7 +719,11 @@ nesta verificação), então a condição 2 da decisão de 15/09/2026 abaixo
 ("validação com login real confirmando qual header o Easy Auth entrega")
 continua em aberto — só o bloqueio externo do redirect URI está resolvido.
 
-## ALERTA — não ativar AUTH_MODE=entra_id em homologação ainda
+## SUPERADO (2026-09-24) — não ativar AUTH_MODE=entra_id em homologação ainda
+
+**Superado em 24/09:** as duas condições foram cumpridas (header real
+confirmado no Log Stream; STATUS_ACESSO publicado) e a virada foi executada
+às 11:49 UTC. Texto original abaixo.
 
 A imagem pode conter o código da Task 170097, mas `AUTH_MODE` deve permanecer
 `senha`. O bloqueio de redirect URI foi resolvido (ver entrada acima,
@@ -746,7 +750,7 @@ A condição (1) continua aberta, e surgiram duas pendências novas antes da
 virada: o fallback `upn` (entrada abaixo) e a imagem gerada sem
 `VITE_AUTH_MODE` (entrada abaixo).
 
-## ABERTO (2026-09-24) — claim `upn` não existe no token real da Aché
+## RESOLVIDO (2026-09-24) — claim `upn` não existe no token real da Aché
 
 `/.auth/me` com a conta `3gobarbara@ache.com.br` mostrou a lista completa de
 claims: nenhum `typ="upn"`. O login está em `preferred_username`
@@ -776,7 +780,7 @@ ou seja, o **`emailaddress`**. Esse caso não constava da lista acima e é pior
 que o `name`, porque tem forma de e-mail. O payload trazia
 `preferred_username='3gobarbara@ache.com.br'` e nenhum `upn`.
 
-**Corrigido localmente (24/09, sem commit):** `jwt_auth.py` não lê mais
+**Corrigido (24/09; `dev` `aad27c5`, em hmg desde 11:49 UTC):** `jwt_auth.py` não lê mais
 `X-MS-CLIENT-PRINCIPAL-NAME`. A identidade vem de `X-MS-CLIENT-PRINCIPAL`,
 pelo claim `preferred_username` e, na falta dele, por `upn`. Sem nenhum dos
 dois, responde 401. O log `EASY_AUTH_DEBUG` foi removido. Os testes cobrem
@@ -828,7 +832,7 @@ propagandista (prefixo do UPN = `REP_LOGIN`, que difere do prefixo do e-mail
 em 97% dos casos). Mas isso só fica confirmado com a captura do header real
 (Fase 2).
 
-## ABERTO (2026-09-24) — imagem não recebe `VITE_AUTH_MODE`
+## RESOLVIDO (2026-09-24) — imagem não recebe `VITE_AUTH_MODE`
 
 O Dockerfile de `APP_RENOVAI` roda `npm run build` sem `ARG`/`ENV` para
 `VITE_AUTH_MODE`, e `.env` está no `.dockerignore`. Toda imagem sai com a
@@ -836,11 +840,50 @@ tela de login por senha, inclusive a de 24/09. Na virada, trocar só
 `AUTH_MODE=entra_id` deixaria a tela pedindo senha e o backend respondendo
 404 em `POST /auth/login`. A imagem da virada precisa ser gerada com
 `VITE_AUTH_MODE=entra_id` (via `ARG` no Dockerfile ou arquivo de build
-versionado). **Corrigido localmente em 24/09** em
-`AcheInfo_Apps/APP_RENOVAI/Dockerfile`, com `ARG VITE_AUTH_MODE=senha` +
-`ENV` antes do `npm run build`, ainda sem commit. `vite build` com
+versionado). **Corrigido em 24/09** (`dev` `baa063a`) com `ARG
+VITE_AUTH_MODE=senha` + `ENV` antes do `npm run build`. `vite build` com
 `VITE_AUTH_MODE=entra_id` gera o link `/.auth/login/aad`, e com `senha`, não.
 Imagem da virada: `az acr build ... --build-arg VITE_AUTH_MODE=entra_id`.
+
+## RESOLVIDO (2026-09-24) — 403 na personificação com `entra_id`
+
+Em hmg (13:26 UTC), ao personificar um propagandista, `/ranking` e
+`/recomendacoes/*` davam 403: `aplicar_personificacao()` devolve o
+`REP_EMAIL` do alvo e, em `entra_id`, `resolver_contexto()` buscava por
+`REP_LOGIN` (`sandro.menezes` x `MSandro`) → `PROPAGANDISTA_NAO_ENCONTRADO`.
+Corrigido em `dev` `d416de6`: a personificação marca o e-mail do alvo
+(ContextVar, só depois de confirmar administrador) e `resolver_contexto()`
+busca essa identidade por `rep_email`. Validado em hmg com 3 administradores.
+
+## RESOLVIDO (2026-09-24) — perfil e foto não achavam propagandista em `entra_id`
+
+`auth/perfil.py` e `auth/foto.py` buscam por `rep_email`; em `entra_id` a
+identidade é o UPN. `email_cadastrado()` (`auth/context.py`, `dev`
+`91bedaf`) troca o UPN pelo `REP_EMAIL` do mesmo `REP_LOGIN`. Coberto por
+teste; ainda sem login real de propagandista (Fase 5).
+
+## RESOLVIDO (2026-09-24) — login bloqueado sem tela em `entra_id`
+
+`resolverEntrada()` devolvia `estado: "bloqueado"`, mas `Login.tsx` não
+tratava esse estado no modo `entra_id` (cartão vazio; após o PR 23965, botão
+em loop). `dev` `4316976` mostra `AcessoBloqueado`. Não visto em navegador.
+
+## ABERTO (2026-09-24) — front local não usa mais a API de hmg sem cookie
+
+Com `RedirectToLoginPage`, o proxy do Vite apontando para hmg recebe 401 (o
+Easy Auth descarta `X-MS-CLIENT-PRINCIPAL` vindo de fora). `dev` `ec6eea5`:
+`DEV_EASY_AUTH_COOKIE` repassa o cookie `AppServiceAuthSession` copiado do
+navegador; `DEV_EASY_AUTH_LOGIN` simula o header com API local. Sem cookie e
+com cookie inválido: 401 (conferido). Com cookie válido: **não testado**.
+
+## ABERTO (2026-09-24) — decisões pendentes do PR 23965 (login Figma)
+
+Mesclado como veio (`dab8eb2`). A decidir com o Thiago: (1) a tela só
+confere a sessão sozinha se o clique ocorreu na mesma aba, então após o
+redirect do Easy Auth e em todo F5 há um clique extra; (2) marca "PedAI" e
+logo "R" vs "Ped.AI"; (3) texto de termos/privacidade sem link; (4) botões
+de aceitar/desconsiderar ativos em sessão personificada, que a API recusa
+com 403 (`escrita bloqueada em sessao personificada`, 4 vezes em 24/09).
 
 ## RISCO ACEITO (2026-09-24) — 25 usuários do piloto por senha bloqueados em hmg
 
@@ -853,7 +896,17 @@ credenciais em homologação. Se o login por senha voltar a ser necessário
 antes da virada, é preciso liberar essas linhas em `tb_perfil_portal` ou
 publicar uma imagem sem a checagem no login por senha.
 
-## ABERTO (2026-09-24) — `renovai-local` atrás de `dev` em trabalho de terceiros
+## RESOLVIDO (2026-09-24) — `renovai-local` atrás de `dev` em trabalho de terceiros
+
+**Resolução (24/09, tarde):** frontend e backend trazidos de `dev` (`91bedaf`)
+por merge de 3 vias. A base de cada arquivo foi a última versão comum aos
+dois históricos. `frontend/src/` ficou idêntico ao de `dev`. No backend, as
+únicas diferenças que restam existem só no local: WhatsApp/Twilio (Sprint 7),
+`agente/modelo.py` (`extrair_estruturado`) e o import de `webhooks_twilio` em
+`main.py`. Com isso, as 5 falhas de `test_gerar_recomendacoes.py`
+(`KeyError: 'T0006'`) passaram a aparecer também no local, como em `dev`.
+Texto original abaixo.
+
 
 A sincronização de 24/09 mostrou código que existe só em `AcheInfo_Apps/dev`:
 busca de médico (`App.tsx`/`Home.tsx`), reversão de aceite
@@ -864,7 +917,10 @@ e `test_gerar_recomendacoes.py`. Esse último tem 5 falhas que já existiam em
 próximas sincronizações precisam de merge de 3 vias, e não de cópia de
 arquivo, até que isso seja trazido para `renovai-local`.
 
-## PENDENTE — reverter unauthenticated-client-action depois do trabalho do Thiago
+## RESOLVIDO (2026-09-24) — reverter unauthenticated-client-action depois do trabalho do Thiago
+
+**Resolvido:** `RedirectToLoginPage` ativado junto com `AUTH_MODE=entra_id`
+em 24/09, 11:49 UTC. Texto original abaixo.
 
 Há uma decisão temporária de usar `AllowAnonymous` no Easy Auth de
 `asp-renoveai-hmg` para permitir o trabalho na tela de login. Reverter para
@@ -893,7 +949,10 @@ código anterior; todos falharam com as mesmas mensagens. Portanto, trata-se
 de uma pendência preexistente da massa local, sem relação com a implementação
 de autenticação por Entra ID. Não corrigida nesta task.
 
-## ABERTO — botão Microsoft visível ainda não completa o login do portal
+## SUPERADO (2026-09-24) — botão Microsoft visível ainda não completa o login do portal
+
+**Superado:** hmg está em `entra_id` desde 24/09 e o login Microsoft é o
+único caminho. Texto original abaixo.
 
 O PR 23635, mesclado em 17/09/2026, adiciona um link ativo para
 `/.auth/login/aad` na tela que também mostra o formulário de e-mail e

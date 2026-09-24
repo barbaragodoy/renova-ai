@@ -22,11 +22,39 @@ export default defineConfig(({ mode }) => {
     "/chat",
     "/gerencial",
     "/health",
+    "/admin",
     "/insight-medico",
     "/prescricoes",
     "/ranking",
     "/recomendacoes",
   ];
+
+  // Login Entra ID em desenvolvimento (só `npm run dev`; nada disto entra no
+  // bundle, por isso os nomes não têm o prefixo VITE_). Sem as variáveis, o
+  // proxy não muda nada.
+  //
+  // DEV_EASY_AUTH_LOGIN: backend LOCAL em AUTH_MODE=entra_id. O proxy injeta
+  // um X-MS-CLIENT-PRINCIPAL com esse UPN em `preferred_username`, como faz o
+  // App Service. Contra hmg isto não funciona: o Easy Auth descarta o header
+  // vindo de fora.
+  //
+  // DEV_EASY_AUTH_COOKIE: backend de HMG (VITE_BACKEND_URL). Valor do cookie
+  // AppServiceAuthSession, copiado do navegador depois de entrar em hmg. O
+  // proxy repassa o cookie e o Easy Auth trata a chamada como a do navegador
+  // logado. É uma credencial pessoal e expira: com 401, copie de novo.
+  const loginSimulado = env.DEV_EASY_AUTH_LOGIN?.trim();
+  const cookieSessao = env.DEV_EASY_AUTH_COOKIE?.trim();
+  const cabecalhosEasyAuth: Record<string, string> = {};
+  if (loginSimulado) {
+    cabecalhosEasyAuth["X-MS-CLIENT-PRINCIPAL"] = Buffer.from(
+      JSON.stringify({
+        claims: [{ typ: "preferred_username", val: loginSimulado }],
+      }),
+    ).toString("base64");
+  }
+  if (cookieSessao) {
+    cabecalhosEasyAuth["Cookie"] = `AppServiceAuthSession=${cookieSessao}`;
+  }
 
   return {
     plugins: [react(), tailwindcss()],
@@ -38,7 +66,10 @@ export default defineConfig(({ mode }) => {
       // Em desenvolvimento o front roda separado do backend. O proxy evita
       // CORS e reproduz o mesmo caminho relativo usado no container.
       proxy: Object.fromEntries(
-        rotas.map((rota) => [rota, { target: alvo, changeOrigin: true }]),
+        rotas.map((rota) => [
+          rota,
+          { target: alvo, changeOrigin: true, headers: cabecalhosEasyAuth },
+        ]),
       ),
     },
   };

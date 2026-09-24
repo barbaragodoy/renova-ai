@@ -72,35 +72,22 @@ def _build_period_clause(periodo_str: Optional[str]) -> str:
 
 
 def _limite_painel(settings, matricula: Optional[str]) -> int:
-    """Resolve o limite de painel do propagandista autenticado (Sprint 6:
-    substitui o corte fixo 100 local/400 produção que estava hardcoded em
-    texto livre no prompt do LLM — REGRAS_CONTEXTO acima). Mesmo padrão de
-    _ciclo_mais_recente(settings) logo abaixo: sempre via
-    create_engine(settings.database_url), sem a abstração dual-source
-    (_schema()/col) usada em routers/recomendacoes.py — nl_to_sql é
-    simulação local do Genie, conecta sempre no Postgres local.
+    """Limite do painel em vigor: o padrão único de tb_renovai_parametros.
 
-    O literal 318 que vivia aqui foi substituído por tb_renovai_parametros
-    (fonte única criada pelo George em 26/08/2026, mesmo valor confirmado
-    via DESCRIBE/SELECT reais — ver docs/context/decisions-log.md).
+    A personalização por propagandista (COALESCE sobre tb_perfil_portal)
+    saiu em 18/09/2026, decisão de George ao alinhar o portal ao protótipo.
+    `matricula` permanece na assinatura por compatibilidade com quem chama;
+    não influencia mais o resultado.
 
-    Sem matricula (não deveria acontecer em uso normal: routers/prescricoes.py
-    sempre resolve o contexto via resolver_contexto() antes de chamar
-    consultar(), seguindo o mesmo padrão de resolução de contexto já
-    estabelecido no projeto), cai direto no default da tabela de parâmetros
-    sem consultar tb_perfil_portal."""
+    Mesmo padrão de _ciclo_mais_recente(settings) logo abaixo: via
+    create_engine(settings.database_url), porque nl_to_sql é simulação local
+    do Genie e conecta sempre no Postgres local.
+    """
     engine = create_engine(settings.database_url)
     with engine.connect() as conn:
-        padrao = conn.execute(
+        return conn.execute(
             text("SELECT limite_painel_padrao FROM tb_renovai_parametros WHERE id = 1")
         ).scalar()
-        if not matricula:
-            return padrao
-        row = conn.execute(
-            text("SELECT COALESCE(limite_painel, :padrao) AS limite FROM tb_perfil_portal WHERE rep_matricula = :mat"),
-            {"mat": matricula, "padrao": padrao},
-        ).fetchone()
-    return row.limite if row is not None else padrao
 
 
 def _ciclo_mais_recente(settings) -> str:

@@ -164,7 +164,10 @@ def montar(resposta, ctx, id_conversa: str, turno: int, ts_inicio: dt.datetime,
         "intencao_hash": intencao.hash_da_intencao(normalizada),
         "versao_normalizador": intencao.VERSAO,
         "verificacao_numeros": contrato_log.serializar_verificacao(itens),
-        "verificacao_aprovada": contrato_log.verificacao_aprovada(itens),
+        # O veredito inteiro, e nao so os numeros que passaram: ver a docstring
+        # de contrato_log.verificacao_aprovada. Ate 17/09/2026 este campo era
+        # calculado so sobre `itens` e nunca podia ser falso.
+        "verificacao_aprovada": contrato_log.verificacao_aprovada(itens, veredito),
         "chamadas_modelo": contrato_log.serializar_chamadas(chamadas_modelo),
         "custo_total": custo, "custo_moeda": moeda,
     }

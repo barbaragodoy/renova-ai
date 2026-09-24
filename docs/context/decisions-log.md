@@ -696,3 +696,33 @@ Decisões desta etapa:
 7. **Execução.** As mudanças foram feitas direto pelo Claude Code, sem
    delegar ao Codex CLI: `codex exec` não oferece um checkpoint de aprovação
    real, como foi verificado antes nesta mesma sessão.
+
+## 2026-09-24 (tarde) — Virada para Entra ID executada em hmg
+
+1. **Fase 4 executada** às 11:49 UTC com aprovação da Bárbara: imagem com
+   `VITE_AUTH_MODE=entra_id`, `AUTH_MODE=entra_id` e `RedirectToLoginPage`
+   juntos. Login por senha deixa de existir em hmg.
+2. **Identidade vem só de `X-MS-CLIENT-PRINCIPAL`** (`preferred_username`,
+   `upn` de reserva). `X-MS-CLIENT-PRINCIPAL-NAME` é ignorado: em hmg ele
+   traz o `emailaddress`.
+3. **Administradores gravados pelo UPN** em `tb_perfil_portal.REP_EMAIL`.
+   Inseridos `CGMACezar`, `PFEduardo` e `3fplgeorge` (George); a conta
+   `3gobarbara` passou de `BLOQUEADO` a `ATIVO`. Convenção de
+   `ACESSO_LIBERADO_POR`: prefixo do e-mail sem `_terceiro`
+   (`george.luiz`, `barbara.godoy`); 3 linhas do dia ficaram com
+   `3gobarbara`.
+4. **Personificação em `entra_id` mantém o `REP_EMAIL` como chave.** Em vez
+   de devolver o login do alvo, a personificação marca o e-mail e
+   `resolver_contexto()` busca por `rep_email`. George concordou: mantém o
+   e-mail como chave única. (A caixa do `REP_LOGIN` não era problema: todas
+   as comparações usam `LOWER()`, e `REP_EMAIL` também tem registros em
+   maiúsculas.)
+5. **Perfil e foto** resolvem o `REP_EMAIL` a partir do UPN
+   (`email_cadastrado()`), em vez de passarem a buscar por login.
+6. **PR 23965 mesclado sem alterações**, a pedido da Bárbara; ajustes de
+   comportamento e marca ficam para decisão com o Thiago
+   (`known-issues.md`).
+7. **`renovai-local` sincronizado com `dev`** (frontend idêntico; backend
+   igual exceto WhatsApp/Twilio e `agente/modelo.py`). Commits do
+   `renovai-local` são feitos pela Bárbara; em `AcheInfo_Apps/dev` o Claude
+   commita e faz push.

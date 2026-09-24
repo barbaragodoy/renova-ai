@@ -25,6 +25,7 @@ from fastapi import APIRouter, File, Header, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from sqlalchemy import text
 
+from backend.app.auth.context import email_cadastrado
 from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.config import get_settings
 from backend.app.db.databricks_connection import get_engine
@@ -180,7 +181,7 @@ async def enviar_foto(
     a leitura é sempre por `GET /auth/perfil/foto`, que resolve a partir da
     sessão. O caminho volta só para a interface saber que existe foto.
     """
-    autenticado = resolver_email_autenticado(authorization, email)
+    autenticado = email_cadastrado(resolver_email_autenticado(authorization, email))
 
     extensao = _TIPOS.get((arquivo.content_type or "").lower())
     if extensao is None:
@@ -229,7 +230,7 @@ def obter_foto(
     O caminho vem da tabela, nunca da requisição: assim ninguém consegue
     pedir um arquivo arbitrário do volume passando um caminho na URL.
     """
-    autenticado = resolver_email_autenticado(authorization, email)
+    autenticado = email_cadastrado(resolver_email_autenticado(authorization, email))
 
     with get_engine().connect() as conn:
         linha = (
@@ -309,7 +310,7 @@ def remover_foto(
     foto, e falhar aqui deixaria a pessoa presa a uma foto que ela pediu para
     tirar.
     """
-    autenticado = resolver_email_autenticado(authorization, email)
+    autenticado = email_cadastrado(resolver_email_autenticado(authorization, email))
     matricula = _matricula(autenticado)
 
     with get_engine().connect() as conn:

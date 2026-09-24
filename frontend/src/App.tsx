@@ -4,7 +4,7 @@ import { Login } from "@/pages/Login";
 import { SeletorDePropagandista } from "@/pages/SeletorDePropagandista";
 import { Recomendacoes } from "@/pages/Recomendacoes";
 import { Usuario } from "@/pages/Usuario";
-import { Home as PaginaHome } from "@/pages/Home";
+import { Home as PaginaHome, type BuscaDeMedico } from "@/pages/Home";
 import { Ranking } from "@/pages/Ranking";
 import { Header } from "@/components/Header";
 import { MenuLateral } from "@/components/MenuLateral";
@@ -107,6 +107,7 @@ export default function App() {
   const [visitadas, setVisitadas] = useState<Set<AbaId>>(new Set(["home"]));
   // Pergunta que o Ranking manda para o chat pelo botão da gaveta. Fica aqui,
   // e não dentro de cada aba, porque atravessa as duas.
+  const [buscaParaHome, setBuscaParaHome] = useState<BuscaDeMedico | null>(null);
   // Motivo do retorno ao login. Hoje só existe um: a sessão venceu.
   const [avisoDeSessao, setAvisoDeSessao] = useState<string | null>(null);
   // Se quem entrou está na lista administrativa. `null` enquanto o servidor
@@ -143,6 +144,7 @@ export default function App() {
     setAdministrador(null);
     setAba("home");
     setVisitadas(new Set(["home"]));
+    setBuscaParaHome(null);
     setAvisoDeSessao(aviso);
   }
 
@@ -161,6 +163,11 @@ export default function App() {
       anteriores.has(id) ? anteriores : new Set(anteriores).add(id),
     );
     setAba(id);
+  }
+
+  function verMedicoNaHome(busca: BuscaDeMedico) {
+    setBuscaParaHome(busca);
+    trocarAba("home");
   }
 
   function aplicarSessao(nova: Sessao | null) {
@@ -184,6 +191,7 @@ export default function App() {
     setSessao(nova);
     setAba("home");
     setVisitadas(new Set(["home"]));
+    setBuscaParaHome(null);
   }
 
   if (!sessao) return <Login onEntrar={aplicarSessao} aviso={avisoDeSessao} />;
@@ -263,7 +271,12 @@ export default function App() {
             {/* Home guiada do protótipo, decisão de George em 20/09/2026. O
                 Chat com o motor continua em pages/Chat.tsx para voltar por
                 botões separados. */}
-            <PaginaHome email={sessao.email} nome={nomeExibido} />
+            <PaginaHome
+              email={sessao.email}
+              nome={nomeExibido}
+              buscaPendente={buscaParaHome}
+              aoConsumirBusca={() => setBuscaParaHome(null)}
+            />
           </Faixa>
         )}
 
@@ -273,6 +286,7 @@ export default function App() {
               email={sessao.email}
               setor={setorExibido}
               ativa={aba === "recomendacoes"}
+              onMaisDetalhes={verMedicoNaHome}
             />
           </Faixa>
         )}

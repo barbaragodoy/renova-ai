@@ -28,14 +28,14 @@ export interface Sessao {
   email: string;
   nome: string | null;
   setor: string;
+  /** Preenchido só na sessão de conferência de um administrador. */
+  verComo?: VerComo | null;
   /** Bearer token devolvido pelo login, enviado nas chamadas seguintes. */
   token?: string;
   /** Instante em que o token perde a validade, em milissegundos de época.
    *  O backend devolve `expira_em` como duração em segundos; a conversão
    *  para instante absoluto acontece no login. */
   expiraEm?: number;
-  /** Preenchido só na sessão de conferência de um administrador. */
-  verComo?: VerComo | null;
 }
 
 export function lerSessao(): Sessao | null {

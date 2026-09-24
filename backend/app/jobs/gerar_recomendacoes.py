@@ -60,15 +60,10 @@ FROM tb_propagandistas
 WHERE ativo = TRUE
 """
 
-_Q_LIMITE_PAINEL = """
-SELECT COALESCE(limite_painel, :limite_padrao) AS limite
-FROM tb_perfil_portal
-WHERE rep_matricula = :rep_matricula
-"""
-
-# Fonte única do default (318 confirmado real) — substitui o literal 318
-# hardcoded que existia aqui antes de tb_renovai_parametros existir (criada
-# pelo George em 26/08/2026, ver docs/context/decisions-log.md).
+# Fonte única do limite do painel. Desde 18/09/2026 não há mais limite por
+# propagandista: a consulta a tb_perfil_portal.limite_painel que existia aqui
+# saiu, decisão de George ao alinhar o portal ao protótipo. O valor da
+# tabela é 300 desde a mesma data.
 _Q_LIMITE_PAINEL_PADRAO = """
 SELECT limite_painel_padrao FROM tb_renovai_parametros WHERE id = 1
 """
@@ -243,20 +238,13 @@ def gerar_recomendacoes(ciclo: str | None = None, dry_run: bool = False) -> dict
         propagandistas = conn.execute(text(_Q_PROPAGANDISTAS)).mappings().fetchall()
         logger.info("Propagandistas ativos: %d | ciclo=%s", len(propagandistas), ciclo)
 
-        # Buscado uma vez fora do loop: mesmo valor para todo propagandista
-        # sem personalização, sem repetir a consulta a cada iteração.
-        limite_painel_padrao = conn.execute(text(_Q_LIMITE_PAINEL_PADRAO)).scalar()
+        # Buscado uma vez fora do loop: é o mesmo valor para todo propagandista.
+        limite_painel = conn.execute(text(_Q_LIMITE_PAINEL_PADRAO)).scalar()
 
         for rep in propagandistas:
             mat = rep["rep_matricula"]
             setor = rep["setor"]
             cod_linha = rep["cod_linha"]
-
-            limite_row = conn.execute(
-                text(_Q_LIMITE_PAINEL),
-                {"rep_matricula": mat, "limite_padrao": limite_painel_padrao},
-            ).mappings().fetchone()
-            limite_painel = limite_row["limite"] if limite_row else limite_painel_padrao
 
             # --- ENTRADA_PAINEL ---
             candidatos_entrada = conn.execute(
@@ -353,7 +341,7 @@ def gerar_recomendacoes(ciclo: str | None = None, dry_run: bool = False) -> dict
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Gera recomendações RenovAI para o ciclo informado.")
+    parser = argparse.ArgumentParser(description="Gera recomendações Ped.AI para o ciclo informado.")
     parser.add_argument("--ciclo", default=None, help="Ciclo de referência (ex: 202507). Default: config.")
     parser.add_argument("--dry-run", action="store_true", help="Simula sem gravar no banco.")
     args = parser.parse_args()

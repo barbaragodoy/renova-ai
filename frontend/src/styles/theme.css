@@ -1,5 +1,5 @@
 /* ============================================================
-   Tokens do PedAI.
+   Tokens do Ped.AI.
 
    Cópia fiel dos tokens do design system do portal, exportados
    do Figma. Não substituir por valores aproximados: protótipos
@@ -11,6 +11,8 @@
    ============================================================ */
 
 @custom-variant dark (&:is(.dark *));
+
+@custom-variant baixo (@media (height < 700px));
 
 :root {
   --font-size: 16px;

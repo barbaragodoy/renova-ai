@@ -1,4 +1,4 @@
-"""Autenticação de sessão do Portal RenovAI.
+"""Autenticação de sessão do Portal Ped.AI.
 
 Dois modos, selecionados por `AUTH_MODE`:
 

@@ -13,7 +13,7 @@ import { cn } from "@/lib/utils";
 import { CardMemoriaDeVisitas } from "@/components/CardMemoriaDeVisitas";
 
 /**
- * Conversa do propagandista com o PedAI.
+ * Conversa do propagandista com o Ped.AI.
  *
  * O desenho vem do `ChatScreen` do protótipo do Figma Make
  * `cuZGbZpvR0aBJhixqBnYYB`, lido em 10/08/2026: avatar do assistente, bolha
@@ -80,13 +80,13 @@ const FUNDO_CONVERSA = "#F7F7FA";
 function abertura(nome: string | null) {
   const primeiro = nome?.trim().split(" ")[0];
   return (
-    `Olá${primeiro ? `, ${primeiro}` : ""}. Sou o **PedAI**.\n` +
+    `Olá${primeiro ? `, ${primeiro}` : ""}. Sou o **Ped.AI**.\n` +
     "Posso te dar o retrato de um médico antes da visita: o que está sendo prescrito, o que você pode oferecer e como conduzir a conversa.\n" +
     "Me diga o **Nome** ou o **CRM** de quem você vai visitar agora."
   );
 }
 
-/** Uma resposta inteira do PedAI é um item só, com um avatar só. No
+/** Uma resposta inteira do Ped.AI é um item só, com um avatar só. No
  *  protótipo o avatar aparece uma vez por mensagem, e os cards ficam
  *  empilhados abaixo dele. */
 type Item =
@@ -130,8 +130,8 @@ function ComNegrito({ children }: { children: string }) {
             key={i}
             className="font-semibold"
             // Nome da marca sempre na cor primária do portal, igual ao
-            // protótipo do Figma, onde "PedAI" aparece destacado em rosa.
-            style={texto === "PedAI" ? { color: "var(--color-primary)" } : undefined}
+            // protótipo do Figma, onde "Ped.AI" aparece destacado em rosa.
+            style={texto === "Ped.AI" ? { color: "var(--color-primary)" } : undefined}
           >
             {texto}
           </strong>

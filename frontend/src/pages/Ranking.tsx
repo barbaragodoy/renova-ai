@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Info, MapPin, Search, TrendingUp, X } from "lucide-react";
+import { Info, MapPin, MessageSquare, Search, TrendingUp, X } from "lucide-react";
 import {
   ApiError,
   detalharMedico,
@@ -12,6 +12,7 @@ import {
 } from "@/lib/api";
 import { Alert } from "@/components/ui/alert";
 import { GavetaDeAcao } from "@/components/GavetaDeAcao";
+import { PontinhosDeCarregamento } from "@/components/ui/loading";
 
 /**
  * Aba Ranking do Ped.AI.
@@ -59,6 +60,11 @@ const VERDE_TOP10 = "#16A34A";
 const VERMELHO_ALERTA = "#DC2626";
 /** Cinza escuro do protótipo, pontuação da 51ª posição em diante. */
 const CINZA_ESCURO = "#374151";
+const ROXO_CLARO = "#EDE8F5";
+const VERDE_CLARO = "#F0FDF4";
+const CINZA_BOTAO = "#364153";
+const AMARELO_CLARO = "#FEF3C7";
+const LARANJA_TEXTO = "#D97706";
 
 function corDaMedalha(posicao?: number | null): string | null {
   if (posicao === 1) return OURO;
@@ -826,6 +832,7 @@ interface GavetaMedicoProps {
    *  "escolha" para aceitar, "motivo" para desconsiderar. Botões do rodapé,
    *  decisão de George em 18/09/2026. */
   onResolver?: (passo: "escolha" | "motivo") => void;
+  onMaisDetalhes?: () => void;
   /** "recomendacao" é o detalhe do protótipo na aba Recomendações: sem
    *  endereços e com só dois dados (está no painel e tamanho do painel).
    *  Decisão de George em 20/09/2026. O padrão é o card completo do Ranking. */
@@ -840,6 +847,7 @@ export function GavetaMedico({
   medico,
   onFechar,
   onResolver,
+  onMaisDetalhes,
   variante = "completa",
 }: GavetaMedicoProps) {
   const compacta = variante === "recomendacao";
@@ -917,7 +925,48 @@ export function GavetaMedico({
           <div className="mx-auto mb-4 h-1 w-10 rounded-full bg-[var(--color-border)]" />
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              {detalhe ? (
+              {detalhe && compacta ? (
+                <>
+                  <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <p className="text-lg font-bold leading-tight text-[var(--color-foreground)]">
+                      {capitalizarNome(detalhe.nome_medico)}
+                    </p>
+                    {medico?.tipo_recomendacao_pendente && (
+                      <span
+                        className="rounded-full px-2 py-0.5 text-[10px] font-bold text-white"
+                        style={{
+                          background:
+                            medico.tipo_recomendacao_pendente === "ENTRADA_PAINEL"
+                              ? "var(--color-primary)"
+                              : LARANJA_EXCLUSAO,
+                        }}
+                      >
+                        {medico.tipo_recomendacao_pendente === "ENTRADA_PAINEL" ? "Inclusão" : "Exclusão"}
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--color-muted-foreground)]">
+                    {[
+                      detalhe.especialidade ? capitalizarNome(detalhe.especialidade) : null,
+                      detalhe.cidade
+                        ? `${capitalizarNome(detalhe.cidade)}${detalhe.uf ? `, ${detalhe.uf}` : ""}`
+                        : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                </>
+              ) : compacta ? (
+                !erro && (
+                  <div className="space-y-2" aria-hidden="true">
+                    <div className="flex items-center gap-2">
+                      <div className="h-5 w-48 rounded-sm skeleton-shimmer" />
+                      <div className="h-4 w-14 rounded-full skeleton-shimmer" />
+                    </div>
+                    <div className="h-3 w-40 rounded-sm skeleton-shimmer" />
+                  </div>
+                )
+              ) : detalhe ? (
                 <>
                   <p className="text-lg font-bold leading-tight text-[var(--color-foreground)]">
                     {capitalizarNome(detalhe.nome_medico)}
@@ -950,7 +999,169 @@ export function GavetaMedico({
           </div>
         </div>
 
-        {detalhe && (
+        {compacta && !detalhe && erro && (
+          <div className="flex min-h-[50vh] flex-1 items-center justify-center px-5 pb-6">
+            <p className="text-center text-sm text-[var(--color-muted-foreground)]">{erro}</p>
+          </div>
+        )}
+
+        {compacta && !detalhe && !erro && (
+          <>
+            <div className="flex-1 space-y-4 px-5 pb-6 pt-3">
+              <PontinhosDeCarregamento texto="Carregando detalhes do médico" />
+              <div className="space-y-4" aria-hidden="true">
+                <div className="h-12 rounded-xl skeleton-shimmer" />
+                <div className="flex gap-3">
+                  <div className="h-20 flex-1 rounded-xl skeleton-shimmer" />
+                  <div className="h-20 flex-1 rounded-xl skeleton-shimmer" />
+                </div>
+                <div className="space-y-1.5">
+                  <div className="flex justify-between">
+                    <div className="h-3 w-24 rounded-sm skeleton-shimmer" />
+                    <div className="h-3 w-8 rounded-sm skeleton-shimmer" />
+                  </div>
+                  <div className="h-1.5 w-full rounded-full skeleton-shimmer" />
+                </div>
+                <div className="h-24 rounded-xl skeleton-shimmer" />
+                <div className="space-y-2">
+                  <div className="h-3 w-28 rounded-sm skeleton-shimmer" />
+                  <div className="h-20 rounded-xl skeleton-shimmer" />
+                </div>
+                {onMaisDetalhes && <div className="h-11 rounded-xl skeleton-shimmer" />}
+              </div>
+            </div>
+            {medico?.id_recomendacao_pendente && onResolver && (
+              <div
+                className="flex-shrink-0 space-y-2 border-t border-[var(--color-border)] px-5 py-4"
+                aria-hidden="true"
+              >
+                <div className="h-10 rounded-xl skeleton-shimmer" />
+                <div className="h-10 rounded-xl skeleton-shimmer" />
+              </div>
+            )}
+          </>
+        )}
+
+        {detalhe && compacta && (
+          <div className="flex-1 space-y-4 overflow-y-auto px-5 pb-6">
+            <div
+              role="status"
+              className="rounded-xl px-4 py-3.5 text-xs font-semibold leading-5"
+              style={(() => {
+                const estilo =
+                  detalhe.recomendacao === "ADICIONAR"
+                    ? { fundo: "var(--color-accent)", texto: "var(--color-primary)" }
+                    : detalhe.recomendacao === "REMOVER"
+                      ? { fundo: AMARELO_CLARO, texto: LARANJA_TEXTO }
+                      : ESTILO_RECOMENDACAO[detalhe.recomendacao] ?? ESTILO_SEM_ACAO;
+                return { background: estilo.fundo, color: estilo.texto };
+              })()}
+            >
+              {fraseDaRecomendacao(detalhe)}
+            </div>
+
+            <div className="flex gap-3">
+              <div
+                className="flex flex-1 flex-col items-center justify-center rounded-xl px-4 py-4 text-center"
+                style={{ background: ROXO_CLARO }}
+              >
+                {corDaMedalha(detalhe.posicao) ? (
+                  <span
+                    className="mb-1 flex h-9 w-9 items-center justify-center rounded-full text-base font-bold text-white"
+                    style={{ background: corDaMedalha(detalhe.posicao)! }}
+                  >
+                    {detalhe.posicao}
+                  </span>
+                ) : (
+                  <p className="text-2xl font-bold leading-8" style={{ color: ROXO_TEXTO }}>
+                    #{detalhe.posicao ?? "—"}
+                  </p>
+                )}
+                <p className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: ROXO_TEXTO }}>
+                  Posição no ranking
+                </p>
+              </div>
+              <div
+                className="flex flex-1 flex-col items-center justify-center rounded-xl px-4 py-4 text-center"
+                style={{ background: VERDE_CLARO }}
+              >
+                <p className="text-base font-bold leading-tight" style={{ color: VERDE_TOP10 }}>
+                  {detalhe.pontos != null
+                    ? detalhe.pontos.toLocaleString("pt-BR", { maximumFractionDigits: 0 })
+                    : "—"}
+                </p>
+                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
+                  Pontuação (pts)
+                </p>
+              </div>
+            </div>
+
+            {pctLider !== null && (
+              <div>
+                <div className="mb-1.5 flex justify-between text-[11px] text-[var(--color-muted-foreground)]">
+                  <span>Vs. líder do setor</span>
+                  <span className="font-semibold text-[var(--color-foreground)]">{pctLider}%</span>
+                </div>
+                <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--color-muted)]">
+                  <div
+                    className="h-full rounded-full bg-[var(--color-primary)]"
+                    style={{ width: `${pctLider}%` }}
+                  />
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-1.5 rounded-xl p-4" style={{ background: ROXO_CLARO }}>
+              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: ROXO_TEXTO }}>
+                Por que está nesta posição?
+              </p>
+              <p className="text-xs leading-relaxed" style={{ color: ROXO_TEXTO }}>
+                {textoDaPosicao(detalhe.posicao, detalhe.nome_medico)}
+              </p>
+            </div>
+
+            <div>
+              <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
+                Dados do médico
+              </p>
+              <div className="divide-y divide-[var(--color-border)] rounded-xl border border-[var(--color-border)] bg-[var(--color-card)]">
+                {[
+                  {
+                    rotulo: "Está no painel",
+                    valor: detalhe.no_painel ? "Sim" : "Não",
+                    cor: detalhe.no_painel ? VERDE_TOP10 : VERMELHO_ALERTA,
+                  },
+                  {
+                    rotulo: "Tamanho do painel do setor",
+                    valor: detalhe.qtd_painel_setor != null ? `${detalhe.qtd_painel_setor} médicos` : "—",
+                    cor: "var(--color-foreground)",
+                  },
+                ].map((linha) => (
+                  <div key={linha.rotulo} className="flex items-center justify-between gap-3 px-4 py-3">
+                    <p className="flex-1 text-xs text-[var(--color-muted-foreground)]">{linha.rotulo}</p>
+                    <p className="flex-shrink-0 text-right text-xs font-semibold" style={{ color: linha.cor }}>
+                      {linha.valor}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {onMaisDetalhes && (
+              <button
+                type="button"
+                onClick={onMaisDetalhes}
+                className="flex w-full items-center justify-center gap-2 rounded-xl border bg-[var(--color-card)] py-3 text-sm font-semibold transition-opacity active:opacity-80"
+                style={{ borderColor: ROXO_TEXTO, color: ROXO_TEXTO }}
+              >
+                <MessageSquare className="h-4 w-4" aria-hidden="true" />
+                Mais detalhes sobre esse médico
+              </button>
+            )}
+          </div>
+        )}
+
+        {detalhe && !compacta && (
           <div className="flex-1 space-y-4 overflow-y-auto px-5 pb-6">
             {/* Recomendação do sistema: alerta colorido pelo tipo, sem
                 título nem selo, como no protótipo. */}
@@ -1032,7 +1243,6 @@ export function GavetaMedico({
                 CNES. Regra e medições em backend/app/enderecos.py. A edição
                 com sincronização de volta ao SalesFarma fica para quando a
                 integração existir, decisão de George em 18/09/2026. */}
-            {!compacta && (
             <div>
               <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
                 {todosOsEnderecos.length > 1 ? "Endereços de atendimento" : "Endereço de atendimento"}
@@ -1073,7 +1283,6 @@ export function GavetaMedico({
                 </div>
               )}
             </div>
-            )}
 
             {/* Dados do médico */}
             <div>
@@ -1081,19 +1290,7 @@ export function GavetaMedico({
                 Dados do médico
               </p>
               <div className="divide-y divide-[var(--color-border)] rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
-                {(compacta
-                  ? [
-                      {
-                        rotulo: "Está no painel",
-                        valor: detalhe.no_painel ? "Sim" : "Não",
-                        cor: detalhe.no_painel ? VERDE_TOP10 : VERMELHO_ALERTA,
-                      },
-                      {
-                        rotulo: "Tamanho do painel do setor",
-                        valor: detalhe.qtd_painel_setor != null ? `${detalhe.qtd_painel_setor} médicos` : "—",
-                      },
-                    ]
-                  : [
+                {[
                   // Verde no Sim e vermelho no Não, cores do protótipo. O
                   // rótulo é "painel", não "ranking": decisão de nomenclatura
                   // de 16/09/2026, reafirmada por George em 18/09/2026.
@@ -1134,7 +1331,7 @@ export function GavetaMedico({
                         : detalhe.nunca_visitado_na_janela ? "Sim" : "Não",
                     alerta: detalhe.nunca_visitado_na_janela === true,
                   },
-                ]).map((linha) => (
+                ].map((linha) => (
                   <div key={linha.rotulo} className="flex items-center justify-between gap-3 px-4 py-3">
                     <p className="flex-1 text-xs text-[var(--color-muted-foreground)]">{linha.rotulo}</p>
                     <p
@@ -1162,7 +1359,35 @@ export function GavetaMedico({
             sugestão não tem o que aceitar. Os dois botões abrem a mesma
             GavetaDeAcao, que já chama os endpoints; o de desconsiderar pula
             direto para os motivos. */}
-        {detalhe && medico?.id_recomendacao_pendente && onResolver && (
+        {detalhe && medico?.id_recomendacao_pendente && onResolver && compacta && (
+          <div className="flex-shrink-0 space-y-2 border-t border-[var(--color-border)] px-5 py-4">
+            <button
+              type="button"
+              onClick={() => onResolver("escolha")}
+              className="w-full rounded-xl py-2.5 text-sm font-bold text-white transition-opacity active:opacity-80"
+              style={{
+                background:
+                  medico.tipo_recomendacao_pendente === "ENTRADA_PAINEL"
+                    ? "var(--color-primary)"
+                    : LARANJA_EXCLUSAO,
+              }}
+            >
+              {medico.tipo_recomendacao_pendente === "ENTRADA_PAINEL"
+                ? "Aceitar inclusão"
+                : "Aceitar exclusão"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onResolver("motivo")}
+              className="w-full rounded-xl bg-[var(--color-secondary)] py-2.5 text-sm font-semibold transition-opacity active:opacity-80"
+              style={{ color: CINZA_BOTAO }}
+            >
+              Desconsiderar sugestão
+            </button>
+          </div>
+        )}
+
+        {detalhe && medico?.id_recomendacao_pendente && onResolver && !compacta && (
           <div className="flex-shrink-0 space-y-2 border-t border-[var(--color-border)] px-5 py-4">
             <button
               type="button"

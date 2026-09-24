@@ -11,7 +11,7 @@ import { type MotivoDesconsideracao } from "@/lib/api";
 /** Rótulo em português de cada motivo fixo de desconsideração — espelha
  *  MOTIVOS_DESCONSIDERACAO em lib/api.ts / backend/app/schemas/recomendacoes.py. */
 export const ROTULO_MOTIVO: Record<MotivoDesconsideracao, string> = {
-  SEM_PERFIL_PARA_O_PAINEL: "Já avaliei e o médico não tem perfil para o meu painel",
+  SEM_PERFIL_PARA_O_PAINEL: "Já avaliei e o médico não tem perfil para o meu ranking",
   TRABALHADO_POR_OUTRO_CANAL: "Médico já é trabalhado por outro canal ou colega",
   AGUARDAR_PROXIMO_CICLO: "Vou aguardar o próximo ciclo para decidir",
   DADOS_DESATUALIZADOS: "Dados do médico parecem desatualizados",

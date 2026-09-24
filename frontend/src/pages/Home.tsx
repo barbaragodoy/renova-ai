@@ -361,7 +361,19 @@ type AcaoAberta = {
   passo: "escolha" | "motivo";
 };
 
-export function Home({ email, nome }: { email: string; nome?: string | null }) {
+export type BuscaDeMedico = { nome: string; ufcrm: string };
+
+export function Home({
+  email,
+  nome,
+  buscaPendente,
+  aoConsumirBusca,
+}: {
+  email: string;
+  nome?: string | null;
+  buscaPendente?: BuscaDeMedico | null;
+  aoConsumirBusca?: () => void;
+}) {
   const primeiro = nome?.trim().split(" ")[0];
   const [itens, setItens] = useState<Item[]>([]);
   const [rascunho, setRascunho] = useState("");
@@ -568,6 +580,18 @@ export function Home({ email, nome }: { email: string; nome?: string | null }) {
     );
   }
 
+  useEffect(() => {
+    if (!buscaPendente) return;
+    aoConsumirBusca?.();
+    adicionar({ tipo: "usuario", texto: `Mais detalhes sobre ${capitalizarNome(buscaPendente.nome)}` });
+    setAguardandoBusca(false);
+    void buscarMedico(buscaPendente.ufcrm, {
+      ufcrmExato: buscaPendente.ufcrm,
+      rotulo: capitalizarNome(buscaPendente.nome),
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [buscaPendente]);
+
   async function enviar() {
     const texto = rascunho.trim();
     if (!texto || carregando) return;
@@ -580,13 +604,21 @@ export function Home({ email, nome }: { email: string; nome?: string | null }) {
     }
 
     setAguardandoBusca(false);
+    await buscarMedico(texto);
+  }
+
+  async function buscarMedico(
+    texto: string,
+    { ufcrmExato, rotulo = texto }: { ufcrmExato?: string; rotulo?: string } = {},
+  ) {
     setCarregando(true);
     try {
       const resposta = await listarRanking(email, texto, 0);
-      const medicos = resposta.medicos.slice(0, 5);
+      const exatos = ufcrmExato ? resposta.medicos.filter((m) => m.ufcrm === ufcrmExato) : [];
+      const medicos = (exatos.length ? exatos : resposta.medicos).slice(0, 5);
       if (medicos.length === 0) {
         adicionar(
-          { tipo: "assistente", texto: `Não encontrei **${texto}** no ranking do seu setor. Confira o nome ou o CRM e tente de novo.` },
+          { tipo: "assistente", texto: `Não encontrei **${rotulo}** no ranking do seu setor. Confira o nome ou o CRM e tente de novo.` },
           outrasSugestoes("medico"),
         );
       } else {
@@ -596,7 +628,7 @@ export function Home({ email, nome }: { email: string; nome?: string | null }) {
             texto:
               medicos.length === 1
                 ? `Encontrei **${capitalizarNome(medicos[0].nome_medico)}** no seu setor. Veja os detalhes abaixo:`
-                : `Encontrei ${medicos.length} médicos para **${texto}** no seu setor. Veja os detalhes abaixo:`,
+                : `Encontrei ${medicos.length} médicos para **${rotulo}** no seu setor. Veja os detalhes abaixo:`,
           },
           { tipo: "busca", medicos },
           outrasSugestoes("medico"),

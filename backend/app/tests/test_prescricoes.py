@@ -29,6 +29,9 @@ EMAIL_VALIDO = "ana.lima@ache.com.br"
 # de teste que NÃO mocka resolver_contexto(): a consulta ao Postgres local
 # é real, então a identidade da sessão precisa bater com a seed de verdade
 # (nos outros arquivos, o mock de resolver_contexto() absorve a diferença).
+# Sem isto, EMAIL_VALIDO no corpo é ignorado por resolver_email_autenticado()
+# em auth_mode=senha (a sessão manda, não o corpo) — trocar só a constante
+# não bastaria.
 CABECALHO = cabecalho(email=EMAIL_VALIDO)
 
 
@@ -94,6 +97,7 @@ def test_pergunta_sem_periodo_aplica_ytd():
     assert resp.status_code == 200
 
 
+@pytest.mark.requer_banco
 def test_propagandista_nao_encontrado():
     resp = _post(
         "Alguma pergunta",

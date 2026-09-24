@@ -2,7 +2,7 @@
 
 > Status em 10/08/2026: em uso pelo endpoint `POST /chat/perfil-medico`. Toda alteração de texto, de regra de escrita ou de orientação ao propagandista passa por este documento e por `perfil_medico.py`.
 
-Este arquivo é o manual do padrão da resposta que o propagandista lê no chat do Portal RenovAI. Ele existe porque quem vai mudar uma frase, acrescentar uma orientação ou criar um tipo novo de resposta nem sempre é quem escreveu o código.
+Este arquivo é o manual do padrão da resposta que o propagandista lê no chat do Portal Ped.AI. Ele existe porque quem vai mudar uma frase, acrescentar uma orientação ou criar um tipo novo de resposta nem sempre é quem escreveu o código.
 
 Leia até o fim antes da primeira alteração. Depois disso, a seção **Onde fica cada texto** resolve a maioria dos casos sozinha.
 

@@ -30,7 +30,7 @@ necessário para o dia a dia de uma sessão pontual (ver comandos rápidos no
 
 ## Autenticação
 - `backend/app/auth/context.py` — `resolver_contexto(email, tabela="tb_propagandistas")` consulta tb_propagandistas (ou `tb_propagandista_teste`), retorna `ContextoResponse` com os 3 status (baseline em decisions-log.md). Endpoint `GET /auth/contexto`. Agnóstico à fonte de dados. Parâmetro `tabela` validado contra whitelist (`_TABELAS_PERMITIDAS`).
-- `backend/app/auth/jwt_auth.py` — `resolver_email_autenticado(authorization, email_param)`. Ponto único de resolução de identidade, usado por `auth/context.py`, `routers/prescricoes.py` e `routers/recomendacoes.py`. Controlado por `AUTH_REQUIRE_JWT`:
+- `backend/app/auth/jwt_auth.py` — `resolver_email_autenticado(authorization, email_param)`. Ponto único de resolução de identidade. Ordem: `AUTH_MODE=senha` (JWT de sessão do portal, padrão), `AUTH_MODE=entra_id` (claim `preferred_username` de `X-MS-CLIENT-PRINCIPAL`, injetado pelo Easy Auth; em hmg desde 24/09/2026), depois o caminho legado abaixo. Em seguida aplica `STATUS_ACESSO` (`auth/status_acesso.py`) sobre a identidade real e a personificação administrativa (`auth/administrativo.py`). Caminho legado, controlado por `AUTH_REQUIRE_JWT`:
   - `false` (padrão local) — aceita o e-mail cru vindo de query/body, sem validar token.
   - `true` (produção) — exige `Authorization: Bearer <token>`, valida assinatura/audience/issuer via JWKS (Auth0/Entra ID, com cache de `PyJWKClient` por domínio) e extrai o e-mail da claim configurada em `AUTH_EMAIL_CLAIM` (`preferred_username` por padrão — a confirmar com Flávio).
   - Coberto por `test_jwt_auth.py` (7 cenários, tudo mockado).

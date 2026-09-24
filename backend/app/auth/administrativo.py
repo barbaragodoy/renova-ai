@@ -65,14 +65,35 @@ METODOS_SOMENTE_LEITURA = {"GET", "HEAD", "OPTIONS"}
 
 HEADER_VER_COMO = "X-Ver-Como"
 
+# E-mail do propagandista que a requisição atual está personificando, gravado
+# só depois de a identidade real ser confirmada como administrador. Serve para
+# `resolver_contexto()` saber que este valor é um REP_EMAIL, e não um login.
+# Em AUTH_MODE=entra_id a busca normal é por REP_LOGIN, e o e-mail do
+# propagandista não bate com o login dele (`sandro.menezes` x `MSandro`):
+# sem esta marca, toda tela personificada respondia 403 (hmg, 24/09/2026).
+_IDENTIDADE_PERSONIFICADA: ContextVar[Optional[str]] = ContextVar(
+    "identidade_personificada", default=None
+)
+
 
 def registrar_alvo(setor: Optional[str]) -> None:
     """Guarda o setor pedido pela requisição atual. Chamado pelo middleware."""
     _SETOR_ALVO.set((setor or "").strip() or None)
+    _IDENTIDADE_PERSONIFICADA.set(None)
 
 
 def alvo_atual() -> Optional[str]:
     return _SETOR_ALVO.get()
+
+
+def eh_identidade_personificada(identidade: Optional[str]) -> bool:
+    """Diz se `identidade` é o e-mail personificado nesta requisição."""
+    personificada = _IDENTIDADE_PERSONIFICADA.get()
+    return bool(
+        identidade
+        and personificada
+        and identidade.strip().lower() == personificada.strip().lower()
+    )
 
 
 def eh_administrador(identidade: str, settings) -> bool:
@@ -150,6 +171,7 @@ def aplicar_personificacao(email_real: str, settings) -> str:
         setor,
         email_alvo,
     )
+    _IDENTIDADE_PERSONIFICADA.set(email_alvo)
     return email_alvo
 
 

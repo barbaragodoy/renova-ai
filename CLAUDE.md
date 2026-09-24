@@ -20,9 +20,16 @@ Alternância de fonte de dados local↔real é via `DATA_SOURCE` em `.env`
 
 ## Status ativo — Task 170097: login por Entra ID / Easy Auth
 
+**Estado em 24/09/2026 (fim do dia):** hmg está em `AUTH_MODE=entra_id` +
+Easy Auth `RedirectToLoginPage`, imagem `4316976-login-figma-20260924`
+(rollback de imagem: `91bedaf-entra-id-20260924`; rollback da virada:
+`senha` + `AllowAnonymous` juntos). Validado com login real de 3
+administradores (Bárbara, Grazielle, Thiago), incluindo personificação.
+
 Arquitetura confirmada em 2026-09-15: o App Service Easy Auth autentica o
 usuário antes de a requisição chegar ao FastAPI e injeta a identidade nos
-headers `X-MS-CLIENT-PRINCIPAL-NAME` e `X-MS-CLIENT-PRINCIPAL`.
+headers `X-MS-CLIENT-PRINCIPAL-NAME` e `X-MS-CLIENT-PRINCIPAL`. Só o segundo
+é usado (ver abaixo).
 `AUTH_MODE=entra_id` não usa o caminho legado `AUTH_REQUIRE_JWT`/JWKS.
 
 A parte anterior ao primeiro `@` do identificador, sem domínio hardcoded, é
@@ -37,8 +44,8 @@ permanece como default e continua comparando o e-mail da sessão com
 usado para comparar com `REP_LOGIN`. **Log Stream de hmg (24/09, 05:25 UTC):**
 `X-MS-CLIENT-PRINCIPAL-NAME` chega com o `emailaddress`, não com o login.
 Por isso `jwt_auth.py` ignora esse header e lê `preferred_username` (com
-`upn` como reserva) de `X-MS-CLIENT-PRINCIPAL`. Corrigido localmente em
-24/09, ainda sem commit. Ver `known-issues.md`.
+`upn` como reserva) de `X-MS-CLIENT-PRINCIPAL`. Em `dev` `aad27c5` e em
+hmg desde 24/09. Ver `known-issues.md`.
 
 Redirect URI de `pedai.ache.com.br` e do domínio de hmg: **resolvido em
 23/09** (ambos cadastrados no App Registration).
@@ -48,8 +55,16 @@ Checagem única em `auth/status_acesso.py`, aplicada sobre a identidade real
 (nunca a personificada) em `POST /auth/login` e em
 `jwt_auth.py::resolver_email_autenticado()`. `ADMIN_EMAILS` foi removido:
 administrador vem de `tb_perfil_portal.PERFIL_ACESSO`. Frontend `entra_id`
-implementado (`src/auth/entraId.ts`, `pages/AcessoBloqueado.tsx`), mas só
-ativo em build com `VITE_AUTH_MODE=entra_id` — ver pendências abaixo.
+(`src/auth/entraId.ts`, `pages/AcessoBloqueado.tsx`) só entra no bundle com
+`--build-arg VITE_AUTH_MODE=entra_id` (Dockerfile, `dev` `baa063a`); toda
+imagem de hmg precisa desse argumento.
+
+Identidade no modo `entra_id` (todas em `dev` e em hmg):
+- Personificação (`X-Ver-Como`) marca o `REP_EMAIL` do alvo; `resolver_contexto()`
+  busca essa identidade por `rep_email` (`d416de6`).
+- Perfil e foto convertem o UPN no `REP_EMAIL` via `email_cadastrado()`
+  (`91bedaf`).
+- Login bloqueado mostra `AcessoBloqueado` (`4316976`).
 
 Etapas da virada (roteiro da Bárbara em 24/09):
 
@@ -57,29 +72,25 @@ Etapas da virada (roteiro da Bárbara em 24/09):
 |---|---|
 | 1. Commit + sync com dev + suíte | Concluída em 24/09 |
 | 2. Confirmar header real no Log Stream | Concluída: logins das 05:25–05:38 UTC de 24/09, anteriores ao bloqueio |
-| 3. Corrigir extração de identidade conforme a evidência | Feita localmente em 24/09 (`preferred_username` do payload; log `EASY_AUTH_DEBUG` removido), sem commit |
-| 4. `AUTH_MODE=entra_id` + Easy Auth `RedirectToLoginPage`, juntos | Exige confirmação explícita da Bárbara |
+| 3. Corrigir extração de identidade conforme a evidência | Concluída em 24/09 (`dev` `aad27c5`; `EASY_AUTH_DEBUG` removido) |
+| 4. `AUTH_MODE=entra_id` + Easy Auth `RedirectToLoginPage`, juntos | **Concluída em 24/09, 11:49 UTC**; validada com 3 administradores reais |
 | 5. Prova com as 4 contas reais do George | Exige confirmação explícita; lista das contas ainda não recebida |
 
-Pendências que bloqueiam a Fase 4:
-- Commitar a Fase 3, sincronizar com `dev` e gerar nova imagem.
-- **Dockerfile:** `ARG VITE_AUTH_MODE=senha` foi adicionado em
-  `AcheInfo_Apps/APP_RENOVAI/Dockerfile` em 24/09, sem commit. O bundle muda
-  conforme o valor (conferido com `vite build`). A imagem da virada precisa
-  de `--build-arg VITE_AUTH_MODE=entra_id`. Sem isso, a tela pede senha e
-  `POST /auth/login` responde 404.
-- ~~Administradores Cezar e Eduardo gravados com o e-mail~~: **resolvido em
-  24/09**. Foram inseridas as linhas `CGMACezar@ache.com.br` e
-  `PFEduardo@ache.com.br` (`ATIVO`/`ADMINISTRADOR`). As linhas antigas, com o
-  e-mail, foram mantidas.
-- `AUTH_REQUIRE_JWT` e `AUTH_EMAIL_CLAIM` **não** influenciam o modo
-  `entra_id` (o branch `entra_id` é resolvido antes, e `AUTH_EMAIL_CLAIM` só
-  vale no caminho JWKS legado). Não precisam mudar na virada.
-- Easy Auth hoje: `requireAuthentication=true` e
-  `unauthenticatedClientAction=AllowAnonymous`. Com `AllowAnonymous`,
-  qualquer requisição direta pode forjar `X-MS-CLIENT-PRINCIPAL-NAME`. Por
-  isso `AUTH_MODE=entra_id` só pode ser ativado **junto com**
-  `RedirectToLoginPage`.
+Pendências (24/09):
+- **Fase 5:** login de propagandista com a própria conta Microsoft. Perfil e
+  foto nesse caminho só estão cobertos por teste, não por uso real.
+- **Decidir com o Thiago (PR 23965):** clique extra em "Entrar com
+  Microsoft" após o redirect e em todo F5; marca "PedAI"/logo "R" vs
+  "Ped.AI"; texto de termos sem link; botões de aceitar/desconsiderar
+  ativos em sessão personificada (a API recusa com 403).
+- Tela `AcessoBloqueado` no modo `entra_id` ainda não vista em navegador.
+- `test_gerar_recomendacoes.py`: 5 falhas (`KeyError: 'T0006'`) em `dev` e,
+  desde a sincronização de 24/09, também no local.
+- Front local contra hmg: `DEV_EASY_AUTH_COOKIE` (`ec6eea5`) sem teste com
+  cookie válido.
+- `AUTH_REQUIRE_JWT`/`AUTH_EMAIL_CLAIM` não influenciam `entra_id`.
+- Rollback da virada: `AUTH_MODE=senha` e `AllowAnonymous` voltam **juntos**
+  (com `RedirectToLoginPage` até a tela de senha fica atrás da Microsoft).
 
 ## Comandos
 
@@ -460,3 +471,151 @@ A imagem inclui o log temporário `EASY_AUTH_DEBUG` para a Fase 2. A Fase 2
 está parada porque o login Microsoft da Bárbara foi bloqueado pelo Entra ID
 (Smart Lockout ou política de horário, não confirmado). Nada foi alterado em
 `AUTH_MODE` nem no Easy Auth.
+
+## 2026-09-24 — Fase 3 em `dev` e imagem da virada gerada (sem deploy)
+
+`AcheInfo_Apps/dev`: `baa063a` (Dockerfile com `ARG VITE_AUTH_MODE=senha`) e
+`aad27c5` (identidade por `preferred_username` de `X-MS-CLIENT-PRINCIPAL`, sem
+`EASY_AUTH_DEBUG`), push feito. Merge de 3 vias sem conflito. Suíte de `dev`:
+12 failed antes e depois (idênticas), 526 → 529 passed.
+
+Build ACR `cf20` publicou `app-renovai:aad27c5-entra-id-20260924` com
+`--build-arg VITE_AUTH_MODE=entra_id`. Conferido dentro da imagem: o bundle
+tem o link `/.auth/login/aad`, `EASY_AUTH_DEBUG` não existe mais e
+`acessos.csv` está presente. **Não implantada.** Com esta imagem, a tela é
+a de Entra ID. Ela só deve entrar em hmg na Fase 4, junto com
+`AUTH_MODE=entra_id` e `RedirectToLoginPage`.
+
+## 2026-09-24 — Fase 4: virada para Entra ID em hmg
+
+Aprovada pela Bárbara e executada às 11:49 UTC em `asp-renoveai-hmg`:
+imagem `aad27c5-entra-id-20260924`, `AUTH_MODE=entra_id` e Easy Auth
+`unauthenticatedClientAction=RedirectToLoginPage`
+(`redirectToProvider=azureactivedirectory`), seguidos de restart. O container
+iniciou às 11:51:27 sem erro. Config conferida depois da mudança.
+
+Sem sessão: navegador em `/` recebe 302 para `login.windows.net` (tenant
+`24090322-…`, callback `/.auth/login/aad/callback`). Chamadas sem
+`Accept: text/html` recebem 401 do Easy Auth, inclusive `/health`, `/docs`,
+`POST /auth/login` e requisição com `X-MS-CLIENT-PRINCIPAL-NAME` forjado.
+O login por senha deixou de existir em hmg. **Pendente:** login real com
+uma conta `ATIVO`.
+
+Rollback, sempre juntos: `AUTH_MODE=senha` + `AllowAnonymous` + imagem
+`b9342ea-status-acesso-debug-20260924`. Se o problema for com essa imagem,
+voltar para `53b8067-ranking-admin-menus-20260923`.
+
+Em 24/09, às 12:40 UTC, `3gobarbara@ache.com.br` estava `BLOQUEADO` em
+`tb_perfil_portal`. Passou para `ATIVO` (`ADMINISTRADOR`), com autorização
+da Bárbara. Na mesma data, a tabela tinha 60 propagandistas `ATIVO`, e não
+os 72 registrados em 23/09, e nenhuma linha de administrador para o George.
+
+Em 24/09, às 12:57 UTC, o George (UPN `3fplgeorge@ache.com.br`, e-mail
+`george.luiz_terceiro@...`) foi incluído em `tb_perfil_portal` como `ATIVO`
+e `ADMINISTRADOR`, com `ACESSO_LIBERADO_POR='barbara.godoy'`. Esse valor
+segue o padrão `george.luiz`. As 3 linhas liberadas antes, no mesmo dia,
+ficaram com `'3gobarbara'`.
+
+## 2026-09-24 — 403 na personificação com `entra_id` (corrigido em `dev`, sem deploy)
+
+O log de hmg das 13:26 UTC mostrou o problema. Ao personificar
+(`X-Ver-Como`), o administrador recebia 403 em `/ranking` e em
+`/recomendacoes/{entrada,revisao,desconsideradas}`. `aplicar_personificacao()`
+devolve o `REP_EMAIL` do alvo (`sandro.menezes@...`), mas em `entra_id` o
+contexto é buscado por `REP_LOGIN` (`MSandro`), e a resposta era
+`PROPAGANDISTA_NAO_ENCONTRADO`. Correção em `dev` `d416de6`, com push, e
+local sem commit. A personificação marca o e-mail do alvo em um ContextVar,
+só depois de confirmar que a identidade real é administrador.
+`resolver_contexto()` e `resolver_status_acesso()` buscam essa identidade
+por `REP_EMAIL`. Há 3 testes de regressão, que falham sem a correção.
+Suítes: local 547 passed / 14 failed (as mesmas de antes); `dev` 532 passed
+/ 12 failed (as mesmas).
+
+**Risco aberto para a Fase 5:** `auth/perfil.py` e `auth/foto.py` buscam
+por `rep_email` em qualquer modo. Um propagandista que entra com o próprio
+login Microsoft chega com o UPN, que nunca bate com `REP_EMAIL`, então a aba
+Usuário e a foto devem responder 404. Isso não foi verificado em hmg.
+
+**Perfil e foto em `entra_id` (mesmo dia):** `email_cadastrado()`
+(`auth/context.py`) troca o UPN pelo `REP_EMAIL` do mesmo `REP_LOGIN` antes
+das consultas de `auth/perfil.py` e `auth/foto.py`. O status da aba Usuário
+é consultado com `resolver_status_acesso(..., por_email=True)`, no lugar da
+marca de personificação. Em `dev`: `91bedaf`, com push. Local sem commit.
+Suítes: local 552 passed / 14 failed (as mesmas de antes); `dev` 537 passed
+/ 12 failed (as mesmas). Build ACR `cf21` gerou
+`app-renovai:91bedaf-entra-id-20260924` (`VITE_AUTH_MODE=entra_id`),
+conferido dentro da imagem. **Ainda não implantada.** Hmg continua em
+`aad27c5-entra-id-20260924`.
+
+**Deploy em hmg (24/09, 13:54 UTC, aprovado pela Bárbara):** a imagem
+passou de `aad27c5-entra-id-20260924` para `91bedaf-entra-id-20260924`,
+com restart. O container iniciou às 13:55:58 sem erro. `AUTH_MODE=entra_id`
+e `RedirectToLoginPage` foram conferidos e ficaram inalterados. Um navegador
+sem sessão recebe 302 para o login Microsoft. Rollback de imagem:
+`aad27c5-entra-id-20260924`. Pendente: a Bárbara validar a personificação
+(ranking e recomendações).
+
+**Validação em hmg (24/09, 14:22–15:09 UTC):** a personificação respondeu
+200 em `/recomendacoes/{entrada,revisao,desconsideradas}`, `/ranking`,
+`/ranking/medico/*` e `/auth/perfil` para 3 administradores (Bárbara,
+Grazielle e Thiago), todos já entrando pelo Entra ID. Os 403 em
+`POST .../aceitar|desconsiderar` durante a personificação são o bloqueio
+intencional de escrita (`escrita bloqueada em sessao personificada`). O
+frontend deixa clicar e só depois mostra o erro. Houve chamadas lentas (15
+a 30 s), o mesmo problema de desempenho do warehouse. Ainda sem login de
+propagandista com a própria conta (Fase 5).
+
+## 2026-09-24 — `renovai-local` sincronizado com `dev` (`91bedaf`), sem commit
+
+- **Frontend:** `src/` ficou idêntico ao de `dev`, com o layout do Thiago.
+  Em `GavetaDeAcao.tsx` e `auth/sessao.ts`, os conflitos foram resolvidos
+  com a versão de `dev`. O `index.html` foi trazido de `dev` (título
+  `Ped.AI`). O `package-lock.json` ficou como estava.
+- **Backend:** 18 arquivos por merge de 3 vias. Os conflitos em
+  `config.py`, `main.py` e `test_prescricoes.py` foram resolvidos assim:
+  comentários de `dev`, título `Ped.AI API` e o import de `webhooks_twilio`
+  mantido. Também vieram `backend/scripts/` e `test_verificacao_aprovada.py`.
+  O WhatsApp/Twilio continua só no local.
+- **Suíte local:** 561 passed / 19 failed. São as 14 falhas antigas mais as
+  5 de `test_gerar_recomendacoes.py`, que também falham em `dev`. `npm run
+  lint` e `build` passaram.
+- **Simulação local do Entra ID:** `frontend/.env.local` (fora do Git), com
+  `VITE_AUTH_MODE=entra_id` e `DEV_EASY_AUTH_LOGIN=<upn>`. O proxy do Vite
+  injeta `X-MS-CLIENT-PRINCIPAL`, e a API sobe com `AUTH_MODE=entra_id
+  uvicorn ...`. Para voltar ao modo senha, apague o `.env.local`.
+
+**Login Entra ID no `npm run dev` (`dev` `ec6eea5`, 24/09):** o proxy do Vite
+aceita `DEV_EASY_AUTH_COOKIE`, que repassa o cookie `AppServiceAuthSession`
+de hmg para quem usa a API de hmg (caso do Thiago), e `DEV_EASY_AUTH_LOGIN`,
+que simula o header para quem roda a API local. As duas variáveis estão
+documentadas no `frontend/.env.example`. Sem cookie, ou com cookie inválido,
+hmg responde 401 (conferido). **O caminho com cookie válido não foi testado.**
+
+## 2026-09-24 — PR 23965 (login Figma) + correção de bloqueado; imagem gerada
+
+O PR 23965 do Thiago (`Login.tsx`, `SeletorDePropagandista.tsx`,
+`Header.tsx`, `theme.css`) foi revisado, aprovado e mesclado em `dev`
+(`dab8eb2`). O merge foi completado no Azure DevOps.
+
+**Mudança de comportamento:** a tela Entra ID só chama `/auth/contexto`
+sozinha se o clique em "Entrar com Microsoft" aconteceu na mesma aba. Por
+isso, depois do redirecionamento do Easy Auth e em todo F5, é preciso um
+clique a mais. A confirmar com o Thiago. A marca na tela ficou "PedAI",
+com logo "R", diferente do "Ped.AI" do resto do portal.
+
+Correção `4316976`, com push: no modo `entra_id`, o estado `bloqueado` de
+`resolverEntrada()` agora mostra `AcessoBloqueado`, com saída por
+`/.auth/logout`. Antes, o usuário via um cartão vazio ou um botão em loop.
+Build ACR `cf22` gerou `app-renovai:4316976-login-figma-20260924`, conferido
+por dentro. **Ainda não implantada.** Em `renovai-local`, os 4 arquivos do
+PR e a correção foram copiados para `frontend/src`, que continua idêntico
+a `dev`.
+
+**Deploy em hmg (24/09, 21:04 UTC, aprovado pela Bárbara):** a imagem
+passou de `91bedaf-entra-id-20260924` para `4316976-login-figma-20260924`.
+O restart logo depois da troca cancelou a primeira subida
+(`SiteStartupCancelled`, 21:05). O container subiu às 21:10:56.
+`AUTH_MODE=entra_id` e `RedirectToLoginPage` foram conferidos e ficaram
+inalterados. Rollback: `91bedaf-entra-id-20260924`. Lição: `az webapp config
+container set` já reinicia o app, e um `az webapp restart` logo depois só
+atrasa a subida.

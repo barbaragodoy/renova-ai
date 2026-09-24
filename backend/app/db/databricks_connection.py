@@ -10,6 +10,7 @@ Consumidores (ex.: auth/context.py) só enxergam `get_engine()` e usam
 `engine.connect()` / `conn.execute(text(...), params)` normalmente — a troca de
 fonte não muda nenhuma lógica de negócio.
 """
+
 from typing import TYPE_CHECKING
 
 from sqlalchemy import create_engine

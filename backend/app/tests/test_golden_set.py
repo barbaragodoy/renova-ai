@@ -17,6 +17,16 @@ import pytest
 
 GOLDEN_SET_PATH = Path(__file__).parents[4] / "docs" / "cenarios" / "golden_set.json"
 
+# O arquivo de cenários nunca foi versionado. Sem esta guarda, a ausência
+# dele quebra a coleta e derruba a suíte inteira para quem clona o
+# repositório, escondendo o resultado de todos os outros testes.
+if not GOLDEN_SET_PATH.exists():
+    pytest.skip(
+        f"golden_set.json ausente em {GOLDEN_SET_PATH}. O arquivo de cenários "
+        "não está no repositório.",
+        allow_module_level=True,
+    )
+
 # Acumuladores de resultado por categoria (compartilhados entre testes do módulo)
 _resultados: list[dict] = []
 

@@ -1,10 +1,13 @@
-import { Bell, Menu } from "lucide-react";
+// import { Bell } from "lucide-react";
+import type { ReactNode } from "react";
+import { Menu } from "lucide-react";
 
 interface HeaderProps {
-  onAbrirMenu: () => void;
+  onAbrirMenu?: () => void;
+  acoes?: ReactNode;
 }
 
-export function Header({ onAbrirMenu }: HeaderProps) {
+export function Header({ onAbrirMenu, acoes }: HeaderProps) {
   return (
     <header className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] bg-[var(--color-card)] px-4 py-3 sm:px-6">
       <div className="flex items-center gap-2">
@@ -21,23 +24,25 @@ export function Header({ onAbrirMenu }: HeaderProps) {
       </div>
 
       <div className="flex items-center gap-1">
-        <button
+        {/* <button
           type="button"
           aria-label="Notificações"
           disabled
           className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--color-muted-foreground)] disabled:opacity-100"
         >
           <Bell className="h-5 w-5" aria-hidden="true" />
-        </button>
+        </button> */}
 
-        <button
-          type="button"
-          onClick={onAbrirMenu}
-          aria-label="Abrir menu"
-          className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--color-muted-foreground)] transition-colors hover:bg-[var(--color-muted)]"
-        >
-          <Menu className="h-5 w-5" aria-hidden="true" />
-        </button>
+        {acoes ?? (
+          <button
+            type="button"
+            onClick={onAbrirMenu}
+            aria-label="Abrir menu"
+            className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--color-muted-foreground)] transition-colors hover:bg-[var(--color-muted)]"
+          >
+            <Menu className="h-5 w-5" aria-hidden="true" />
+          </button>
+        )}
       </div>
     </header>
   );

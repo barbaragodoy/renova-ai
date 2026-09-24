@@ -119,7 +119,7 @@ def atualizar_status(ciclo: str | None = None, dry_run: bool = False) -> dict:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Atualiza status diário das recomendações RenovAI.")
+    parser = argparse.ArgumentParser(description="Atualiza status diário das recomendações Ped.AI.")
     parser.add_argument("--ciclo", default=None)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()

@@ -87,6 +87,17 @@ class Settings(BaseSettings):
     # valor não é uma escolha do portal: é o mesmo que o notebook de geração
     # do Hugo aplica na fonte real). Ver routers/recomendacoes.py e
     # jobs/gerar_recomendacoes.py.
+    #
+    # ciclo_referencia sincronizado com o ciclo real vigente no Databricks
+    # (202608), confirmado por query direta (MAX(ciclo_recomendacao) em
+    # acheinfo_dev.renovai.tb_recomendacoes_painel_historico). Corrige uma
+    # divergência que existia nos dois ambientes: dev nunca tinha recebido
+    # essa atualização; renovai-local tinha o valor certo até uma tentativa
+    # de sincronização anterior, nesta mesma sessão, tê-lo alinhado
+    # erroneamente à fixture local de teste (202507) em vez do dado real.
+    # Impacto baixo: os endpoints principais (/entrada, /revisao) já
+    # resolvem o ciclo dinamicamente via _ciclo_mais_recente(), esse
+    # default só é usado como fallback estático (gerencial.py, jobs).
     ciclo_referencia: str = "202608"
     sem_visita_meses: int = 3
     # Até 04/09/2026 este número cortava a lista das abas de entrada e
@@ -94,17 +105,18 @@ class Settings(BaseSettings):
     # ciclo atual: a mediana é de 132 recomendações por pessoa e por tipo, e o
     # máximo é 629, então mais de 96% ficavam invisíveis. Por decisão de
     # George, a lista passou a mostrar todas, paginadas, e este número virou
-    # quantas ficam destacadas como prioridade da semana. A origem dele é o
-    # combinado antigo de 5 inclusões e 5 exclusões por semana.
+    # quantas ficam **destacadas** como prioridade da semana. A origem dele é
+    # o combinado antigo de 5 inclusões e 5 exclusões por semana.
     #
-    # Continua cortando a geração em jobs/gerar_recomendacoes.py, que é outro
-    # uso e não foi alterado.
+    # Continua cortando a **geração** em `jobs/gerar_recomendacoes.py`, que é
+    # outro uso e não foi alterado.
     limite_sugestoes: int = 5
 
     @property
     def lista_dominios_email_aceitos(self) -> List[str]:
         """Parseia DOMINIOS_EMAIL_ACEITOS em lista, ignorando espaços/itens vazios."""
         return [d.strip().lower() for d in self.dominios_email_aceitos.split(",") if d.strip()]
+
 
 
 @lru_cache

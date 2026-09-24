@@ -42,6 +42,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import text
 
+from backend.app.auth.context import email_cadastrado
 from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.auth.status_acesso import resolver_status_acesso
 from backend.app.db.databricks_connection import get_engine as _get_engine
@@ -256,7 +257,9 @@ def resolver_perfil(email: str) -> PerfilResponse:
     # o status do propagandista personificado que a tela deve mostrar, não o
     # do administrador. Por isso usa `primeira["rep_email"]` (o e-mail real
     # dessa linha), não repete a checagem de acesso.
-    status_acesso = resolver_status_acesso(primeira["rep_email"]).status_acesso
+    status_acesso = resolver_status_acesso(
+        primeira["rep_email"], por_email=True
+    ).status_acesso
 
     return PerfilResponse(
         matricula=primeira["rep_matricula"],
@@ -436,7 +439,9 @@ def get_perfil(
     ),
     authorization: Optional[str] = Header(None),
 ):
-    return resolver_perfil(resolver_email_autenticado(authorization, email))
+    return resolver_perfil(
+        email_cadastrado(resolver_email_autenticado(authorization, email))
+    )
 
 
 @perfil_router.put("/perfil", response_model=PerfilResponse)
@@ -452,4 +457,6 @@ def put_perfil(
     authorization: Optional[str] = Header(None),
 ):
     """Edita o nome de exibição. `nome` nulo ou vazio desfaz a edição."""
-    return gravar_nome(resolver_email_autenticado(authorization, email), body.nome)
+    return gravar_nome(
+        email_cadastrado(resolver_email_autenticado(authorization, email)), body.nome
+    )

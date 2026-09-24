@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Eye, LogOut, Search } from "lucide-react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { Check, ChevronDown, Eye, LogOut, Search } from "lucide-react";
 import {
   ApiError,
   listarOpcoesAdmin,
@@ -8,8 +8,8 @@ import {
   type PropagandistaAdmin,
 } from "@/lib/api";
 import type { VerComo } from "@/auth/sessao";
+import { Header } from "@/components/Header";
 import { Alert } from "@/components/ui/alert";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -85,13 +85,18 @@ export function SeletorDePropagandista({ email, onEscolher, onSair }: SeletorPro
 
   return (
     <div className="grid h-dvh grid-rows-[auto_minmax(0,1fr)]">
-      <header className="flex items-center justify-between gap-4 bg-[var(--color-primary)] px-4 py-3 text-white sm:px-6">
-        <span className="font-semibold tracking-wide">Ped.AI</span>
-        <Button variant="ghost" onClick={onSair} className="gap-2 text-white hover:bg-white/15">
-          <LogOut className="size-4" />
-          Sair
-        </Button>
-      </header>
+      <Header
+        acoes={
+          <button
+            type="button"
+            onClick={onSair}
+            className="flex h-9 items-center gap-2 rounded-full px-3 text-sm font-medium text-[var(--color-muted-foreground)] transition-colors hover:bg-[var(--color-muted)]"
+          >
+            <LogOut className="h-4 w-4" aria-hidden="true" />
+            Sair
+          </button>
+        }
+      />
 
       <main className="h-full min-h-0 overflow-y-auto bg-[var(--color-muted)] px-4 py-6 sm:px-6">
         <div className="mx-auto max-w-2xl space-y-4">
@@ -207,22 +212,119 @@ function CampoSelecao({
   opcoes: string[];
   onChange: (valor: string) => void;
 }) {
+  const [aberto, setAberto] = useState(false);
+  const [destaque, setDestaque] = useState(0);
+  const raiz = useRef<HTMLDivElement>(null);
+  const lista = useRef<HTMLUListElement>(null);
+  const itens = ["", ...opcoes];
+  const idLista = `${id}-opcoes`;
+
+  useEffect(() => {
+    if (!aberto) return;
+    function tocarFora(evento: PointerEvent) {
+      if (!raiz.current?.contains(evento.target as Node)) setAberto(false);
+    }
+    document.addEventListener("pointerdown", tocarFora);
+    return () => document.removeEventListener("pointerdown", tocarFora);
+  }, [aberto]);
+
+  useEffect(() => {
+    if (aberto) lista.current?.children[destaque]?.scrollIntoView({ block: "nearest" });
+  }, [aberto, destaque]);
+
+  function abrir() {
+    setDestaque(Math.max(0, itens.indexOf(valor)));
+    setAberto(true);
+  }
+
+  function escolher(indice: number) {
+    onChange(itens[indice]);
+    setAberto(false);
+  }
+
+  function teclar(evento: KeyboardEvent<HTMLButtonElement>) {
+    switch (evento.key) {
+      case "ArrowDown":
+        evento.preventDefault();
+        if (aberto) setDestaque((d) => Math.min(d + 1, itens.length - 1));
+        else abrir();
+        break;
+      case "ArrowUp":
+        evento.preventDefault();
+        if (aberto) setDestaque((d) => Math.max(d - 1, 0));
+        else abrir();
+        break;
+      case "Enter":
+      case " ":
+        if (aberto) {
+          evento.preventDefault();
+          escolher(destaque);
+        }
+        break;
+      case "Escape":
+        if (aberto) {
+          evento.preventDefault();
+          setAberto(false);
+        }
+        break;
+      case "Tab":
+        setAberto(false);
+        break;
+    }
+  }
+
   return (
-    <div>
+    <div ref={raiz} className="relative">
       <Label htmlFor={id}>{rotulo}</Label>
-      <select
+      <button
         id={id}
-        value={valor}
-        onChange={(e) => onChange(e.target.value)}
-        className="mt-1.5 h-11 w-full rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-input-background)] px-3 text-base outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={aberto}
+        aria-controls={idLista}
+        aria-activedescendant={aberto ? `${idLista}-${destaque}` : undefined}
+        onClick={() => (aberto ? setAberto(false) : abrir())}
+        onKeyDown={teclar}
+        className="mt-1.5 flex h-11 w-full items-center justify-between gap-2 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-input-background)] px-3 text-left text-base outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-primary)]"
       >
-        <option value="">Todas</option>
-        {opcoes.map((opcao) => (
-          <option key={opcao} value={opcao}>
-            {opcao}
-          </option>
-        ))}
-      </select>
+        <span className="truncate">{valor || "Todas"}</span>
+        <ChevronDown
+          className={`h-4 w-4 shrink-0 text-[var(--color-muted-foreground)] transition-transform ${aberto ? "rotate-180" : ""}`}
+          aria-hidden="true"
+        />
+      </button>
+
+      {aberto && (
+        <ul
+          ref={lista}
+          id={idLista}
+          role="listbox"
+          aria-label={rotulo}
+          className="absolute top-full right-0 left-0 z-20 mt-1 max-h-64 overflow-y-auto rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card)] py-1 shadow-lg"
+        >
+          {itens.map((item, indice) => {
+            const selecionado = item === valor;
+            return (
+              <li
+                key={item || "__todas"}
+                id={`${idLista}-${indice}`}
+                role="option"
+                aria-selected={selecionado}
+                onPointerDown={(evento) => evento.preventDefault()}
+                onClick={() => escolher(indice)}
+                onPointerEnter={() => setDestaque(indice)}
+                className={`flex cursor-pointer items-center justify-between gap-2 px-3 py-2 text-sm ${
+                  indice === destaque ? "bg-[var(--color-muted)]" : ""
+                } ${selecionado ? "font-semibold text-[var(--color-primary)]" : ""}`}
+              >
+                <span className="truncate">{item || "Todas"}</span>
+                {selecionado && <Check className="h-4 w-4 shrink-0" aria-hidden="true" />}
+              </li>
+            );
+          })}
+        </ul>
+      )}
     </div>
   );
 }

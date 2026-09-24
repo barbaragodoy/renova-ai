@@ -227,11 +227,44 @@ def custo_total(chamadas):
     return sum(c["custo"] for c in chamadas), moedas.pop()
 
 
-def verificacao_aprovada(itens):
-    """Falso se algum numero exibido nao foi confirmado no retorno de alguma ferramenta."""
+def verificacao_aprovada(itens, veredito):
+    """Falso se a verificacao recusou alguma coisa na resposta.
+
+    O `veredito` e obrigatorio, e nao opcional com recuo para `True`, por causa
+    do defeito que esta funcao teve ate 17/09/2026.
+
+    A versao anterior recebia so `itens` e devolvia
+    `all(item["confere"] for item in itens)`. Em `composicao.py`, um numero so
+    entra em `itens` quando tem origem numa chamada de ferramenta, e sempre com
+    `"confere": True`; numero inventado vai para a lista separada
+    `numeros_sem_origem`, que nunca chega aqui. O resultado e que a expressao
+    era incapaz de ser falsa: 102 de 102 interacoes gravadas entre 20/08 e
+    16/09/2026 ficaram com `verificacao_aprovada = true`, inclusive as cinco em
+    que a resposta foi degradada por inventar numero. Numa delas o modelo
+    escreveu uma lista de percentuais sem nenhuma origem, e o campo de auditoria
+    disse que estava tudo certo.
+
+    Um campo de auditoria que so sabe dizer verde e pior que campo nenhum, porque
+    quem mede qualidade do motor por ele conclui que nao ha o que corrigir.
+
+    Agora o retorno reflete o veredito inteiro, que e
+    `not numeros_sem_origem and not palavras_proibidas`. A conferencia de tipo
+    de `confere` continua aqui: ela pegou, em 19/08/2026, o caso de
+    `confere="false"` como texto, que e verdadeiro em Python e aprovava a
+    verificacao.
+    """
     for i, item in enumerate(itens):
         _validar_valor("verificacao_numeros[%d]" % i, "confere", item.get("confere"), BOOLEANO)
-    return all(item["confere"] for item in itens)
+    if not all(item["confere"] for item in itens):
+        return False
+    if veredito is None:
+        # Sem veredito nao ha o que afirmar. Devolver True aqui reintroduziria
+        # exatamente o defeito descrito acima.
+        raise ContratoInvalido(
+            "verificacao_aprovada exige o veredito da composicao; sem ele o campo "
+            "afirmaria aprovacao sem ter conferido a resposta."
+        )
+    return bool(veredito.aprovado)
 
 
 def id_interacao(id_conversa, turno, pergunta_original):

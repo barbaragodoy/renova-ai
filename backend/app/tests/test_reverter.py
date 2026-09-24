@@ -40,6 +40,7 @@ def _mock_engine(
     ciclo_atual="202507",
     rowcount=1,
     captured=None,
+    data_exportacao=None,
 ):
     """Mocka as três consultas envolvidas no endpoint: SELECT de
     dono/status/ciclo, SELECT MAX(...) (_ciclo_mais_recente) e o UPDATE
@@ -65,6 +66,7 @@ def _mock_engine(
                     "rep_matricula": matricula,
                     "status_recomendacao": status,
                     "ciclo_referencia": ciclo_recomendacao,
+                    "data_exportacao": data_exportacao,
                 }
             else:
                 result.mappings.return_value.fetchone.return_value = None
@@ -126,8 +128,52 @@ def test_reverter_outro_propagandista_403():
     assert resp.status_code == 403
 
 
-def test_reverter_nao_desconsiderada_400():
+def test_reverter_pendente_400():
     resp = _post(_mock_engine(status="PENDENTE"))
+    assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------- aceite ----
+# Regra de 20/09/2026: aceite volta enquanto não foi enviado ao SalesFarma.
+
+
+def test_desfazer_aceite_sem_envio_volta_a_pendente_e_limpa_so_o_aceite():
+    capturados = []
+    resp = _post(_mock_engine(status="ACEITA", captured=capturados))
+    assert resp.status_code == 200
+    assert resp.json()["status_recomendacao"] == "PENDENTE"
+    assert "desfeito" in resp.json()["message"]
+    sql = capturados[0]["sql"].lower()
+    assert "aceito_por" in sql and "data_aceite" in sql
+    assert "data_exportacao is null" in sql
+    # O caminho do aceite não toca nas colunas da desconsideração.
+    assert "motivo_desconsideracao" not in sql
+    assert "qtd_vezes_desconsiderado" not in sql
+
+
+def test_desfazer_aceite_de_ciclo_anterior_vai_para_expirada():
+    resp = _post(_mock_engine(status="ACEITA", ciclo_recomendacao="202501", ciclo_atual="202507"))
+    assert resp.status_code == 200
+    assert resp.json()["status_recomendacao"] == "EXPIRADA"
+
+
+def test_desfazer_aceite_ja_enviado_409_com_a_data():
+    from datetime import datetime
+
+    capturados = []
+    resp = _post(_mock_engine(status="ACEITA", data_exportacao=datetime(2026, 10, 3, 9, 0), captured=capturados))
+    assert resp.status_code == 409
+    assert "03/10/2026" in resp.json()["detail"]
+    assert capturados == [], "não pode chegar ao UPDATE"
+
+
+def test_desfazer_aplicada_409():
+    resp = _post(_mock_engine(status="APLICADA"))
+    assert resp.status_code == 409
+
+
+def test_desfazer_aceite_concorrente_rowcount_zero_400():
+    resp = _post(_mock_engine(status="ACEITA", rowcount=0))
     assert resp.status_code == 400
 
 

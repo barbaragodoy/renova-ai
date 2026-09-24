@@ -50,7 +50,19 @@ def _client_principal(*claims: dict) -> str:
     return base64.b64encode(payload).decode("ascii")
 
 
-def test_entra_id_usa_principal_name_e_ignora_bearer_e_email_param():
+def _principal_ache(login="usuario.teste@biosintetica.com.br"):
+    """Payload no formato observado em hmg em 24/09/2026 (sem claim `upn`)."""
+    return _client_principal(
+        {
+            "typ": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+            "val": "nome.sobrenome_terceiro@ache.com.br",
+        },
+        {"typ": "name", "val": "Nome Fictício"},
+        {"typ": "preferred_username", "val": login},
+    )
+
+
+def test_entra_id_usa_preferred_username_e_ignora_bearer_e_email_param():
     settings = _settings(auth_mode="entra_id", auth_require_jwt=True)
 
     with patch("backend.app.auth.jwt_auth._get_jwks_client") as jwks:
@@ -58,7 +70,7 @@ def test_entra_id_usa_principal_name_e_ignora_bearer_e_email_param():
             "Bearer token-legado",
             "email.informado@ache.com.br",
             settings=settings,
-            client_principal_name="usuario.teste@biosintetica.com.br",
+            client_principal=_principal_ache(),
         )
 
     assert upn == "usuario.teste@biosintetica.com.br"
@@ -70,7 +82,6 @@ def test_entra_id_faz_fallback_para_claim_upn():
         None,
         None,
         settings=_settings(auth_mode="entra_id"),
-        client_principal_name="   ",
         client_principal=_client_principal(
             {"typ": "name", "val": "Nome Fictício"},
             {"typ": "upn", "val": "USUARIO.TESTE@DOMINIO-EXEMPLO.COM"},
@@ -80,11 +91,36 @@ def test_entra_id_faz_fallback_para_claim_upn():
     assert upn == "USUARIO.TESTE@DOMINIO-EXEMPLO.COM"
 
 
+def test_entra_id_prefere_preferred_username_a_upn():
+    upn = resolver_email_autenticado(
+        None,
+        None,
+        settings=_settings(auth_mode="entra_id"),
+        client_principal=_client_principal(
+            {"typ": "upn", "val": "outro@dominio-exemplo.com"},
+            {"typ": "preferred_username", "val": "login@dominio-exemplo.com"},
+        ),
+    )
+
+    assert upn == "login@dominio-exemplo.com"
+
+
 @pytest.mark.parametrize(
     "principal",
-    [None, "", "base64-invalido", _client_principal({"typ": "sub", "val": "123"})],
+    [
+        None,
+        "",
+        "base64-invalido",
+        _client_principal({"typ": "sub", "val": "123"}),
+        _client_principal(
+            {
+                "typ": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
+                "val": "nome.sobrenome_terceiro@ache.com.br",
+            }
+        ),
+    ],
 )
-def test_entra_id_sem_upn_retorna_401(principal):
+def test_entra_id_sem_login_retorna_401(principal):
     with pytest.raises(HTTPException) as exc:
         resolver_email_autenticado(
             None,
@@ -96,8 +132,7 @@ def test_entra_id_sem_upn_retorna_401(principal):
     assert exc.value.status_code == 401
 
 
-def test_dependency_global_captura_header_easy_auth():
-    settings = _settings(auth_mode="entra_id")
+def _app_identidade(settings):
     app = FastAPI(dependencies=[Depends(capturar_cabecalhos_easy_auth)])
 
     @app.get("/identidade")
@@ -106,17 +141,31 @@ def test_dependency_global_captura_header_easy_auth():
             "upn": resolver_email_autenticado(None, None, settings=settings)
         }
 
-    resposta = TestClient(app).get(
+    return TestClient(app)
+
+
+def test_dependency_global_captura_header_easy_auth():
+    """Em hmg, X-MS-CLIENT-PRINCIPAL-NAME trouxe o e-mail, não o login. A
+    identidade tem de sair do payload, nunca desse header."""
+    resposta = _app_identidade(_settings(auth_mode="entra_id")).get(
         "/identidade",
         headers={
-            "X-MS-CLIENT-PRINCIPAL-NAME": "conta.ficticia@biosintetica.com.br"
+            "X-MS-CLIENT-PRINCIPAL-NAME": "nome.sobrenome_terceiro@ache.com.br",
+            "X-MS-CLIENT-PRINCIPAL": _principal_ache("conta.ficticia@biosintetica.com.br"),
         },
     )
 
     assert resposta.status_code == 200
-    assert resposta.json() == {
-        "upn": "conta.ficticia@biosintetica.com.br"
-    }
+    assert resposta.json() == {"upn": "conta.ficticia@biosintetica.com.br"}
+
+
+def test_header_principal_name_sozinho_nao_autentica():
+    resposta = _app_identidade(_settings(auth_mode="entra_id")).get(
+        "/identidade",
+        headers={"X-MS-CLIENT-PRINCIPAL-NAME": "conta.ficticia@biosintetica.com.br"},
+    )
+
+    assert resposta.status_code == 401
 
 
 def test_modo_dev_usa_email_do_parametro():

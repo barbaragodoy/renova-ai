@@ -3,8 +3,8 @@
  *
  * Quem autentica não é o portal: é o Azure App Service Easy Auth, ativo no
  * App Service. Ele intercepta a requisição antes do FastAPI e injeta a
- * identidade em `X-MS-CLIENT-PRINCIPAL-NAME`, que o backend lê em
- * `auth/jwt_auth.py` quando `AUTH_MODE=entra_id`. Não há MSAL no navegador,
+ * identidade em `X-MS-CLIENT-PRINCIPAL`. O backend lê dali o claim
+ * `preferred_username` em `auth/jwt_auth.py` quando `AUTH_MODE=entra_id`. Não há MSAL no navegador,
  * não há token guardado neste módulo e `POST /auth/login` deixa de existir
  * para a interface (o backend devolve 404).
  *

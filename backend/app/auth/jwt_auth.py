@@ -9,7 +9,6 @@ não é usado quando AUTH_MODE=entra_id.
 import base64
 import binascii
 import json
-import logging
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import AsyncIterator, TYPE_CHECKING, Optional
@@ -21,14 +20,11 @@ from jwt import PyJWKClient
 if TYPE_CHECKING:
     from backend.app.config import Settings
 
-logger = logging.getLogger("renovai")
-
 _jwks_clients: dict[str, PyJWKClient] = {}
 
 
 @dataclass(frozen=True)
 class CabecalhosEasyAuth:
-    client_principal_name: Optional[str] = None
     client_principal: Optional[str] = None
 
 
@@ -39,53 +35,14 @@ _cabecalhos_easy_auth: ContextVar[CabecalhosEasyAuth] = ContextVar(
 )
 
 
-def _logar_headers_easy_auth_temporario(
-    client_principal_name: Optional[str], client_principal: Optional[str]
-) -> None:
-    """Log de diagnóstico TEMPORÁRIO — Fase 0 da Task 170097.
-
-    Objetivo único: capturar, no Log Stream de `asp-renoveai-hmg`, o valor
-    exato que o Easy Auth entrega nestes dois headers para um login real,
-    porque `/.auth/me` (lista crua de claims) pode divergir do que é
-    repassado ao app. Remover esta função e a chamada abaixo assim que a
-    Fase 0 for confirmada por escrito em `jwt_auth.py`.
-    """
-    logger.info("EASY_AUTH_DEBUG X-MS-CLIENT-PRINCIPAL-NAME=%r", client_principal_name)
-    if not client_principal:
-        return
-    try:
-        codificado = client_principal.strip()
-        codificado += "=" * (-len(codificado) % 4)
-        payload = json.loads(base64.b64decode(codificado, validate=True).decode("utf-8"))
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
-        logger.info("EASY_AUTH_DEBUG falha ao decodificar X-MS-CLIENT-PRINCIPAL: %s", exc)
-        return
-
-    claims = payload.get("claims") if isinstance(payload, dict) else None
-    if isinstance(claims, list):
-        resumo = [(c.get("typ"), c.get("val")) for c in claims if isinstance(c, dict)]
-        logger.info("EASY_AUTH_DEBUG claims=%r", resumo)
-    else:
-        logger.info("EASY_AUTH_DEBUG client_principal sem 'claims': %r", payload)
-
-
 async def capturar_cabecalhos_easy_auth(
-    client_principal_name: Optional[str] = Header(
-        None, alias="X-MS-CLIENT-PRINCIPAL-NAME"
-    ),
     client_principal: Optional[str] = Header(
         None, alias="X-MS-CLIENT-PRINCIPAL"
     ),
 ) -> AsyncIterator[None]:
     """Captura os headers do Easy Auth uma única vez por requisição."""
-    if client_principal_name or client_principal:
-        _logar_headers_easy_auth_temporario(client_principal_name, client_principal)
-
     token = _cabecalhos_easy_auth.set(
-        CabecalhosEasyAuth(
-            client_principal_name=client_principal_name,
-            client_principal=client_principal,
-        )
+        CabecalhosEasyAuth(client_principal=client_principal)
     )
     try:
         yield
@@ -93,8 +50,15 @@ async def capturar_cabecalhos_easy_auth(
         _cabecalhos_easy_auth.reset(token)
 
 
-def _extrair_upn_do_client_principal(client_principal: str) -> Optional[str]:
-    """Decodifica o payload do Easy Auth e procura explicitamente o claim upn."""
+# Claims aceitos como identidade, em ordem. Na Aché o login está em
+# `preferred_username` (o token não traz `upn`); `upn` fica como reserva para
+# tenants que o emitem. `emailaddress` nunca entra: é nome.sobrenome, não o
+# login, e não bate com `REP_LOGIN`.
+_CLAIMS_IDENTIDADE = ("preferred_username", "upn")
+
+
+def _extrair_login_do_client_principal(client_principal: str) -> Optional[str]:
+    """Decodifica o payload do Easy Auth e devolve o claim de login."""
     try:
         codificado = client_principal.strip()
         codificado += "=" * (-len(codificado) % 4)
@@ -108,38 +72,34 @@ def _extrair_upn_do_client_principal(client_principal: str) -> Optional[str]:
     if not isinstance(claims, list):
         return None
 
-    for claim in claims:
-        if not isinstance(claim, dict) or claim.get("typ") != "upn":
-            continue
-        valor = claim.get("val")
+    valores = {
+        claim.get("typ"): claim.get("val")
+        for claim in claims
+        if isinstance(claim, dict)
+    }
+    for tipo in _CLAIMS_IDENTIDADE:
+        valor = valores.get(tipo)
         if isinstance(valor, str) and valor.strip():
             return valor.strip()
     return None
 
 
 def _resolver_upn_easy_auth(
-    client_principal_name: Optional[str] = None,
     client_principal: Optional[str] = None,
 ) -> str:
-    capturados = _cabecalhos_easy_auth.get()
-    principal_name = (
-        client_principal_name
-        if client_principal_name is not None
-        else capturados.client_principal_name
-    )
+    """Identidade do Easy Auth, lida só de `X-MS-CLIENT-PRINCIPAL`.
+
+    `X-MS-CLIENT-PRINCIPAL-NAME` não é usado. Em hmg, em 24/09/2026, ele trouxe
+    o `emailaddress` (`nome.sobrenome_terceiro@...`), não o login. Com esse
+    valor, a comparação com `REP_LOGIN` e com `tb_perfil_portal` falharia.
+    """
     principal = (
         client_principal
         if client_principal is not None
-        else capturados.client_principal
+        else _cabecalhos_easy_auth.get().client_principal
     )
 
-    upn = principal_name.strip() if principal_name else ""
-    if not upn and principal:
-        # PRECISA DE VALIDAÇÃO COM LOGIN REAL: confirmar se o ambiente da Aché
-        # sempre entrega o UPN puro em X-MS-CLIENT-PRINCIPAL-NAME ou se algum
-        # usuário exige este fallback pelo array de claims.
-        upn = _extrair_upn_do_client_principal(principal) or ""
-
+    upn = _extrair_login_do_client_principal(principal) if principal else None
     if not upn:
         raise HTTPException(
             status_code=401,
@@ -180,7 +140,6 @@ def resolver_email_autenticado(
     email_param: Optional[str],
     settings: Optional["Settings"] = None,
     *,
-    client_principal_name: Optional[str] = None,
     client_principal: Optional[str] = None,
     aplicar_admin: bool = True,
 ) -> str:
@@ -190,7 +149,8 @@ def resolver_email_autenticado(
 
     1. `AUTH_MODE=senha`: o token de sessão do portal é a única fonte. O e-mail
        recebido por query ou body é ignorado. Sem token válido, 401.
-    2. `AUTH_MODE=entra_id`: UPN recebido dos headers do App Service Easy Auth.
+    2. `AUTH_MODE=entra_id`: claim `preferred_username` do header
+       `X-MS-CLIENT-PRINCIPAL`, injetado pelo App Service Easy Auth.
     3. `AUTH_REQUIRE_JWT=true`: caminho legado, validado por JWKS.
     4. Caso contrário: aceita o e-mail cru de query/body. Esse caminho existe
        para desenvolvimento local e NÃO deve valer em ambiente publicado, pois
@@ -215,7 +175,6 @@ def resolver_email_autenticado(
         authorization,
         email_param,
         settings,
-        client_principal_name=client_principal_name,
         client_principal=client_principal,
     )
 
@@ -245,7 +204,6 @@ def _resolver_identidade_real(
     email_param: Optional[str],
     settings: "Settings",
     *,
-    client_principal_name: Optional[str] = None,
     client_principal: Optional[str] = None,
 ) -> str:
     """Quem está autenticado de fato, sem considerar acesso administrativo."""
@@ -270,10 +228,7 @@ def _resolver_identidade_real(
         # requisições não autenticadas são bloqueadas antes de chegar ao
         # FastAPI. Se a API for exposta diretamente, como num ambiente local,
         # qualquer cliente poderá forjar estes headers.
-        return _resolver_upn_easy_auth(
-            client_principal_name=client_principal_name,
-            client_principal=client_principal,
-        )
+        return _resolver_upn_easy_auth(client_principal=client_principal)
 
     # Caminho legado AUTH_REQUIRE_JWT/JWKS. Intencionalmente intocado nesta task.
     if not settings.auth_require_jwt:

@@ -15,6 +15,8 @@ personificação nunca influencia a checagem; administrador chega ao seletor
 sem setor; ADMIN_EMAILS removido não quebra nada; tag da aba Usuário reflete
 STATUS_ACESSO.
 """
+import base64
+import json
 from unittest.mock import patch
 
 import pytest
@@ -31,6 +33,12 @@ from backend.app.auth.status_acesso import exigir_acesso_liberado, resolver_stat
 from backend.app.config import Settings
 
 pytestmark = pytest.mark.usefixtures("forcar_data_source_local")
+
+
+def _principal(login: str) -> str:
+    """Payload de X-MS-CLIENT-PRINCIPAL com o login em `preferred_username`."""
+    payload = {"claims": [{"typ": "preferred_username", "val": login}]}
+    return base64.b64encode(json.dumps(payload).encode()).decode()
 
 
 def _settings(auth_mode: str) -> Settings:
@@ -226,7 +234,7 @@ def test_admin_chega_ao_seletor_sem_setor(monkeypatch):
     `forcar_data_source_local`. `AUTH_MODE=entra_id` (Literal válido, ao
     contrário de "local") com o ContextVar de headers do Easy Auth setado
     direto — o mesmo que `capturar_cabecalhos_easy_auth` faria a partir do
-    header `X-MS-CLIENT-PRINCIPAL-NAME` numa requisição real.
+    header `X-MS-CLIENT-PRINCIPAL` numa requisição real.
     """
     from backend.app.auth.jwt_auth import CabecalhosEasyAuth, _cabecalhos_easy_auth
     from backend.app.config import get_settings
@@ -234,7 +242,7 @@ def test_admin_chega_ao_seletor_sem_setor(monkeypatch):
     monkeypatch.setenv("AUTH_MODE", "entra_id")
     get_settings.cache_clear()
     token = _cabecalhos_easy_auth.set(
-        CabecalhosEasyAuth(client_principal_name="admin.ativo.teste@ache.com.br")
+        CabecalhosEasyAuth(client_principal=_principal("admin.ativo.teste@ache.com.br"))
     )
     try:
         resposta = sessao_admin(email=None, authorization=None)
@@ -261,7 +269,7 @@ def test_admin_bloqueado_nao_e_oferecido_o_seletor(monkeypatch):
     try:
         resposta = TestClient(app).get(
             "/admin/sessao",
-            headers={"X-MS-CLIENT-PRINCIPAL-NAME": "admin.bloqueado.teste@ache.com.br"},
+            headers={"X-MS-CLIENT-PRINCIPAL": _principal("admin.bloqueado.teste@ache.com.br")},
         )
     finally:
         get_settings.cache_clear()

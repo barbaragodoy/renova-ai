@@ -13,6 +13,8 @@ Estes testes fixam o comportamento esperado com `AUTH_MODE=senha`:
   outra pessoa mantendo o próprio token.
 """
 
+import base64
+import json
 from typing import Optional
 from unittest.mock import patch
 
@@ -134,7 +136,11 @@ def test_modo_entra_id_usa_easy_auth_sem_jwks():
             None,
             "email.informado@ache.com.br",
             settings,
-            client_principal_name="usuario.ficticio@biosintetica.com.br",
+            client_principal=base64.b64encode(
+                json.dumps(
+                    {"claims": [{"typ": "preferred_username", "val": "usuario.ficticio@biosintetica.com.br"}]}
+                ).encode()
+            ).decode(),
         )
 
     assert resolvido == "usuario.ficticio@biosintetica.com.br"

@@ -654,3 +654,45 @@ não só aos ~72 aprovados para o piloto (72 `ATIVO` / 2.087 `BLOQUEADO`,
 contagem real em `tb_perfil_portal` na mesma data). Ver
 `docs/context/known-issues.md`, entradas "RESOLVIDO (2026-09-23)" e "ALERTA
 — não ativar AUTH_MODE=entra_id em homologação ainda".
+
+## 2026-09-24 — STATUS_ACESSO publicado em hmg; virada de AUTH_MODE adiada
+
+Decisões desta etapa:
+
+1. **Onde fica a checagem de acesso.** A checagem fica em
+   `jwt_auth.py::resolver_email_autenticado()`, sobre `email_real`, e em
+   `POST /auth/login`, logo depois da senha conferir e antes de
+   `buscar_cadastro()`. Não fica em `resolver_contexto()`: todo chamador real
+   já passa para essa função o e-mail personificado (`X-Ver-Como`), e checar
+   ali olharia o propagandista visualizado, não quem está logado. A resposta é
+   um único helper, 403 `{"codigo": "ACESSO_BLOQUEADO", "detail": ...}`. Sem
+   linha em `tb_perfil_portal`, o acesso é negado.
+2. **Administrador vem de `tb_perfil_portal.PERFIL_ACESSO`.** `ADMIN_EMAILS`
+   foi removido do `config.py`. A consulta tenta primeiro o propagandista
+   (pela coluna do modo de autenticação, via `rep_matricula`) e depois
+   `tb_perfil_portal.REP_EMAIL` direto, para administradores sem
+   propagandista. Para eles, `REP_EMAIL` guarda a identidade do Entra ID tal
+   como recebida.
+3. **Frontend `entra_id`.** Foi reimplementado sobre `dev`, sem mesclar
+   `virada-entraid-front`. A sessão nunca vai para sessionStorage nesse modo:
+   no F5, a identidade é reconfirmada via cookie. O logout passa por
+   `/.auth/logout`. Um administrador sem propagandista cai no fallback
+   `GET /admin/sessao`. `ACESSO_BLOQUEADO` é detectado pelo código, não pelo
+   texto.
+4. **Deploy com `AUTH_MODE=senha`.** A Bárbara aceitou publicar a checagem
+   antes da virada, mesmo bloqueando os 25 usuários de `acessos.csv` (todos
+   `BLOQUEADO`), porque ninguém usa essas credenciais em hmg.
+5. **Configurações da virada.** `AUTH_REQUIRE_JWT` e `AUTH_EMAIL_CLAIM` não
+   mudam, porque não influenciam o modo `entra_id`. O que muda, junto e com
+   confirmação explícita da Bárbara: `AUTH_MODE=entra_id`, Easy Auth
+   `unauthenticatedClientAction=RedirectToLoginPage` e uma imagem gerada com
+   `VITE_AUTH_MODE=entra_id`. Alvo de rollback de imagem:
+   `53b8067-ranking-admin-menus-20260923`. O rollback de configuração
+   (`senha` + `AllowAnonymous`) já basta na maioria dos casos, porque a
+   imagem nova continua funcionando em modo senha.
+6. **Claim de identidade.** `upn` não existe no token da Aché. O claim certo é
+   `preferred_username`, nunca `emailaddress`. A correção do código espera a
+   confirmação do header real no Log Stream (ver known-issues de 24/09).
+7. **Execução.** As mudanças foram feitas direto pelo Claude Code, sem
+   delegar ao Codex CLI: `codex exec` não oferece um checkpoint de aprovação
+   real, como foi verificado antes nesta mesma sessão.

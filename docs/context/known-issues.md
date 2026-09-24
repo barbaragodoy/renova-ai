@@ -737,6 +737,126 @@ corretamente no lugar, ou com o controle de acesso certo.
 Decisão completa registrada em `docs/context/decisions-log.md`, entrada
 “2026-09-15 — Deploy da Task 170097 em homologação mantém AUTH_MODE=senha”.
 
+**Atualização 2026-09-24:** a condição (2) está resolvida. A checagem de
+`STATUS_ACESSO`/`PERFIL_ACESSO` foi implementada e publicada em hmg (imagem
+`b9342ea-status-acesso-debug-20260924`). Ela não ficou em
+`resolver_contexto()`, e sim em `jwt_auth.py::resolver_email_autenticado()`
+e `POST /auth/login`, sobre a identidade real. Ver decisions-log de 24/09.
+A condição (1) continua aberta, e surgiram duas pendências novas antes da
+virada: o fallback `upn` (entrada abaixo) e a imagem gerada sem
+`VITE_AUTH_MODE` (entrada abaixo).
+
+## ABERTO (2026-09-24) — claim `upn` não existe no token real da Aché
+
+`/.auth/me` com a conta `3gobarbara@ache.com.br` mostrou a lista completa de
+claims: nenhum `typ="upn"`. O login está em `preferred_username`
+(`3gobarbara@ache.com.br`). `emailaddress` traz outro valor
+(`barbara.godoy_terceiro@ache.com.br`) e **não** serve para comparar com
+`REP_LOGIN`: usar esse claim quebraria a identidade de qualquer usuário na
+mesma situação (terceiros, por exemplo).
+
+O fallback de `jwt_auth.py::_extrair_upn_do_client_principal()` procura só
+`upn`, então nunca acha nada nesse tenant. O caminho principal lê
+`X-MS-CLIENT-PRINCIPAL-NAME`, mas o valor real desse header ainda **não foi
+observado**: pode ser `preferred_username` ou o `name` de exibição
+("Barbara Godoy"), que seria inutilizável. O log temporário `EASY_AUTH_DEBUG`
+está publicado em hmg para capturar esse valor. A tentativa de 24/09 parou
+porque o Entra ID bloqueou o login (Smart Lockout ou política de horário).
+
+Correção prevista depois da evidência:
+- Se o header vier com `preferred_username`: trocar só o fallback, de `upn`
+  para `preferred_username`.
+- Se vier com `name`: deixar de confiar no header simples, decodificar
+  `X-MS-CLIENT-PRINCIPAL` e extrair `preferred_username` direto.
+
+**Evidência (24/09):** o buffer do Log Stream guardou 11 requisições
+autenticadas da Bárbara entre 05:25 e 05:38 UTC, anteriores ao bloqueio.
+Todas registraram `X-MS-CLIENT-PRINCIPAL-NAME='barbara.godoy_terceiro@ache.com.br'`,
+ou seja, o **`emailaddress`**. Esse caso não constava da lista acima e é pior
+que o `name`, porque tem forma de e-mail. O payload trazia
+`preferred_username='3gobarbara@ache.com.br'` e nenhum `upn`.
+
+**Corrigido localmente (24/09, sem commit):** `jwt_auth.py` não lê mais
+`X-MS-CLIENT-PRINCIPAL-NAME`. A identidade vem de `X-MS-CLIENT-PRINCIPAL`,
+pelo claim `preferred_username` e, na falta dele, por `upn`. Sem nenhum dos
+dois, responde 401. O log `EASY_AUTH_DEBUG` foi removido. Os testes cobrem
+o payload real e garantem que o header `-NAME` sozinho não autentica.
+
+## ABERTO (2026-09-24) — 3 administradores gravados com e-mail em vez do UPN
+
+Domínio não é o problema. `biosintetica.com.br` é domínio verificado no mesmo
+tenant da Aché. O caminho do propagandista corta no primeiro `@` e compara
+com `REP_LOGIN`, que é único e não se repete entre domínios. O problema é o
+**formato** gravado para administradores.
+
+O fallback de administrador (`status_acesso.py`) compara a identidade inteira
+recebida do Easy Auth com `tb_perfil_portal.REP_EMAIL`. Consulta de leitura
+ao Entra ID (`az ad user show`) em 24/09, para os 13 administradores:
+
+- **10 linhas estão gravadas com o UPN.** Exemplos: `3gobarbara@...`,
+  `alcaio@...`, `feorafael@...`. O UPN é um código de login, e o `mail` é
+  nome.sobrenome (`_terceiro` para terceiros). Isso vale para terceiros e
+  também para funcionários, e bate com o que se viu no token: o
+  `preferred_username` é o UPN, e o `emailaddress` é o `mail`.
+- **3 linhas estão gravadas com o `mail`, que não é o UPN:**
+
+| `REP_EMAIL` gravado | UPN real no Entra ID |
+|---|---|
+| `cezar.moreira@ache.com.br` | `CGMACezar@ache.com.br` |
+| `cezar.moreira@biosintetica.com.br` | `CGMACezar@ache.com.br` |
+| `eduardo.pavan@ache.com.br` | `PFEduardo@ache.com.br` |
+
+Com `AUTH_MODE=entra_id`, Cezar e Eduardo chegariam como `CGMACezar@...` e
+`PFEduardo@...`, não achariam linha e seriam bloqueados (sem linha, o acesso é
+negado). A comparação usa `LOWER()`, então as maiúsculas não importam.
+
+Correção recomendada: no dado, não no código. Gravar o UPN no `REP_EMAIL`
+dessas linhas de `tb_perfil_portal`. As linhas de e-mail podem ficar ou ser
+removidas, porque não fazem mal. Não se recomenda aceitar `emailaddress` como
+segunda chave: isso abriria outro identificador justamente no ponto de
+controle de acesso. Precisa ser feito antes da Fase 4.
+
+O padrão "UPN = código de login" também reforça a premissa do caminho do
+propagandista (prefixo do UPN = `REP_LOGIN`, que difere do prefixo do e-mail
+em 97% dos casos). Mas isso só fica confirmado com a captura do header real
+(Fase 2).
+
+## ABERTO (2026-09-24) — imagem não recebe `VITE_AUTH_MODE`
+
+O Dockerfile de `APP_RENOVAI` roda `npm run build` sem `ARG`/`ENV` para
+`VITE_AUTH_MODE`, e `.env` está no `.dockerignore`. Toda imagem sai com a
+tela de login por senha, inclusive a de 24/09. Na virada, trocar só
+`AUTH_MODE=entra_id` deixaria a tela pedindo senha e o backend respondendo
+404 em `POST /auth/login`. A imagem da virada precisa ser gerada com
+`VITE_AUTH_MODE=entra_id` (via `ARG` no Dockerfile ou arquivo de build
+versionado). **Corrigido localmente em 24/09** em
+`AcheInfo_Apps/APP_RENOVAI/Dockerfile`, com `ARG VITE_AUTH_MODE=senha` +
+`ENV` antes do `npm run build`, ainda sem commit. `vite build` com
+`VITE_AUTH_MODE=entra_id` gera o link `/.auth/login/aad`, e com `senha`, não.
+Imagem da virada: `az acr build ... --build-arg VITE_AUTH_MODE=entra_id`.
+
+## RISCO ACEITO (2026-09-24) — 25 usuários do piloto por senha bloqueados em hmg
+
+Os 25 e-mails de `acessos.csv` existem em `tb_propagandistas`, e **todos**
+estão `BLOQUEADO` em `tb_perfil_portal` (consulta real no Databricks em
+24/09). São uma população disjunta dos 72 `ATIVO`. Com a imagem de 24/09,
+`POST /auth/login` responde 403 `ACESSO_BLOQUEADO` para os 25, mesmo com a
+senha certa. A Bárbara aceitou esse efeito porque ninguém usa essas
+credenciais em homologação. Se o login por senha voltar a ser necessário
+antes da virada, é preciso liberar essas linhas em `tb_perfil_portal` ou
+publicar uma imagem sem a checagem no login por senha.
+
+## ABERTO (2026-09-24) — `renovai-local` atrás de `dev` em trabalho de terceiros
+
+A sincronização de 24/09 mostrou código que existe só em `AcheInfo_Apps/dev`:
+busca de médico (`App.tsx`/`Home.tsx`), reversão de aceite
+(`test_reverter.py` e o router correspondente), `ciclo_referencia` 202608 em
+`config.py`, branding `Ped.AI` (inclusive em `Header.tsx`/`MenuLateral.tsx`)
+e `test_gerar_recomendacoes.py`. Esse último tem 5 falhas que já existiam em
+`dev` (`KeyError: 'T0006'`), conferidas antes e depois da sincronização. As
+próximas sincronizações precisam de merge de 3 vias, e não de cópia de
+arquivo, até que isso seja trazido para `renovai-local`.
+
 ## PENDENTE — reverter unauthenticated-client-action depois do trabalho do Thiago
 
 Há uma decisão temporária de usar `AllowAnonymous` no Easy Auth de
@@ -745,6 +865,13 @@ Há uma decisão temporária de usar `AllowAnonymous` no Easy Auth de
 manter `AUTH_MODE=senha`; nunca ativar `entra_id` sem a barreira de
 autenticação da plataforma. Ver a entrada de 2026-09-16 em
 `docs/context/decisions-log.md`.
+
+Estado conferido em 24/09 via `az webapp auth show`:
+`requireAuthentication=true` e `unauthenticatedClientAction=AllowAnonymous`.
+Na virada (Fase 4), `AUTH_MODE=entra_id` e `RedirectToLoginPage` mudam
+juntos. No rollback, os dois voltam juntos (`senha` e `AllowAnonymous`),
+porque com `RedirectToLoginPage` até a tela de senha fica atrás do login da
+Microsoft.
 
 ## ABERTO — massa local ausente para testes de registro de envios
 

@@ -25,15 +25,60 @@ usuário antes de a requisição chegar ao FastAPI e injeta a identidade nos
 headers `X-MS-CLIENT-PRINCIPAL-NAME` e `X-MS-CLIENT-PRINCIPAL`.
 `AUTH_MODE=entra_id` não usa o caminho legado `AUTH_REQUIRE_JWT`/JWKS.
 
-O identificador corporativo confirmado é o UPN. A parte anterior ao primeiro
-`@`, sem domínio hardcoded, deve ser comparada com `REP_LOGIN` usando
-`LOWER()` dos dois lados. `AUTH_MODE=senha` permanece como default e continua
-comparando o e-mail da sessão com `REP_EMAIL`.
+A parte anterior ao primeiro `@` do identificador, sem domínio hardcoded, é
+comparada com `REP_LOGIN` usando `LOWER()` dos dois lados. `AUTH_MODE=senha`
+permanece como default e continua comparando o e-mail da sessão com
+`REP_EMAIL`.
 
-Bloqueio externo: `https://pedai.ache.com.br/.auth/login/aad/callback`
-precisa ser incluída como redirect URI no App Registration pelo time de
-infraestrutura. Isso não bloqueia desenvolvimento ou testes locais, mas
-impede validação end-to-end nesse domínio até a correção.
+**Claim real (24/09, via `/.auth/me` com a conta da Bárbara):** o claim
+`upn` **não existe** no token da Aché. O login está em `preferred_username`
+(`3gobarbara@ache.com.br`). Existe também `emailaddress`
+(`barbara.godoy_terceiro@ache.com.br`), valor diferente que **não** pode ser
+usado para comparar com `REP_LOGIN`. **Log Stream de hmg (24/09, 05:25 UTC):**
+`X-MS-CLIENT-PRINCIPAL-NAME` chega com o `emailaddress`, não com o login.
+Por isso `jwt_auth.py` ignora esse header e lê `preferred_username` (com
+`upn` como reserva) de `X-MS-CLIENT-PRINCIPAL`. Corrigido localmente em
+24/09, ainda sem commit. Ver `known-issues.md`.
+
+Redirect URI de `pedai.ache.com.br` e do domínio de hmg: **resolvido em
+23/09** (ambos cadastrados no App Registration).
+
+**STATUS_ACESSO/PERFIL_ACESSO implementados e publicados em hmg (24/09).**
+Checagem única em `auth/status_acesso.py`, aplicada sobre a identidade real
+(nunca a personificada) em `POST /auth/login` e em
+`jwt_auth.py::resolver_email_autenticado()`. `ADMIN_EMAILS` foi removido:
+administrador vem de `tb_perfil_portal.PERFIL_ACESSO`. Frontend `entra_id`
+implementado (`src/auth/entraId.ts`, `pages/AcessoBloqueado.tsx`), mas só
+ativo em build com `VITE_AUTH_MODE=entra_id` — ver pendências abaixo.
+
+Etapas da virada (roteiro da Bárbara em 24/09):
+
+| Fase | Situação |
+|---|---|
+| 1. Commit + sync com dev + suíte | Concluída em 24/09 |
+| 2. Confirmar header real no Log Stream | Concluída: logins das 05:25–05:38 UTC de 24/09, anteriores ao bloqueio |
+| 3. Corrigir extração de identidade conforme a evidência | Feita localmente em 24/09 (`preferred_username` do payload; log `EASY_AUTH_DEBUG` removido), sem commit |
+| 4. `AUTH_MODE=entra_id` + Easy Auth `RedirectToLoginPage`, juntos | Exige confirmação explícita da Bárbara |
+| 5. Prova com as 4 contas reais do George | Exige confirmação explícita; lista das contas ainda não recebida |
+
+Pendências que bloqueiam a Fase 4:
+- Commitar a Fase 3, sincronizar com `dev` e gerar nova imagem.
+- **Dockerfile:** `ARG VITE_AUTH_MODE=senha` foi adicionado em
+  `AcheInfo_Apps/APP_RENOVAI/Dockerfile` em 24/09, sem commit. O bundle muda
+  conforme o valor (conferido com `vite build`). A imagem da virada precisa
+  de `--build-arg VITE_AUTH_MODE=entra_id`. Sem isso, a tela pede senha e
+  `POST /auth/login` responde 404.
+- 3 linhas de administrador em `tb_perfil_portal` (Cezar ×2, Eduardo) estão
+  gravadas com o e-mail, não com o UPN. Com `entra_id`, elas não batem e esses
+  dois ficam bloqueados. Corrigir no dado. Ver `known-issues.md` (24/09).
+- `AUTH_REQUIRE_JWT` e `AUTH_EMAIL_CLAIM` **não** influenciam o modo
+  `entra_id` (o branch `entra_id` é resolvido antes, e `AUTH_EMAIL_CLAIM` só
+  vale no caminho JWKS legado). Não precisam mudar na virada.
+- Easy Auth hoje: `requireAuthentication=true` e
+  `unauthenticatedClientAction=AllowAnonymous`. Com `AllowAnonymous`,
+  qualquer requisição direta pode forjar `X-MS-CLIENT-PRINCIPAL-NAME`. Por
+  isso `AUTH_MODE=entra_id` só pode ser ativado **junto com**
+  `RedirectToLoginPage`.
 
 ## Comandos
 
@@ -370,3 +415,47 @@ O container iniciou sem erro e o probe ficou saudável. `/`, `/health`,
 `AllowAnonymous` foram preservados; o botão Microsoft continua visível e
 desabilitado. As senhas antigas deixam de autenticar novos logins, mas tokens
 já emitidos podem continuar válidos por até 60 minutos.
+
+## 2026-09-23 — Imagem publicada fora deste registro
+
+Conferido em 24/09 via `az webapp config container show`: antes do deploy
+abaixo, hmg rodava `app-renovai:53b8067-ranking-admin-menus-20260923`, não
+`4be1660` como a entrada acima deixaria supor. Esse deploy não foi registrado
+aqui. **É o alvo de rollback de imagem** do deploy de 24/09.
+
+## 2026-09-24 — Deploy de STATUS_ACESSO em homologação (Fases 1 e 2)
+
+Commits em `renovai-local` (`origin/main`): `61267ea` (schema local),
+`1491a2a` (backend STATUS_ACESSO), `876465c` (frontend entra_id), `86d823b`
+(branding `Ped.AI` no texto novo).
+
+Sincronizado em `AcheInfo_Apps/dev`: `2b3e0b4` (backend) e `b9342ea`
+(frontend). `dev` não tinha commits de terceiros. Houve merge de 3 vias em
+5 arquivos que já divergiam em `dev`. O trabalho que só existe em `dev` foi
+preservado: busca de médico em `App.tsx`, testes de reversão de aceite em
+`test_reverter.py`, `ciclo_referencia` 202608 em `config.py` e branding
+`Ped.AI`. `data/` e `docs/` são ignorados pelo Git em `APP_RENOVAI`, então o
+script `20_migrar_status_acesso.sql` existe lá só em disco. Todo o trabalho
+do Thiago que já estava mesclado em `dev` está na imagem. `virada-entraid-front`
+ficou de fora de propósito: o essencial dela foi reimplementado sobre `dev`.
+
+Suítes: `renovai-local` com 536 passed / 7 failed (conhecidas) / 15 skipped;
+`dev` com 526 passed / 12 failed / 15 skipped. As 5 falhas a mais em `dev`
+são de `test_gerar_recomendacoes.py`, arquivo que só existe lá, e foram
+confirmadas idênticas antes e depois da sincronização via `git stash`.
+`npm run build` limpo nos dois repositórios.
+
+Build ACR `cf1y` publicou `app-renovai:b9342ea-status-acesso-debug-20260924`.
+A imagem foi trocada em `asp-renoveai-hmg` e o app reiniciado; `/`, `/docs`
+e `/health` responderam 200. `AUTH_MODE=senha` e Easy Auth `AllowAnonymous`
+**inalterados** (conferido depois do deploy).
+
+Consequência aceita pela Bárbara: os 25 usuários de `acessos.csv` estão todos
+`BLOQUEADO` em `tb_perfil_portal`, então o login por senha deles em hmg
+passou a responder 403 `ACESSO_BLOQUEADO`. Ninguém usa essas credenciais em
+homologação.
+
+A imagem inclui o log temporário `EASY_AUTH_DEBUG` para a Fase 2. A Fase 2
+está parada porque o login Microsoft da Bárbara foi bloqueado pelo Entra ID
+(Smart Lockout ou política de horário, não confirmado). Nada foi alterado em
+`AUTH_MODE` nem no Easy Auth.

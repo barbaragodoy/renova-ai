@@ -15,7 +15,11 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.app.auth.context import StatusContexto, resolver_contexto
+from backend.app.auth.context import (
+    StatusContexto,
+    coluna_identidade_para_auth_mode,
+    resolver_contexto,
+)
 from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.agente.conhecimento import ConhecimentoKA
 from backend.app.agente.ferramentas import Contexto
@@ -57,7 +61,10 @@ def perfil_medico(
         raise HTTPException(status_code=400, detail="pergunta vazia")
 
     email = resolver_email_autenticado(authorization, None)
-    contexto = resolver_contexto(email)
+    contexto = resolver_contexto(
+        email,
+        coluna_identidade=coluna_identidade_para_auth_mode(),
+    )
     if contexto.status != StatusContexto.SETOR_RESOLVIDO:
         raise HTTPException(
             status_code=403,

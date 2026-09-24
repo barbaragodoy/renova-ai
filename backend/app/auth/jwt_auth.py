@@ -1,25 +1,115 @@
-"""
-Resolução do e-mail autenticado, com flag de dev.
+"""Resolução da identidade autenticada.
 
-AUTH_REQUIRE_JWT=false (padrão local) -> aceita o e-mail cru vindo de
-query/body, exatamente como hoje. Nenhum token é validado.
+- AUTH_MODE=senha: valida o JWT de sessão próprio do portal.
+- AUTH_MODE=entra_id: usa os headers injetados pelo App Service Easy Auth.
 
-AUTH_REQUIRE_JWT=true (produção) -> exige header `Authorization: Bearer
-<token>` válido (assinatura + audience + issuer via JWKS do Auth0/Entra ID) e
-extrai o e-mail da claim configurada em AUTH_EMAIL_CLAIM (ainda não
-confirmada com Flávio — ver CLAUDE.md). O e-mail recebido por query/body é
-ignorado nesse modo: só o token é fonte de verdade.
+O caminho AUTH_REQUIRE_JWT/JWKS permanece como legado, sem alteração. Ele
+não é usado quando AUTH_MODE=entra_id.
 """
-from typing import TYPE_CHECKING, Optional
+import base64
+import binascii
+import json
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import AsyncIterator, TYPE_CHECKING, Optional
 
 import jwt
-from fastapi import HTTPException
+from fastapi import Header, HTTPException
 from jwt import PyJWKClient
 
 if TYPE_CHECKING:
     from backend.app.config import Settings
 
 _jwks_clients: dict[str, PyJWKClient] = {}
+
+
+@dataclass(frozen=True)
+class CabecalhosEasyAuth:
+    client_principal_name: Optional[str] = None
+    client_principal: Optional[str] = None
+
+
+_CABECALHOS_VAZIOS = CabecalhosEasyAuth()
+_cabecalhos_easy_auth: ContextVar[CabecalhosEasyAuth] = ContextVar(
+    "cabecalhos_easy_auth",
+    default=_CABECALHOS_VAZIOS,
+)
+
+
+async def capturar_cabecalhos_easy_auth(
+    client_principal_name: Optional[str] = Header(
+        None, alias="X-MS-CLIENT-PRINCIPAL-NAME"
+    ),
+    client_principal: Optional[str] = Header(
+        None, alias="X-MS-CLIENT-PRINCIPAL"
+    ),
+) -> AsyncIterator[None]:
+    """Captura os headers do Easy Auth uma única vez por requisição."""
+    token = _cabecalhos_easy_auth.set(
+        CabecalhosEasyAuth(
+            client_principal_name=client_principal_name,
+            client_principal=client_principal,
+        )
+    )
+    try:
+        yield
+    finally:
+        _cabecalhos_easy_auth.reset(token)
+
+
+def _extrair_upn_do_client_principal(client_principal: str) -> Optional[str]:
+    """Decodifica o payload do Easy Auth e procura explicitamente o claim upn."""
+    try:
+        codificado = client_principal.strip()
+        codificado += "=" * (-len(codificado) % 4)
+        payload = json.loads(
+            base64.b64decode(codificado, validate=True).decode("utf-8")
+        )
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+    claims = payload.get("claims") if isinstance(payload, dict) else None
+    if not isinstance(claims, list):
+        return None
+
+    for claim in claims:
+        if not isinstance(claim, dict) or claim.get("typ") != "upn":
+            continue
+        valor = claim.get("val")
+        if isinstance(valor, str) and valor.strip():
+            return valor.strip()
+    return None
+
+
+def _resolver_upn_easy_auth(
+    client_principal_name: Optional[str] = None,
+    client_principal: Optional[str] = None,
+) -> str:
+    capturados = _cabecalhos_easy_auth.get()
+    principal_name = (
+        client_principal_name
+        if client_principal_name is not None
+        else capturados.client_principal_name
+    )
+    principal = (
+        client_principal
+        if client_principal is not None
+        else capturados.client_principal
+    )
+
+    upn = principal_name.strip() if principal_name else ""
+    if not upn and principal:
+        # PRECISA DE VALIDAÇÃO COM LOGIN REAL: confirmar se o ambiente da Aché
+        # sempre entrega o UPN puro em X-MS-CLIENT-PRINCIPAL-NAME ou se algum
+        # usuário exige este fallback pelo array de claims.
+        upn = _extrair_upn_do_client_principal(principal) or ""
+
+    if not upn:
+        raise HTTPException(
+            status_code=401,
+            detail="Identidade do Easy Auth ausente ou inválida.",
+        )
+    return upn
 
 
 def _get_jwks_client(domain: str) -> PyJWKClient:
@@ -53,23 +143,65 @@ def resolver_email_autenticado(
     authorization: Optional[str],
     email_param: Optional[str],
     settings: Optional["Settings"] = None,
+    *,
+    client_principal_name: Optional[str] = None,
+    client_principal: Optional[str] = None,
+    aplicar_admin: bool = True,
 ) -> str:
-    """Devolve o e-mail de quem está chamando, conforme o modo configurado.
+    """Devolve a identidade efetiva de quem está chamando, conforme o modo configurado.
 
-    Ordem de precedência:
+    Ordem de precedência para a identidade real:
 
     1. `AUTH_MODE=senha`: o token de sessão do portal é a única fonte. O e-mail
        recebido por query ou body é ignorado. Sem token válido, 401.
-    2. `AUTH_REQUIRE_JWT=true`: token corporativo validado por JWKS.
-    3. Caso contrário: aceita o e-mail cru de query/body. Esse caminho existe
+    2. `AUTH_MODE=entra_id`: UPN recebido dos headers do App Service Easy Auth.
+    3. `AUTH_REQUIRE_JWT=true`: caminho legado, validado por JWKS.
+    4. Caso contrário: aceita o e-mail cru de query/body. Esse caminho existe
        para desenvolvimento local e NÃO deve valer em ambiente publicado, pois
        permite que qualquer solicitante escolha a identidade que quiser.
+
+    Resolvida a identidade real, o acesso administrativo pode trocar o e-mail
+    devolvido pelo do propagandista que está sendo visualizado — ver
+    `auth/administrativo.py`. A troca só acontece para quem está na lista
+    configurada, e a conferência usa sempre a identidade real, nunca o header.
+
+    `aplicar_admin=False` devolve a identidade real sem essa troca. É o que os
+    próprios endpoints administrativos usam: com a troca aplicada, o
+    administrador perderia a permissão ao abrir o painel de alguém e não
+    conseguiria escolher um segundo propagandista sem reiniciar a sessão.
     """
     if settings is None:
         from backend.app.config import get_settings
 
         settings = get_settings()
 
+    email_real = _resolver_identidade_real(
+        authorization,
+        email_param,
+        settings,
+        client_principal_name=client_principal_name,
+        client_principal=client_principal,
+    )
+    if not aplicar_admin:
+        return email_real
+
+    # Importado aqui pelo mesmo motivo do import de `sessao` abaixo: o módulo
+    # administrativo depende deste para resolver a identidade real, e um import
+    # no topo fecharia o ciclo.
+    from backend.app.auth.administrativo import aplicar_personificacao
+
+    return aplicar_personificacao(email_real, settings)
+
+
+def _resolver_identidade_real(
+    authorization: Optional[str],
+    email_param: Optional[str],
+    settings: "Settings",
+    *,
+    client_principal_name: Optional[str] = None,
+    client_principal: Optional[str] = None,
+) -> str:
+    """Quem está autenticado de fato, sem considerar acesso administrativo."""
     if settings.auth_mode.lower() == "senha":
         # Importado aqui para evitar dependência circular: sessao importa este
         # módulo indiretamente pela cadeia de configuração.
@@ -85,6 +217,18 @@ def resolver_email_autenticado(
             raise HTTPException(status_code=401, detail="Sessão sem identidade.")
         return email
 
+    if settings.auth_mode.lower() == "entra_id":
+        # Confiar nestes headers é seguro em produção somente porque o App
+        # Service Easy Auth está configurado com "Require authentication":
+        # requisições não autenticadas são bloqueadas antes de chegar ao
+        # FastAPI. Se a API for exposta diretamente, como num ambiente local,
+        # qualquer cliente poderá forjar estes headers.
+        return _resolver_upn_easy_auth(
+            client_principal_name=client_principal_name,
+            client_principal=client_principal,
+        )
+
+    # Caminho legado AUTH_REQUIRE_JWT/JWKS. Intencionalmente intocado nesta task.
     if not settings.auth_require_jwt:
         if not email_param:
             raise HTTPException(status_code=422, detail="email é obrigatório (AUTH_REQUIRE_JWT=false).")

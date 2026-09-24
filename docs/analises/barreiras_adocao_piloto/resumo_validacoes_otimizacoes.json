@@ -1,0 +1,113 @@
+{
+  "gabarito": {
+    "n": 150,
+    "barreiras": 19
+  },
+  "sonnet_lote": {
+    "chamadas": 8,
+    "resultados": 150,
+    "divergencias": 8,
+    "por_posicao": {
+      "1": {
+        "n": 8,
+        "divergencias": 1
+      },
+      "2": {
+        "n": 8,
+        "divergencias": 0
+      },
+      "3": {
+        "n": 8,
+        "divergencias": 0
+      },
+      "4": {
+        "n": 8,
+        "divergencias": 1
+      },
+      "5": {
+        "n": 8,
+        "divergencias": 0
+      },
+      "6": {
+        "n": 8,
+        "divergencias": 1
+      },
+      "7": {
+        "n": 8,
+        "divergencias": 0
+      },
+      "8": {
+        "n": 8,
+        "divergencias": 0
+      },
+      "9": {
+        "n": 8,
+        "divergencias": 0
+      },
+      "10": {
+        "n": 8,
+        "divergencias": 0
+      },
+      "11": {
+        "n": 7,
+        "divergencias": 0
+      },
+      "12": {
+        "n": 7,
+        "divergencias": 1
+      },
+      "13": {
+        "n": 7,
+        "divergencias": 2
+      },
+      "14": {
+        "n": 7,
+        "divergencias": 0
+      },
+      "15": {
+        "n": 7,
+        "divergencias": 1
+      },
+      "16": {
+        "n": 7,
+        "divergencias": 0
+      },
+      "17": {
+        "n": 7,
+        "divergencias": 0
+      },
+      "18": {
+        "n": 7,
+        "divergencias": 0
+      },
+      "19": {
+        "n": 7,
+        "divergencias": 0
+      },
+      "20": {
+        "n": 7,
+        "divergencias": 1
+      }
+    },
+    "tokens_entrada": 29319,
+    "tokens_saida": 10908,
+    "estados": {
+      "EXTRAIDO": 8
+    }
+  },
+  "llama_filtro": {
+    "resultados": 150,
+    "concordancias": 138,
+    "taxa_concordancia": 0.92,
+    "falsos_negativos": 9,
+    "falsos_positivos": 3,
+    "casos_dificeis": 4,
+    "concordancias_dificeis": 3,
+    "taxa_concordancia_dificeis": 0.75,
+    "tokens_entrada": 51692,
+    "tokens_saida": 1650,
+    "estados": {
+      "EXTRAIDO": 150
+    }
+  }
+}

@@ -6,8 +6,9 @@ Dois modos, selecionados por `AUTH_MODE`:
   pelo time. O hash vem de `acessos.csv`, dentro da imagem; setor e nome
   continuam vindo de `tb_propagandistas`, que é a fonte única desses dados.
 - `entra_id`: a autenticação passa a ser do Microsoft Entra ID e este módulo
-  para de emitir token. A validação vira a de `auth/jwt_auth.py`, com
-  `AUTH_REQUIRE_JWT=true`, e `POST /auth/login` responde 404.
+  para de emitir token. O App Service Easy Auth autentica na plataforma e
+  `auth/jwt_auth.py` lê os headers `X-MS-CLIENT-PRINCIPAL-*`;
+  `POST /auth/login` responde 404.
 
 Ter o hash no arquivo e o cadastro na tabela mantém uma consequência útil:
 quem sai de `tb_propagandistas` perde o acesso na hora, sem precisar mexer no

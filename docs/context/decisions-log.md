@@ -454,6 +454,111 @@ Implementado e testado localmente (19 testes novos, suíte completa 360
 passed / 1 failed pré-existente / 3 skipped) — **nada commitado ainda**,
 decisão de divisão de commits fica para sessão seguinte.
 
+## 2026-09-15 — Task 170097: Entra ID usa App Service Easy Auth
+
+Confirmado que homologação já usa App Service Easy Auth com autenticação
+obrigatória e Token Store ativo. Não haverá MSAL customizado nem validação
+local do token corporativo.
+
+Decisões:
+- `AUTH_MODE=senha` permanece como default e mantém o JWT próprio do portal;
+- `AUTH_MODE=entra_id` confia nos headers injetados pelo Easy Auth;
+- header primário: `X-MS-CLIENT-PRINCIPAL-NAME`;
+- fallback: decodificar `X-MS-CLIENT-PRINCIPAL` e procurar claim `upn`;
+- o UPN é cortado no primeiro `@`, sem domínio fixo;
+- a identidade resultante é comparada com `REP_LOGIN`;
+- comparação via `LOWER()` nos dois lados, pois há registros em maiúsculas;
+- `AUTH_REQUIRE_JWT`, `AUTH_EMAIL_CLAIM` e JWKS pertencem ao desenho legado
+  e não participam do fluxo real de `entra_id`.
+
+Evidência de dados informada pelo time: 2.154 propagandistas com `REP_LOGIN`
+preenchido e único; 16 valores armazenados em maiúsculas.
+
+Bloqueio externo, fora do código: cadastrar
+`https://pedai.ache.com.br/.auth/login/aad/callback` como redirect URI.
+
+## 2026-09-15 — Deploy da Task 170097 em homologação mantém AUTH_MODE=senha
+
+Deploy da Task 170097 (login por Entra ID) em homologação: apenas o
+**CÓDIGO** foi publicado na imagem. `AUTH_MODE` permanece `senha`
+deliberadamente — o modo `entra_id` existe no código mas está **INATIVO**.
+
+Decisão consciente: não ativar até:
+
+1. o time de Entra ID cadastrar o redirect URI de
+   `pedai.ache.com.br` — erro `AADSTS50011` ainda pendente; e
+2. haver validação com login real confirmando qual header/formato o Easy
+   Auth realmente entrega: `X-MS-CLIENT-PRINCIPAL-NAME` diretamente ou
+   exercitando o fallback de decodificação do
+   `X-MS-CLIENT-PRINCIPAL`.
+
+Trocar `AUTH_MODE=entra_id` nas Application Settings do Web App
+`asp-renoveai-hmg` sem essas duas condições resolvidas desativaria o login
+por senha para todo o piloto, sem garantia de que o login por Entra ID
+funcione no lugar — risco de bloquear o acesso de todos os usuários
+simultaneamente.
+
+## 2026-09-16 — Easy Auth temporariamente anônimo em homologação
+
+Por sugestão do George, decidiu-se alterar temporariamente
+`unauthenticated-client-action` de `RedirectToLoginPage` para
+`AllowAnonymous` em `asp-renoveai-hmg`, para destravar o trabalho do Thiago
+na tela de login e no acabamento visual. **Status deste registro: decisão
+documentada; comando Azure ainda não executado.**
+
+Após a mudança, o Easy Auth deixará passar requisições autenticadas e não
+autenticadas sem impor login Microsoft. O endpoint `/.auth/login/aad`
+continuará disponível para iniciar esse fluxo manualmente.
+
+`AUTH_MODE=senha` deve permanecer ativo. As rotas de negócio que chamam
+`resolver_email_autenticado()` continuarão exigindo o JWT de sessão próprio;
+rotas como `/health`, `/docs` e a entrega do frontend não exigem essa sessão.
+É um retorno deliberado ao modelo de proteção das rotas de negócio anterior
+à imposição de login pelo Easy Auth, **com remoção da barreira adicional da
+plataforma**. Não ativar `AUTH_MODE=entra_id` enquanto `AllowAnonymous`
+estiver vigente: nesse modo, headers de identidade poderiam ser forjados.
+
+Reverter para `RedirectToLoginPage` assim que Thiago concluir a tela de
+login. O redirect URI de `pedai.ache.com.br` (`AADSTS50011`) permanece
+pendente e é uma questão separada.
+
+## 2026-09-17 — PRs 23635/23670 mesclados; autenticação de homologação preservada
+
+PR 23635 (`f82996d`) e PR 23670 (`54e3c0e`) aprovados e concluídos com
+squash em `dev`. Antes de cada conclusão, o diff literal entre as pontas
+remotas confirmou zero diferença fora de `APP_RENOVAI/`; os commits finais
+alteram apenas sete arquivos de frontend desse aplicativo. As branches de
+origem foram preservadas e não houve transição de work items.
+
+Decisão do usuário: deixar o botão Microsoft do PR 23635 visível por
+agora, mantendo o login por e-mail e senha. `AUTH_MODE=senha` e Easy Auth
+`AllowAnonymous` foram confirmados após os merges e não alterados. O link
+do botão é clicável e inicia `/.auth/login/aad`, mas esse fluxo ainda não
+cria a sessão exigida pelo portal no modo `senha`; o redirect URI de
+`pedai.ache.com.br` continua pendente. A imagem de homologação não mudou
+(`ed64685-entra-id-20260915`); build e deploy ficaram suspensos.
+
+`renovai-local` recebeu os sete arquivos com os hunks dos PRs e nenhuma
+alteração de backend. Sem commit. Validação: frontend `npm run lint` OK;
+suíte backend, ignorando o golden set com falha de coleta já documentada,
+476 passed / 5 failed preexistentes / 3 skipped.
+
+## 2026-09-17 — Preparação do deploy: botão inerte e senhas preservadas
+
+O usuário aprovou manter o botão Microsoft visível, porém sem ação, enquanto
+`AUTH_MODE=senha` continua ativo. O ajuste mínimo em `Login.tsx` substitui o
+link `/.auth/login/aad` por `<button disabled>` nos dois ambientes locais.
+Checagem TypeScript passou em ambos. Ainda não há commit, build ou deploy
+desse ajuste; Easy Auth deve permanecer em `AllowAnonymous`.
+
+Decisão para continuidade das credenciais: reutilizar o `acessos.csv` local
+confirmado pelo usuário como o do último build, sem executar
+`gerar_acesso_portal.py --limite 25`, que geraria novas senhas e hashes.
+`acessos.csv` e `senhas-portal-*.csv` estão fora do Git; o segundo também
+está fora do contexto Docker. O primeiro entra na imagem por `COPY` no
+Dockerfile quando o build for autorizado. Antes de commit, conferir que
+nenhum desses arquivos está rastreado ou preparado.
+
 ## Próximos passos técnicos (não iniciados)
 - Implementar `llm/genie_provider.py` com Databricks SDK (para promoção a
   produção) — ver `docs/promocao_producao.md`.
@@ -472,8 +577,80 @@ decisão de divisão de commits fica para sessão seguinte.
   (HUGO-08) — ver `docs/context/databricks-schema-real.md` sobre
   GD_MATRICULA/GD_NOME/GD_EMAIL/GD_LOGIN já embutidos em
   `tb_propagandistas`.
-- Claim JWT do Entra ID com e-mail: `preferred_username` ou `upn` — a
-  confirmar com Flávio. Configurável via `AUTH_EMAIL_CLAIM` em `config.py`,
-  não hardcoded.
+- ~~Claim JWT do Entra ID com e-mail: `preferred_username` ou `upn`~~ —
+  **RESOLVIDO em 2026-09-15**: o identificador é o UPN recebido pelo Easy
+  Auth. `AUTH_EMAIL_CLAIM` pertence somente ao caminho legado de JWKS.
 - Se `MOTIVO_RECOMENDACAO` deve bloquear re-sugestão no ciclo seguinte —
   aberto com George (ver seção 2026-07-23 acima).
+
+## 2026-09-17 — Build dos PRs 23635/23670 com botão Microsoft desabilitado
+
+O ajuste de `Login.tsx` foi commitado em `2982345` e enviado à `dev`.
+O build ACR `cf1u` terminou com sucesso e publicou
+`app-renovai:2982345-login-microsoft-inerte-20260917`.
+O `acessos.csv` existente foi usado no contexto da imagem sem regenerar senhas;
+`acessos.csv` e `senhas-portal-*.csv` seguem fora do Git.
+Homologação ainda usa `ed64685-entra-id-20260915`.
+`AUTH_MODE=senha` e Easy Auth `AllowAnonymous` foram reconfirmados.
+O deploy aguarda autorização separada.
+
+## 2026-09-17 — Deploy em homologação dos PRs 23635/23670
+
+A imagem `app-renovai:2982345-login-microsoft-inerte-20260917` foi configurada
+em `asp-renoveai-hmg`, seguida de restart. O Web App está `Running`.
+`AUTH_MODE=senha` e Easy Auth `AllowAnonymous` permaneceram iguais.
+`/`, `/docs` e `/health` responderam 200; `/auth/contexto` sem sessão, 401.
+`POST /auth/login` consta no OpenAPI. O bundle servido contém o formulário
+de e-mail e senha e o botão Microsoft desabilitado, sem link para Easy Auth.
+O Log Stream registrou erros da própria transmissão; a checagem HTTP passou.
+O login real com uma credencial existente ainda requer validação manual.
+
+## 2026-09-17 — Performance: medir antes de alterar
+
+Diagnóstico somente leitura encontrou latência no Web App sem saturação
+aparente de CPU ou fila HTTP. Ainda não há duração por rota nem por consulta
+SQL. Nenhuma decisão de cache, infraestrutura ou mudança de código foi tomada.
+
+## 2026-09-17 — Performance: evidência direta do Databricks
+
+O teste somente leitura no warehouse real reproduziu a lentidão sem
+alterar código ou configuração. A configuração observada de auto-stop
+é 5 minutos; o comentário antigo de 10 minutos em
+`backend/app/db/databricks_connection.py` está desatualizado.
+Não foi decidida nenhuma mudança de cache ou infraestrutura.
+
+## 2026-09-19 — Rotação integral das senhas do piloto e novo deploy
+
+Foi mantido o mesmo conjunto de 25 usuários e gerada uma senha nova para cada
+um. O arquivo de distribuição permanece somente no ambiente local, fora do
+contexto Docker; `acessos.csv` contém apenas hashes, continua fora do Git e foi
+incluído na imagem `app-renovai:4be1660-dualsource-senhas-20260919`.
+
+O deploy manteve `AUTH_MODE=senha`, Easy Auth `AllowAnonymous` e o botão
+Microsoft visível e desabilitado. A rotação invalida as senhas antigas para
+novos logins. Não foi implementada revogação de tokens: sessões existentes
+expiram pelo prazo configurado de 60 minutos.
+
+## 2026-09-23 — Bloqueio de redirect URI (Entra ID) confirmado resolvido
+
+Verificação direta no App Registration real (`az ad app show --id
+a702ad79-643d-4361-831a-95d7bca3b2b6 --query "web.redirectUris"`) confirmou
+que `https://pedai.ache.com.br/.auth/login/aad/callback` e
+`https://asp-renoveai-hmg.azurewebsites.net/.auth/login/aad/callback` já
+estão cadastrados. `GET /.auth/login/aad` em `asp-renoveai-hmg` redireciona
+corretamente para `login.microsoftonline.com` com `client_id`/`redirect_uri`
+corretos — sem indício de `AADSTS50011` nessa etapa.
+
+Isso resolve a condição 1 da decisão de 2026-09-15 acima. A condição 2 (login
+real confirmando o formato do header do Easy Auth) **não foi validada** nesta
+verificação — não havia credencial/browser disponíveis para completar um
+login interativo de ponta a ponta.
+
+Isso sozinho **não muda** a decisão de manter `AUTH_MODE=senha`: falta ainda
+a checagem de `STATUS_ACESSO`/`PERFIL_ACESSO` em `resolver_contexto()` (hoje
+inexistente — confirmado lendo o código), sem a qual ativar `entra_id` abriria
+acesso a todos os ~2.154 propagandistas reais com conta corporativa válida,
+não só aos ~72 aprovados para o piloto (72 `ATIVO` / 2.087 `BLOQUEADO`,
+contagem real em `tb_perfil_portal` na mesma data). Ver
+`docs/context/known-issues.md`, entradas "RESOLVIDO (2026-09-23)" e "ALERTA
+— não ativar AUTH_MODE=entra_id em homologação ainda".

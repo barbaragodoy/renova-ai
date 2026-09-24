@@ -47,7 +47,7 @@ from backend.app.db.databricks_connection import get_engine as _get_engine
 from backend.app.schemas.perfil import (
     AtribuicaoSetor,
     FRANQUIAS_POR_LINHA,
-    LimitePainelUpdateRequest,
+    LIMITE_PAINEL_PADRAO,
     PerfilResponse,
     PerfilUpdateRequest,
 )
@@ -86,7 +86,7 @@ _CAMPOS_PESSOA = """
            p.cargo, p.regional, p.uf, p.linha_nome,
            p.cidades_setor, p.especialidades_setor,
            perfil.nome_exibicao, perfil.foto_path,
-           perfil.dt_acesso_anterior, perfil.limite_painel,
+           perfil.dt_acesso_anterior,
            param.limite_painel_padrao
     FROM tb_propagandistas p
     LEFT JOIN tb_perfil_portal perfil
@@ -157,9 +157,36 @@ _SQL_COM_RESUMO = f"""
           AND CICLO_RECOMENDACAO = (
               SELECT MAX(CICLO_RECOMENDACAO) FROM tb_recomendacoes_painel_historico
           )
+    ),
+    -- Especialidades predominantes: as duas com mais médicos distintos
+    -- visitados nos últimos doze meses, nos setores da pessoa. Médico sem
+    -- especialidade cadastrada não concorre: em 4,3% dos setores ele ficaria
+    -- entre as duas primeiras como "(sem especialidade)", medido em
+    -- 18/09/2026, e isso não é informação para o propagandista.
+    --
+    -- O desempate por nome é o que torna a resposta estável entre chamadas
+    -- quando duas especialidades empatam em médicos.
+    visitados AS (
+        SELECT m.ESPECIALIDADE AS especialidade, COUNT(DISTINCT vc.UFCRM) AS medicos
+        FROM vw_visitacao_comentarios vc
+        JOIN tb_dim_medicos m ON m.UFCRM = vc.UFCRM
+        WHERE vc.SETOR IN (SELECT setor FROM pessoa)
+          AND vc.DATA_VISITA >= DATE_SUB(CURRENT_DATE(), 365)
+          AND m.ESPECIALIDADE IS NOT NULL AND m.ESPECIALIDADE <> ''
+        GROUP BY m.ESPECIALIDADE
+    ),
+    predominantes AS (
+        SELECT CONCAT_WS(',', COLLECT_LIST(especialidade)) AS especialidades_predominantes
+        FROM (
+            SELECT especialidade
+            FROM visitados
+            ORDER BY medicos DESC, especialidade
+            LIMIT 2
+        )
     )
-    SELECT pessoa.*, painel.medicos_no_painel, pendentes.recomendacoes_pendentes
-    FROM pessoa CROSS JOIN painel CROSS JOIN pendentes
+    SELECT pessoa.*, painel.medicos_no_painel, pendentes.recomendacoes_pendentes,
+           predominantes.especialidades_predominantes
+    FROM pessoa CROSS JOIN painel CROSS JOIN pendentes CROSS JOIN predominantes
     ORDER BY pessoa.setor
 """
 
@@ -244,12 +271,12 @@ def resolver_perfil(email: str) -> PerfilResponse:
         dt_acesso_anterior=primeira["dt_acesso_anterior"],
         medicos_no_painel=medicos,
         recomendacoes_pendentes=pendentes,
-        # Mesmo COALESCE do notebook de geração. Quando ninguém personalizou,
-        # a coluna é nula e o valor em vigor é o padrão — lido de
-        # tb_renovai_parametros no mesmo SELECT (CROSS JOIN em
-        # _CAMPOS_PESSOA), não mais um literal 318 em Python.
-        limite_painel=primeira.get("limite_painel") or primeira.get("limite_painel_padrao"),
-        limite_painel_personalizado=primeira.get("limite_painel") is not None,
+        # Só o padrão de tb_renovai_parametros, lido no mesmo SELECT. A coluna
+        # LIMITE_PAINEL de tb_perfil_portal não é mais consultada: a
+        # personalização por propagandista saiu em 18/09/2026.
+        limite_painel=primeira.get("limite_painel_padrao") or LIMITE_PAINEL_PADRAO,
+        # Ausente no caminho sem resumo, e aí a lista fica vazia.
+        especialidades_predominantes=_lista(primeira.get("especialidades_predominantes")),
         atribuicoes=[
             AtribuicaoSetor(
                 setor=linha["setor"],
@@ -417,82 +444,3 @@ def put_perfil(
 ):
     """Edita o nome de exibição. `nome` nulo ou vazio desfaz a edição."""
     return gravar_nome(resolver_email_autenticado(authorization, email), body.nome)
-
-
-def gravar_limite_painel(email: str, limite: Optional[int]) -> PerfilResponse:
-    """Grava o limite do painel da pessoa em `tb_perfil_portal`.
-
-    `limite` nulo volta ao padrão: a coluna é limpa e a leitura cai no
-    COALESCE, mesmo desenho já usado no nome de exibição.
-
-    O MERGE lista as colunas uma a uma em vez de `UPDATE SET *` porque a
-    linha guarda também NOME_EXIBICAO e FOTO_PATH, escritos por outros
-    fluxos. Um update amplo apagaria o nome editado de quem só quis mexer no
-    tamanho do painel.
-
-    A alteração fica auditada: LIMITE_ALTERADO_POR guarda a matrícula de quem
-    mexeu e LIMITE_DT_ALTERACAO o momento. Como o limite muda o corte que o
-    motor aplica no ciclo seguinte, saber quem mudou e quando é o que permite
-    explicar depois por que o painel de alguém encolheu ou cresceu.
-    """
-    with _get_engine().connect() as conn:
-        cadastro = conn.execute(
-            text(
-                "SELECT rep_matricula FROM tb_propagandistas "
-                "WHERE LOWER(rep_email) = LOWER(:email) LIMIT 1"
-            ),
-            {"email": email},
-        ).mappings().fetchone()
-
-        if cadastro is None:
-            raise HTTPException(status_code=404, detail=_PERFIL_NAO_ENCONTRADO)
-
-        conn.execute(
-            text("""
-                MERGE INTO tb_perfil_portal AS destino
-                USING (SELECT LOWER(:email) AS rep_email) AS origem
-                   ON destino.rep_email = origem.rep_email
-                WHEN MATCHED THEN UPDATE SET
-                    rep_matricula = :matricula,
-                    limite_painel = :limite,
-                    limite_alterado_por = :matricula,
-                    limite_dt_alteracao = current_timestamp
-                WHEN NOT MATCHED THEN INSERT
-                    (rep_email, rep_matricula, nome_exibicao,
-                     nome_origem_na_edicao, foto_path, dt_atualizacao,
-                     limite_painel, limite_alterado_por, limite_dt_alteracao)
-                    VALUES (LOWER(:email), :matricula, NULL,
-                            NULL, NULL, current_timestamp,
-                            :limite, :matricula, current_timestamp)
-            """),
-            {
-                "email": email,
-                "matricula": cadastro["rep_matricula"],
-                "limite": limite,
-            },
-        )
-        conn.commit()
-
-    return resolver_perfil(email)
-
-
-@perfil_router.put("/perfil/limite-painel", response_model=PerfilResponse)
-def put_limite_painel(
-    body: LimitePainelUpdateRequest,
-    email: Optional[str] = Query(
-        None,
-        description=(
-            "E-mail (modo dev, AUTH_REQUIRE_JWT=false). "
-            "Ignorado se AUTH_REQUIRE_JWT=true."
-        ),
-    ),
-    authorization: Optional[str] = Header(None),
-):
-    """Altera o limite do painel. `limite` nulo volta ao padrão de 318.
-
-    A faixa aceita é validada no corpo da requisição, não aqui: um valor fora
-    dela devolve 422 antes de chegar ao banco.
-    """
-    return gravar_limite_painel(
-        resolver_email_autenticado(authorization, email), body.limite
-    )

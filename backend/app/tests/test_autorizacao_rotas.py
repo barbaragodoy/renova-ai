@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from backend.app.auth import sessao as modulo_sessao
 from backend.app.auth.jwt_auth import resolver_email_autenticado
@@ -116,21 +117,32 @@ def test_token_expirado_e_recusado(modo_senha):
 # ------------------------------------------------------------- outros modos
 
 
-def test_modo_entra_id_continua_usando_o_fluxo_corporativo():
-    """Trocar AUTH_MODE não pode desligar a validação do token corporativo."""
-    settings = Settings(auth_mode="entra_id", auth_require_jwt=True, auth0_domain="x.auth0.com")
-
-    with pytest.raises(HTTPException) as erro:
-        resolver_email_autenticado(None, "aline.garcia@ache.com.br", settings)
-    assert erro.value.status_code == 401
-
-
-def test_modo_local_aceita_email_cru():
-    """Comportamento preservado para desenvolvimento local."""
-    settings = Settings(auth_mode="local", auth_require_jwt=False)
-    assert resolver_email_autenticado(None, "aline.garcia@ache.com.br", settings) == (
-        "aline.garcia@ache.com.br"
+def test_modo_entra_id_usa_easy_auth_sem_jwks():
+    settings = Settings(
+        auth_mode="entra_id",
+        auth_require_jwt=True,
+        auth0_domain="legado.auth0.com",
     )
+
+    with patch("backend.app.auth.jwt_auth._get_jwks_client") as jwks:
+        resolvido = resolver_email_autenticado(
+            None,
+            "email.informado@ache.com.br",
+            settings,
+            client_principal_name="usuario.ficticio@biosintetica.com.br",
+        )
+
+    assert resolvido == "usuario.ficticio@biosintetica.com.br"
+    jwks.assert_not_called()
+
+
+def test_auth_mode_rejeita_valor_fora_do_contrato():
+    with pytest.raises(ValidationError):
+        Settings(auth_mode="local")
+
+
+def test_auth_mode_continua_senha_por_padrao():
+    assert Settings.model_fields["auth_mode"].default == "senha"
 
 
 # ------------------------------------------------------- rotas gerenciais

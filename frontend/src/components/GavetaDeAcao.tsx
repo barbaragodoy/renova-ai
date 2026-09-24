@@ -46,6 +46,7 @@ export function GavetaDeAcao({
   frase,
   onFechar,
   onResolvida,
+  passoInicial = "escolha",
 }: {
   nome: string;
   idRecomendacao: string;
@@ -59,9 +60,13 @@ export function GavetaDeAcao({
   frase: string | null;
   onFechar: () => void;
   onResolvida: (statusNovo: string | null) => void;
+  /** Passo em que a gaveta abre. "escolha" mostra aceitar e desconsiderar;
+   *  "motivo" pula direto para a lista de motivos da desconsideração. O card
+   *  do médico no Ranking usa os dois, um por botão, desde 18/09/2026. */
+  passoInicial?: "escolha" | "motivo";
 }) {
   type Passo = "escolha" | "motivo" | "bloqueio" | "pronto";
-  const [passo, setPasso] = useState<Passo>("escolha");
+  const [passo, setPasso] = useState<Passo>(passoInicial);
   const [motivo, setMotivo] = useState<MotivoDesconsideracao | null>(null);
   const [textoOutros, setTextoOutros] = useState("");
   const [bloquear, setBloquear] = useState<boolean | null>(null);
@@ -143,12 +148,12 @@ export function GavetaDeAcao({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-end"
+      className="fixed inset-0 z-[60] flex items-end px-3"
       style={{ background: "rgba(0,0,0,0.45)" }}
       onClick={onFechar}
     >
       <div
-        className="flex max-h-[92vh] w-full flex-col rounded-t-3xl bg-[var(--color-card)]"
+        className="flex max-h-[92vh] w-full flex-col rounded-t-xl bg-[var(--color-card)]"
         onClick={(evento) => evento.stopPropagation()}
         role="dialog"
         aria-modal="true"

@@ -677,6 +677,120 @@ automatizado bate na API real — ver `test_whatsapp_service.py`), mas
 quem for rodar `data/scripts/testar_envio_whatsapp_sandbox.py` precisa
 confirmar que as variáveis estão visíveis no shell usado para isso.
 
+## NOTA DE SEGURANÇA — headers do Easy Auth exigem proteção da plataforma — Task 170097
+
+No modo `AUTH_MODE=entra_id`, o backend confia em
+`X-MS-CLIENT-PRINCIPAL-NAME` e, como fallback,
+`X-MS-CLIENT-PRINCIPAL`. Isso é seguro em homologação/produção somente
+enquanto o App Service Easy Auth estiver configurado com
+`Require authentication`, bloqueando requisições não autenticadas antes do
+FastAPI.
+
+Se a API for exposta diretamente — inclusive localmente — esses headers
+podem ser forjados pelo cliente. Portanto, `AUTH_MODE=entra_id` não deve ser
+tratado como proteção suficiente sem Easy Auth na frente.
+
+**PRECISA DE VALIDAÇÃO COM LOGIN REAL:** confirmar se
+`X-MS-CLIENT-PRINCIPAL-NAME` sempre contém o UPN puro no ambiente da Aché ou
+se o fallback pelo claim `upn` de `X-MS-CLIENT-PRINCIPAL` é exercitado.
+
+`AUTH_EMAIL_CLAIM=preferred_username` está desatualizado, mas não participa
+do fluxo real de `entra_id`. Ele pertence somente ao caminho legado
+`AUTH_REQUIRE_JWT`/JWKS e fica intocado nesta task.
+
+## ABERTO — caminho legado JWKS não valida issuer como documentado
+
+`auth/jwt_auth.py::_extrair_email_do_token()` informa no comentário que
+valida issuer, mas a chamada de `jwt.decode()` não recebe `issuer=`.
+Esse caminho é legado e não é usado por `AUTH_MODE=entra_id`; registrado
+para correção futura, sem alteração na Task 170097.
+
+## RESOLVIDO (2026-09-23) — redirect URI de pedai.ache.com.br
+
+Confirmado via `az ad app show --id a702ad79-643d-4361-831a-95d7bca3b2b6
+--query "web.redirectUris"` que `https://pedai.ache.com.br/.auth/login/aad/callback`
+e `https://asp-renoveai-hmg.azurewebsites.net/.auth/login/aad/callback` já
+estão registrados no App Registration. `GET /.auth/login/aad` em
+`asp-renoveai-hmg` redireciona corretamente para
+`login.microsoftonline.com` com `client_id`/`redirect_uri` batendo com o
+registrado — sem sinal de `AADSTS50011` nessa etapa. Não foi completado um
+login interativo real de ponta a ponta (sem credencial/browser disponível
+nesta verificação), então a condição 2 da decisão de 15/09/2026 abaixo
+("validação com login real confirmando qual header o Easy Auth entrega")
+continua em aberto — só o bloqueio externo do redirect URI está resolvido.
+
+## ALERTA — não ativar AUTH_MODE=entra_id em homologação ainda
+
+A imagem pode conter o código da Task 170097, mas `AUTH_MODE` deve permanecer
+`senha`. O bloqueio de redirect URI foi resolvido (ver entrada acima,
+2026-09-23), mas isso sozinho não autoriza a virada: falta (1) validar um
+login real confirmando o formato do header do Easy Auth, e (2) implementar a
+checagem de `STATUS_ACESSO`/`PERFIL_ACESSO` — hoje `resolver_contexto()` só
+confere `tb_propagandistas`, sem olhar status de acesso, então ativar
+`entra_id` sem essa checagem abriria o portal para os ~2.154 propagandistas
+reais com conta corporativa válida, não só os ~72 aprovados para o piloto
+(72 `ATIVO`, 2.087 `BLOQUEADO`, contagem real em `tb_perfil_portal` conferida
+em 2026-09-23). Ativar `entra_id` sem essas duas condições resolvidas
+desativaria o login por senha sem garantia de que o Entra ID funcione
+corretamente no lugar, ou com o controle de acesso certo.
+
+Decisão completa registrada em `docs/context/decisions-log.md`, entrada
+“2026-09-15 — Deploy da Task 170097 em homologação mantém AUTH_MODE=senha”.
+
+## PENDENTE — reverter unauthenticated-client-action depois do trabalho do Thiago
+
+Há uma decisão temporária de usar `AllowAnonymous` no Easy Auth de
+`asp-renoveai-hmg` para permitir o trabalho na tela de login. Reverter para
+`RedirectToLoginPage` após a conclusão desse trabalho. Enquanto isso,
+manter `AUTH_MODE=senha`; nunca ativar `entra_id` sem a barreira de
+autenticação da plataforma. Ver a entrada de 2026-09-16 em
+`docs/context/decisions-log.md`.
+
+## ABERTO — massa local ausente para testes de registro de envios
+
+Quatro testes de `test_registro_envio.py` dependem de massa previamente
+carregada no Postgres local: recomendações reais para `REP005`, `REP006`
+e `REP008`, além dos grupos-piloto `WHATSAPP`, `EMAIL` e `CONTROLE`.
+
+Sem essa carga, os testes falham antes de exercitar as operações que
+pretendem validar. Em 15/09/2026, as alterações da Task 170097 foram
+guardadas com `git stash` e os quatro testes foram executados contra o
+código anterior; todos falharam com as mesmas mensagens. Portanto, trata-se
+de uma pendência preexistente da massa local, sem relação com a implementação
+de autenticação por Entra ID. Não corrigida nesta task.
+
+## ABERTO — botão Microsoft visível ainda não completa o login do portal
+
+O PR 23635, mesclado em 17/09/2026, adiciona um link ativo para
+`/.auth/login/aad` na tela que também mostra o formulário de e-mail e
+senha. Em homologação, `AUTH_MODE=senha` continua ativo e Easy Auth está
+em `AllowAnonymous`; mesmo após uma autenticação Microsoft, o frontend
+não cria o JWT de sessão próprio exigido pelas rotas de negócio. O redirect
+URI de `pedai.ache.com.br` foi confirmado registrado em 2026-09-23 (ver
+entrada acima), então esse risco específico de `AADSTS50011` não se aplica
+mais — mas o login por Entra ID continua inativo por `AUTH_MODE=senha`. O
+usuário decidiu manter o botão visível por enquanto,
+sem ativar `AUTH_MODE=entra_id`. Não confundir o rótulo "Funcionalidade em
+desenvolvimento" com um botão desabilitado: o link é clicável.
+
+## 2026-09-17 — Estado do botão Microsoft antes do próximo build
+
+Há um ajuste local, ainda sem commit nem deploy, que mantém o botão Microsoft
+visível e o torna desabilitado. O link ativo incluído no PR 23635 permanece na `dev` remota até o commit
+do ajuste; o novo comportamento só chegará à homologação após build e troca
+de imagem.
+`AUTH_MODE=senha` e Easy Auth `AllowAnonymous` continuam necessários.
+
+## 2026-09-17 — baseline após sincronização dos PRs 23635/23670
+
+A coleta da suíte completa continua bloqueada pelo caminho incorreto de
+`test_golden_set.py` descrito acima. Com esse arquivo ignorado, o resultado
+foi 476 passed / 5 failed / 3 skipped. As falhas são
+`test_e2e_05_novo_ciclo_recorrencia` e os quatro testes de
+`test_registro_envio.py` dependentes de massa local ausente, todos
+preexistentes e documentados. A checagem TypeScript do frontend
+(`npm run lint`) passou. Nenhuma falha nova foi identificada.
+
 ## Próxima ação
 1. ~~`NOME_MEDICO` nulo em `ENTRADA_PAINEL`~~ — **RESOLVIDO NA ORIGEM em
    2026-07-31**, ver seção acima. Nenhuma ação pendente neste item; o
@@ -695,3 +809,89 @@ confirmar que as variáveis estão visíveis no shell usado para isso.
 5. Aplicar a mesma correção do item 2 (`MAX()` dinâmico) em
    `routers/gerencial.py` — mesmo known-issue, ainda não corrigido lá
    (ver seção "RESOLVIDO — default estático de CICLO_REFERENCIA" acima).
+
+## 2026-09-17 — Build dos PRs 23635/23670 com botão Microsoft desabilitado
+
+O ajuste de `Login.tsx` foi commitado em `2982345` e enviado à `dev`.
+O build ACR `cf1u` terminou com sucesso e publicou
+`app-renovai:2982345-login-microsoft-inerte-20260917`.
+O `acessos.csv` existente foi usado no contexto da imagem sem regenerar senhas;
+`acessos.csv` e `senhas-portal-*.csv` seguem fora do Git.
+Homologação ainda usa `ed64685-entra-id-20260915`.
+`AUTH_MODE=senha` e Easy Auth `AllowAnonymous` foram reconfirmados.
+O deploy aguarda autorização separada.
+
+## 2026-09-17 — Deploy em homologação dos PRs 23635/23670
+
+A imagem `app-renovai:2982345-login-microsoft-inerte-20260917` foi configurada
+em `asp-renoveai-hmg`, seguida de restart. O Web App está `Running`.
+`AUTH_MODE=senha` e Easy Auth `AllowAnonymous` permaneceram iguais.
+`/`, `/docs` e `/health` responderam 200; `/auth/contexto` sem sessão, 401.
+`POST /auth/login` consta no OpenAPI. O bundle servido contém o formulário
+de e-mail e senha e o botão Microsoft desabilitado, sem link para Easy Auth.
+O Log Stream registrou erros da própria transmissão; a checagem HTTP passou.
+O login real com uma credencial existente ainda requer validação manual.
+
+## 2026-09-17 — ABERTO: latência de login e listas em homologação
+
+O login real funciona. Em janelas de 5 minutos às 15:25, 15:30, 15:45 e
+16:00 UTC, as médias de resposta foram 11,58, 9,75, 13,74 e 8,98 s, com
+12, 4, 2 e 4 requisições e zero 5xx. CPU média do plano nessas janelas:
+14,4%, 8,8%, 8,6% e 8,6%; memória ~66–67%; fila HTTP zero.
+
+No código, o login faz PBKDF2 e uma consulta de cadastro ao Databricks;
+o hash sintético local levou mediana de 0,17 s. A primeira abertura de
+Recomendações dispara duas listas e um perfil, totalizando cerca de 10–11
+consultas SQL. O cliente mantém abas visitadas montadas, portanto voltar
+a uma aba não deve repetir essas buscas sem outra ação.
+
+`/`, `/health` e `/docs` tiveram mediana próxima de 0,78 s fim a fim
+no terminal local, incluindo ~0,58 s de TLS. O JavaScript principal tem
+311.187 bytes e foi servido sem compressão; compressão gzip local o
+reduziria para cerca de 90.838 bytes. O arquivo tem cache longo.
+
+Não há logs HTTP nem diagnóstico por rota habilitados. Esta sessão não
+dispõe de CLI ou variáveis Databricks para medir duração/espera das
+consultas no warehouse. A hipótese principal é custo acumulado das
+idas ao Databricks, ainda não comprovada por consulta. Medir tempo por
+rota e etapa SQL sem registrar textos, parâmetros ou identidade antes
+de escolher cache ou alterar infraestrutura.
+
+## 2026-09-17 — Complemento: medições no Databricks real
+
+O `.env` de `renovai-local` foi usado apenas em processos de teste, sem
+exibir valores. O código executado veio da cópia Aché implantada.
+Criar a engine levou 3,82 s; primeira conexão 3,33 s e SELECT 1,
+0,75 s. Com pool aquecido, conexões levaram 0,34–0,37 s e SELECT 1,
+~0,35 s. Consulta de cadastro: 1,02 s; perfil: 5,38 s (uma SQL de
+5,04 s); entrada: 4,94 s (quatro SQL); revisão: 4,71 s (seis SQL);
+ranking: 3,84 s (três SQL). Abertura paralela de entrada, revisão
+e perfil: 5,35 s inicialmente e 3,48 s com pool aquecido.
+
+Uma amostra com recomendações pendentes trouxe 36 itens de entrada em
+3,25 s e 50 de revisão entre 224 em 4,52 s. O warehouse está em
+2X-Small serverless, auto-stop de 5 minutos. Seu histórico mostrou
+consultas de até 20,45 s e eventos de fila de provisionamento; o texto
+SQL está oculto para esta identidade, impedindo mapear cada evento
+histórico a uma rota. Estas medições confirmam custo no Databricks;
+o peso exato de cada rota em homologação ainda requer correlação.
+
+## 2026-09-17 — Comparação do Perfil com e sem resumos
+
+No Databricks real, para três identidades mantidas apenas em memória,
+as consultas completas levaram 4,76 s, 3,40 s e 2,82 s (mediana 3,40 s).
+As consultas sem os resumos de ranking/recomendações levaram 2,44 s,
+1,21 s e 1,09 s (mediana 1,21 s). Recomendações usa o Perfil apenas
+para nome, cidade e UF no cabeçalho; a aba Usuário usa os resumos.
+Uma opção é pedir o Perfil sem resumo somente em Recomendações,
+preservando a resposta completa na aba Usuário. Ainda não aplicado.
+
+## 2026-09-19 — Rotação de senha não revoga sessão já emitida
+
+Homologação usa a imagem
+`app-renovai:4be1660-dualsource-senhas-20260919`, com novos hashes para os 25
+usuários do piloto. Senhas antigas são rejeitadas em novos logins. O JWT de
+sessão não consulta novamente o hash após ser emitido, então uma sessão aberta
+antes do deploy pode permanecer válida por até `SESSAO_TOKEN_MINUTOS=60`.
+Encerramento imediato de todas as sessões exigiria rotação do segredo JWT ou
+um mecanismo explícito de revogação; nenhuma dessas mudanças foi feita.

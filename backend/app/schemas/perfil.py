@@ -59,18 +59,18 @@ FRANQUIAS_POR_LINHA = {
 }
 
 
-# Padrão do limite do painel. Não é escolha do portal: é o mesmo 318 que o
-# notebook de geração aplica no COALESCE(pp.LIMITE_PAINEL, 318). Mudar aqui
-# sem mudar lá faria a tela prometer um corte que o motor não aplica.
-LIMITE_PAINEL_PADRAO = 318
-
-# Faixa aceita na edição. Medido em 20/08/2026 sobre
-# tb_ranking_medicos_validacao, ciclo 202608: o menor painel real tem 251
-# médicos, a mediana 407 e o maior 596. O teto de 1000 dá folga sobre o maior
-# valor observado; o piso de 50 impede que alguém zere o próprio painel com um
-# clique e fique sem recomendação nenhuma no ciclo seguinte.
-LIMITE_PAINEL_MIN = 50
-LIMITE_PAINEL_MAX = 1000
+# Recuo do limite do painel quando tb_renovai_parametros não responder. A
+# fonte é a tabela, coluna LIMITE_PAINEL_PADRAO; este literal só evita a tela
+# ficar sem valor num caminho de erro.
+#
+# Desde 18/09/2026 o limite é único, não personalizável: George decidiu, ao
+# alinhar o portal ao protótipo, que a personalização por propagandista sai
+# e o padrão passa a 300. A coluna LIMITE_PAINEL de tb_perfil_portal deixou de
+# ser lida em todos os pontos do backend. O notebook de geração das
+# recomendações (nb_dev_criacao_renovai_tb_recomendacoes_painel_hist) ainda
+# tem o 318 em COALESCE e precisa ser alinhado pelo Hugo; ver a pendência em
+# docs/context/known-issues.md.
+LIMITE_PAINEL_PADRAO = 300
 
 
 class AtribuicaoSetor(BaseModel):
@@ -147,13 +147,24 @@ class PerfilResponse(BaseModel):
     medicos_no_painel: Optional[int] = None
     recomendacoes_pendentes: Optional[int] = None
 
-    # Limite do painel. `limite_painel` é o valor em vigor: o personalizado
-    # quando existe, senão LIMITE_PAINEL_PADRAO. O notebook que gera as
-    # recomendações lê a mesma coluna com o mesmo COALESCE
-    # (nb_dev_criacao_renovai_tb_recomendacoes_painel_hist), então tela e
-    # motor concordam por construção, sem segunda fonte de verdade.
+    # Limite do painel em vigor, único para todos, lido de
+    # tb_renovai_parametros. Fica na resposta por ser dado do motor que a
+    # tela pode citar; a edição por propagandista saiu em 18/09/2026.
     limite_painel: int = LIMITE_PAINEL_PADRAO
-    limite_painel_personalizado: bool = False
+
+    # As duas especialidades com mais médicos distintos visitados nos últimos
+    # doze meses, somando os setores da pessoa. É o campo "Especialidades
+    # predominantes" do protótipo, decisão de George em 18/09/2026.
+    #
+    # Por médicos distintos e não por número de visitas: é a regra que ele
+    # fechou em 05/08/2026 para a ordenação de especialidades, e resiste a um
+    # médico visitado dez vezes puxar a especialidade dele para o topo. Medido
+    # em 18/09/2026: as duas definições coincidem em 78,4% dos 2.634 setores
+    # com visita, então a escolha muda o que aparece em um a cada cinco.
+    #
+    # Vazio quando não há visita no período ou quando a consulta de resumo
+    # falha; a tela mostra não disponível.
+    especialidades_predominantes: List[str] = []
 
     atribuicoes: List[AtribuicaoSetor]
 
@@ -194,21 +205,3 @@ class PerfilUpdateRequest(BaseModel):
             return None
         limpo = valor.strip()
         return limpo or None
-
-
-
-class LimitePainelUpdateRequest(BaseModel):
-    """Corpo do `PUT /auth/perfil/limite-painel`.
-
-    Rota separada do `PUT /auth/perfil` de propósito. Naquela, `nome` nulo
-    significa "desfazer a edição do nome"; se o limite entrasse no mesmo
-    corpo, salvar só o limite apagaria o nome editado da pessoa. Separar
-    evita esse acoplamento.
-
-    `limite` nulo volta ao padrão: a gravação limpa LIMITE_PAINEL e a leitura
-    cai sozinha no COALESCE, mesmo padrão já usado no nome.
-    """
-
-    limite: Optional[int] = Field(
-        None, ge=LIMITE_PAINEL_MIN, le=LIMITE_PAINEL_MAX
-    )

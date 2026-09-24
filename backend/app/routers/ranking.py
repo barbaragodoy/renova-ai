@@ -8,7 +8,11 @@ from typing import Optional
 from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import text
 
-from backend.app.auth.context import resolver_contexto, StatusContexto
+from backend.app.auth.context import (
+    StatusContexto,
+    coluna_identidade_para_auth_mode,
+    resolver_contexto,
+)
 from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.config import get_settings
 from backend.app.db.databricks_connection import get_engine
@@ -16,10 +20,11 @@ from backend.app.schemas.ranking import (
     ConcorrenteMercado,
     CondutaUpdateRequest,
     MercadoDetalhe,
-    MercadoPrescrito,
     SegmentacaoUpdateRequest,
     CategoriaPrescrita,
     DetalheMedicoResponse,
+    EnderecoAtendimento,
+    EnderecoUpdateRequest,
     ListaRankingResponse,
     MedicoRanking,
     OpcaoProduto,
@@ -36,7 +41,10 @@ _LIMITE_PAGINA = 50
 
 
 def _validar_contexto(email: str):
-    ctx = resolver_contexto(email)
+    ctx = resolver_contexto(
+        email,
+        coluna_identidade=coluna_identidade_para_auth_mode(),
+    )
     if ctx.status != StatusContexto.SETOR_RESOLVIDO:
         raise HTTPException(
             status_code=403,
@@ -179,9 +187,12 @@ def listar_ranking(
         # Os nomes na tabela têm acento e cedilha; o propagandista digita sem.
         # O translate normaliza os dois lados para a busca não perder nomes
         # como JOÃO ou GONÇALVES.
+        # Ou pelo UFCRM: o "Pesquisar médico" do protótipo aceita nome ou CRM,
+        # e o CRM digitado sem a UF ("994499") também precisa achar.
         filtro_busca = (
-            "  AND translate(r.nome_medico, 'ÁÂÃÀÄÉÊÈËÍÎÌÏÓÔÕÒÖÚÛÙÜÇ',"
-            " 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE :busca\n"
+            "  AND (translate(r.nome_medico, 'ÁÂÃÀÄÉÊÈËÍÎÌÏÓÔÕÒÖÚÛÙÜÇ',"
+            " 'AAAAAEEEEIIIIOOOOOUUUUC') LIKE :busca"
+            "       OR r.ufcrm LIKE :busca)\n"
         )
         termo = q.strip().upper().translate(str.maketrans(
             "ÁÂÃÀÄÉÊÈËÍÎÌÏÓÔÕÒÖÚÛÙÜÇ", "AAAAAEEEEIIIIOOOOOUUUUC"))
@@ -202,11 +213,22 @@ def listar_ranking(
             {"setor": ctx.setor},
         ).mappings().fetchone()
 
+        # A data de carga vem do histórico de recomendações, e não da tabela
+        # do ranking, que só tem o ciclo. Consulta separada: falha aqui não
+        # derruba a lista, só deixa o cabeçalho sem a data.
+        try:
+            atualizado_em = conn.execute(
+                text("SELECT MAX(data_exportacao) AS dt FROM tb_recomendacoes_painel_historico")
+            ).scalar()
+        except Exception:
+            logger.exception("Falha ao ler a data de carga do histórico.")
+            atualizado_em = None
+
         rows = conn.execute(
             text("""
                 SELECT r.posicao_ranking_setor AS posicao,
                        r.nome_medico, r.ufcrm, r.pontos,
-                       r.flag_no_painel,
+                       r.flag_no_painel, r.data_ultima_visita,
                        dm.especialidade, dm.cidade,
                        LEFT(r.ufcrm, 2) AS uf""" + frag["select"] + """
                 FROM tb_ranking_medicos_validacao r
@@ -226,6 +248,7 @@ def listar_ranking(
             ufcrm=r["ufcrm"],
             pontos=r["pontos"],
             no_painel=bool(r["flag_no_painel"]),
+            data_ultima_visita=str(r["data_ultima_visita"]) if r.get("data_ultima_visita") else None,
             especialidade=r["especialidade"],
             cidade=r["cidade"],
             uf=r["uf"],
@@ -247,6 +270,7 @@ def listar_ranking(
     ]
     return ListaRankingResponse(
         ciclo=cabecalho["ciclo"] or "",
+        atualizado_em=str(atualizado_em) if atualizado_em else None,
         total_medicos=cabecalho["total_medicos"] or 0,
         pontos_lider=cabecalho["pontos_lider"],
         qtd_painel_setor=cabecalho["qtd_painel_setor"],
@@ -283,6 +307,83 @@ def _janela_e_prescricao(d) -> tuple[Optional[str], list[CategoriaPrescrita], li
     return None, [], [], None
 
 
+_SQL_SALESFARMA = """
+    SELECT DISTINCT ds__profiss_local_trabalho AS local,
+           ds__profiss_endereco AS logradouro,
+           ds__profiss_bairro AS bairro,
+           ds__profiss_cidade AS cidade,
+           ds__profiss_estado AS uf,
+           cd__profiss_cep AS cep
+    FROM dmn_inteligencia_dados_prd.gold.vw__salesfarma_painel_medico
+    WHERE cd__profiss_ufcrm = :ufcrm
+      AND ds__profiss_endereco IS NOT NULL AND ds__profiss_endereco <> ''
+      AND dt__periodo = (
+          SELECT MAX(dt__periodo)
+          FROM dmn_inteligencia_dados_prd.gold.vw__salesfarma_painel_medico
+          WHERE cd__profiss_ufcrm = :ufcrm)
+    ORDER BY local, logradouro
+"""
+
+_SQL_AUDITORIA = """
+    SELECT ENDERECO AS logradouro, CIDADE AS cidade, UF AS uf, CEP AS cep
+    FROM dmn_inteligencia_dados_prd.gold.audit_gerencial_dim_medicos_corp
+    WHERE UFCRM = :ufcrm AND ENDERECO IS NOT NULL AND TRIM(ENDERECO) <> ''
+    LIMIT 1
+"""
+
+_SQL_CNES = """
+    SELECT nome_fantasia, razao_social, logradouro, numero, complemento, bairro,
+           cep, municipio, uf, telefone
+    FROM tb_cnes_local_atendimento
+    WHERE ufcrm = :ufcrm
+    ORDER BY nome_fantasia
+"""
+
+_SQL_CIDADES_SETOR = """
+    SELECT cidades_setor FROM tb_propagandistas WHERE setor = :setor LIMIT 1
+"""
+
+# A correção mais recente do médico, de qualquer setor. Insere, nunca
+# atualiza, mesmo padrão de tb_conduta_medico; a mais recente vale.
+_SQL_CORRIGIDO = """
+    SELECT logradouro, numero, complemento, bairro, cidade, uf, cep,
+           registrado_por, registrado_em
+    FROM tb_endereco_medico
+    WHERE ufcrm = :ufcrm
+    ORDER BY registrado_em DESC
+    LIMIT 1
+"""
+
+
+def _enderecos_do_medico(ufcrm: str, setor: str):
+    """Endereço 1, endereço 2 e a divergência entre eles.
+
+    Quatro consultas curtas, cada uma protegida: a que falhar contribui com
+    vazio e as outras seguem. As fontes e a regra estão documentadas em
+    backend/app/enderecos.py.
+    """
+    from backend.app import enderecos as regra
+
+    def _ler(sql: str, params: dict, um: bool = False):
+        try:
+            with get_engine().connect() as conn:
+                res = conn.execute(text(sql), params).mappings()
+                return dict(res.fetchone() or {}) if um else [dict(r) for r in res.fetchall()]
+        except Exception:
+            logger.exception("Falha ao ler fonte de endereço: %s", sql.strip().splitlines()[1].strip())
+            return {} if um else []
+
+    corrigido = _ler(_SQL_CORRIGIDO, {"ufcrm": ufcrm}, um=True) or None
+    salesfarma = _ler(_SQL_SALESFARMA, {"ufcrm": ufcrm})
+    auditoria = _ler(_SQL_AUDITORIA, {"ufcrm": ufcrm}, um=True) or None
+    cnes = _ler(_SQL_CNES, {"ufcrm": ufcrm})
+    cidades = _ler(_SQL_CIDADES_SETOR, {"setor": setor}, um=True)
+
+    visita = regra.endereco_da_visita(salesfarma, auditoria, corrigido)
+    local = regra.escolher_local_cnes(cnes, visita, regra.cidades_do_setor(cidades.get("cidades_setor")))
+    return visita, ([local] if local else []), regra.divergem(visita, local)
+
+
 @router.get("/medico/{ufcrm}", response_model=DetalheMedicoResponse)
 def detalhar_medico(
     ufcrm: str,
@@ -294,18 +395,19 @@ def detalhar_medico(
     with get_engine().connect() as conn:
         row = conn.execute(
             text("""
-                SELECT p.nome_medico, p.ufcrm,
-                       dm.especialidade, dm.cidade, LEFT(p.ufcrm, 2) AS uf,
-                       p.posicao_ranking_setor AS posicao, p.pontos,
-                       p.flag_no_painel, p.qtd_medicos_painel_setor,
-                       p.data_ultima_visita, p.meses_desde_ultima_visita,
-                       p.ciclos_no_painel_janela,
-                       p.recomendacao,
-                       CASE WHEN p.motivo_recomendacao LIKE '%por ranking%'
-                             AND p.motivo_recomendacao LIKE '%por visita%' THEN 'ranking e visita'
-                            WHEN p.motivo_recomendacao LIKE '%por ranking%' THEN 'saiu do corte'
-                            WHEN p.motivo_recomendacao LIKE '%nenhuma visita%' THEN 'sem visita registrada'
-                            WHEN p.motivo_recomendacao LIKE '%por visita%' THEN 'dentro do corte sem visita'
+                SELECT rk.nome_medico, rk.ufcrm,
+                       dm.especialidade, dm.cidade, LEFT(rk.ufcrm, 2) AS uf,
+                       rk.posicao_ranking_setor AS posicao, rk.pontos,
+                       rk.flag_no_painel, rk.qtd_medicos_painel_setor,
+                       rk.data_ultima_visita, rk.meses_desde_ultima_visita,
+                       rk.ciclos_no_painel_janela,
+                       rk.flag_nunca_visitado_com_janela,
+                       rk.recomendacao,
+                       CASE WHEN rk.motivo_recomendacao LIKE '%por ranking%'
+                             AND rk.motivo_recomendacao LIKE '%por visita%' THEN 'ranking e visita'
+                            WHEN rk.motivo_recomendacao LIKE '%por ranking%' THEN 'saiu do corte'
+                            WHEN rk.motivo_recomendacao LIKE '%nenhuma visita%' THEN 'sem visita registrada'
+                            WHEN rk.motivo_recomendacao LIKE '%por visita%' THEN 'dentro do corte sem visita'
                        END AS criterio_saida,
                        p.ciclo_top1_categoria, p.ciclo_top1_pct,
                        p.ciclo_top2_categoria, p.ciclo_top2_pct,
@@ -327,14 +429,24 @@ def detalhar_medico(
                        cond.texto AS conduta_texto,
                        cond.registrado_em AS conduta_em,
                        cond.registrado_por AS conduta_por
-                FROM tb_perfil_medico_setor p
-                LEFT JOIN tb_dim_medicos dm ON p.ufcrm = dm.ufcrm
+                -- O ranking e a base, e o perfil e complemento. Ate 20/09/2026
+                -- era o contrario, e o card dava 404 para quem estava no
+                -- ranking sem linha no perfil: o ranking e reconstruido todo
+                -- dia as 05:00 e a tb_perfil_medico_setor nao acompanha
+                -- (203.697 linhas do ranking sem perfil, 11%, medido em
+                -- 20/09/2026, incluindo a primeira colocada de um setor).
+                -- Tudo que o card mostra vem do ranking; o perfil so traz
+                -- prescricao e produto, que ficam nulos quando faltar.
+                FROM tb_ranking_medicos_validacao rk
+                LEFT JOIN tb_perfil_medico_setor p
+                       ON p.setor = rk.setor AND p.ufcrm = rk.ufcrm
+                LEFT JOIN tb_dim_medicos dm ON rk.ufcrm = dm.ufcrm
                 -- A view resolve edicao > SalesFarma > a definir. Ela le a
                 -- gold, que o service principal do portal nao alcanca, e
                 -- funciona porque view do Unity Catalog roda com a permissao
                 -- do dono. Mesmo mecanismo do vw_gold_auditpharma.
                 LEFT JOIN vw_segmentacao_efetiva seg
-                       ON seg.setor = p.setor AND seg.ufcrm = p.ufcrm
+                       ON seg.setor = rk.setor AND seg.ufcrm = rk.ufcrm
                 -- A tb_conduta_medico nunca e atualizada: cada registro e uma
                 -- linha nova, e o historico e o proprio dado. O vigente e o
                 -- mais recente do par setor+ufcrm, resolvido aqui em vez de
@@ -347,11 +459,15 @@ def detalhar_medico(
                                  ORDER BY c.registrado_em DESC) AS rn
                         FROM tb_conduta_medico c
                     ) x WHERE rn = 1
-                ) cond ON cond.setor = p.setor AND cond.ufcrm = p.ufcrm
+                ) cond ON cond.setor = rk.setor AND cond.ufcrm = rk.ufcrm
                 CROSS JOIN (SELECT MAX(pontos) AS pontos_lider
                             FROM tb_ranking_medicos_validacao
                             WHERE setor = :setor) lider
-                WHERE p.setor = :setor AND p.ufcrm = :ufcrm
+                WHERE rk.setor = :setor AND rk.ufcrm = :ufcrm
+                  AND rk.ciclo_referencia = (
+                      SELECT MAX(ciclo_referencia)
+                      FROM tb_ranking_medicos_validacao
+                      WHERE setor = :setor)
             """),
             {"setor": ctx.setor, "ufcrm": ufcrm},
         ).mappings().fetchone()
@@ -359,15 +475,11 @@ def detalhar_medico(
     if row is None:
         raise HTTPException(status_code=404, detail="Médico não encontrado no ranking do seu setor.")
 
-    # Segunda ida ao warehouse, de propósito: juntar a AuditPharma na consulta
-    # principal traria o grão de mercado mais produto e multiplicaria as linhas
-    # do detalhe. Falha aqui não derruba a gaveta, só deixa a seção vazia.
-    try:
-        with get_engine().connect() as conn:
-            mercados, mercados_referencia = _mercados_do_medico(conn, ctx.setor, ufcrm)
-    except Exception:
-        logger.exception("Falha ao ler os mercados da AuditPharma.")
-        mercados, mercados_referencia = [], None
+    # Terceira ida, de propósito: endereços vêm de três fontes, duas em outro
+    # catálogo, e o médico pode ter vários. Falha em qualquer uma deixa a
+    # respectiva lista vazia; a gaveta mostra "não cadastrado" em vez de cair.
+    # A regra de escolha está em backend/app/enderecos.py.
+    enderecos, outros_locais, divergente = _enderecos_do_medico(ufcrm, ctx.setor)
 
     d = dict(row)
     ytd_pcts = {"ytd_top2_pct": None, "ytd_top3_pct": None,
@@ -384,8 +496,6 @@ def detalhar_medico(
         ufcrm=d["ufcrm"],
         perfil_comunicacao=d.get("perfil_efetivo") or "A DEFINIR",
         perfil_origem=d.get("origem_do_valor") or "a definir",
-        mercados=mercados,
-        mercados_referencia=mercados_referencia,
         conduta_texto=d.get("conduta_texto"),
         conduta_em=str(d["conduta_em"]) if d.get("conduta_em") else None,
         conduta_por=d.get("conduta_por"),
@@ -400,6 +510,13 @@ def detalhar_medico(
         data_ultima_visita=str(d["data_ultima_visita"]) if d["data_ultima_visita"] else None,
         meses_sem_visita=d["meses_desde_ultima_visita"],
         ciclos_no_painel_janela=d["ciclos_no_painel_janela"],
+        nunca_visitado_na_janela=(
+            bool(d["flag_nunca_visitado_com_janela"])
+            if d.get("flag_nunca_visitado_com_janela") is not None else None
+        ),
+        enderecos=[EnderecoAtendimento(**e.para_resposta()) for e in enderecos],
+        outros_locais=[EnderecoAtendimento(**e.para_resposta()) for e in outros_locais],
+        endereco_divergente=divergente,
         recomendacao=d["recomendacao"],
         criterio_saida=d["criterio_saida"],
         janela=janela,
@@ -412,48 +529,6 @@ def detalhar_medico(
         ja_prescreve_o_produto=bool(d["ja_prescreve_o_produto"]),
         opcoes_produto=opcoes,
     )
-
-
-def _mercados_do_medico(conn, setor: str, ufcrm: str):
-    """Top 3 mercados montados em que o médico prescreveu, da AuditPharma.
-
-    Fonte separada do resto do detalhe por decisão de George em 20/08: é a
-    mesma tabela que o propagandista confere na ferramenta dele, então o número
-    bate por construção, sem depender de a nossa regra coincidir com a deles.
-
-    A `vw_gold_auditpharma` já filtra pela referência mais recente na própria
-    definição, então o recorte de um ciclo só sai de graça. A view lê a gold,
-    catálogo em que o service principal do portal não tem privilégio nenhum, e
-    funciona porque view do Unity Catalog roda com a permissão do dono.
-
-    Agrupa por mercado porque o grão da tabela é mercado mais produto: sem o
-    GROUP BY, um mercado com quatro concorrentes ocuparia as três posições.
-    """
-    linhas = conn.execute(
-        text("""
-            SELECT MERCADO, MAX(COD_LINHA) AS cod_linha,
-                   SUM(RX_MERCADO_ATUAL) AS rx,
-                   MAX(REFERENCIA) AS referencia
-              FROM vw_gold_auditpharma
-             WHERE SETOR = :setor AND UFCRM = :ufcrm
-               AND RX_MERCADO_ATUAL > 0
-             GROUP BY MERCADO
-             ORDER BY rx DESC
-             LIMIT 3
-        """),
-        {"setor": setor, "ufcrm": ufcrm},
-    ).mappings().fetchall()
-
-    mercados = [
-        MercadoPrescrito(
-            mercado=l["MERCADO"],
-            rx=float(l["rx"]) if l["rx"] is not None else None,
-            cod_linha=str(l["cod_linha"]) if l["cod_linha"] else None,
-        )
-        for l in linhas
-    ]
-    referencia = str(linhas[0]["referencia"]) if linhas else None
-    return mercados, referencia
 
 
 @router.put("/medico/{ufcrm}/segmentacao", response_model=DetalheMedicoResponse)
@@ -568,6 +643,60 @@ def registrar_conduta(
                 "ufcrm": ufcrm,
                 "texto": body.texto,
                 "origem": body.origem,
+                "matricula": ctx.matricula,
+            },
+        )
+        conn.commit()
+
+    return detalhar_medico(ufcrm, email, authorization)
+
+
+@router.put("/medico/{ufcrm}/endereco", response_model=DetalheMedicoResponse)
+def corrigir_endereco(
+    ufcrm: str,
+    body: EnderecoUpdateRequest,
+    email: Optional[str] = Query(None),
+    authorization: Optional[str] = Header(None),
+):
+    """Registra a correção do endereço de atendimento feita pelo propagandista.
+
+    **Insere, nunca atualiza**, como a conduta: cada correção é uma linha, e
+    a mais recente por médico é a que vale na leitura. O histórico é o que vai
+    permitir a sincronização com o SalesFarma quando a integração existir,
+    e é também a auditoria de quem mudou o quê.
+
+    Vale para o médico, não para o setor. Endereço é fato físico: se um
+    propagandista foi lá e corrigiu, quem visita o mesmo médico por outra
+    linha se beneficia. Decisão de George em 18/09/2026, junto com a de não
+    ter carga mensal do CNES e deixar a manutenção com o propagandista.
+
+    Setor e matrícula saem da sessão, nunca do corpo.
+    """
+    ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
+
+    with get_engine().connect() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO tb_endereco_medico
+                    (id_registro, ufcrm, setor, logradouro, numero, complemento,
+                     bairro, cidade, uf, cep, observacao,
+                     registrado_por, registrado_em, versao_esquema)
+                SELECT :id_registro, :ufcrm, :setor, :logradouro, :numero, :complemento,
+                       :bairro, :cidade, :uf, :cep, :observacao,
+                       :matricula, current_timestamp, 1
+            """),
+            {
+                "id_registro": str(uuid.uuid4()),
+                "ufcrm": ufcrm,
+                "setor": ctx.setor,
+                "logradouro": body.logradouro,
+                "numero": body.numero,
+                "complemento": body.complemento,
+                "bairro": body.bairro,
+                "cidade": body.cidade,
+                "uf": body.uf,
+                "cep": body.cep,
+                "observacao": body.observacao,
                 "matricula": ctx.matricula,
             },
         )

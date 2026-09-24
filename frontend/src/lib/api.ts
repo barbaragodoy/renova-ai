@@ -1,5 +1,5 @@
 /**
- * Cliente HTTP do PedAI.
+ * Cliente HTTP do Ped.AI.
  *
  * Os caminhos são relativos porque, na imagem única do container, o React é
  * servido pelo próprio FastAPI. Em desenvolvimento o proxy do Vite encaminha
@@ -28,6 +28,17 @@ export function configurarAoExpirarSessao(callback: () => void) {
   aoExpirar = callback;
 }
 
+/** Setor que um administrador escolheu visualizar. Vai no header
+ *  `X-Ver-Como` de toda chamada; o backend troca a identidade efetiva pela
+ *  do propagandista daquele setor e recusa qualquer escrita enquanto o header
+ *  estiver presente (ver `backend/app/auth/administrativo.py`). Quem não
+ *  está na lista administrativa manda o header e é ignorado. */
+let setorVerComo: string | null = null;
+
+export function configurarVerComo(setor: string | null) {
+  setorVerComo = setor;
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -43,6 +54,7 @@ async function request<T>(caminho: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   headers.set("Content-Type", "application/json");
   if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (setorVerComo) headers.set("X-Ver-Como", setorVerComo);
 
   let resposta: Response;
   try {
@@ -132,6 +144,59 @@ export function login(email: string, senha: string) {
   });
 }
 
+/* --------------------------------------------------------- administrativo */
+
+export interface SessaoAdminResponse {
+  administrador: boolean;
+  identidade: string;
+  vendo_setor?: string | null;
+}
+
+export interface OpcoesAdminResponse {
+  linhas: string[];
+  regionais: string[];
+  ufs: string[];
+}
+
+export interface PropagandistaAdmin {
+  setor: string;
+  nome?: string | null;
+  linha?: string | null;
+  regional?: string | null;
+  uf?: string | null;
+  cidades?: string | null;
+}
+
+export interface ListaPropagandistasAdmin {
+  total: number;
+  itens: PropagandistaAdmin[];
+}
+
+/** Diz se quem entrou pode abrir o portal no lugar de um propagandista. Não é
+ *  decisão de segurança, que fica no servidor a cada chamada; só evita
+ *  desenhar um seletor que a pessoa não pode usar. */
+export function obterSessaoAdmin(email: string) {
+  const query = email ? `?email=${encodeURIComponent(email)}` : "";
+  return request<SessaoAdminResponse>(`/admin/sessao${query}`);
+}
+
+export function listarOpcoesAdmin(email: string) {
+  const query = email ? `?email=${encodeURIComponent(email)}` : "";
+  return request<OpcoesAdminResponse>(`/admin/opcoes${query}`);
+}
+
+export function listarPropagandistasAdmin(
+  email: string,
+  filtros: { linha?: string; regional?: string; uf?: string; busca?: string },
+) {
+  const params = new URLSearchParams();
+  if (email) params.set("email", email);
+  for (const [chave, valor] of Object.entries(filtros)) {
+    if (valor) params.set(chave, valor);
+  }
+  return request<ListaPropagandistasAdmin>(`/admin/propagandistas?${params.toString()}`);
+}
+
 /* ---------------------------------------------------------------- perfil */
 
 /** Uma linha de `tb_propagandistas`: o setor e a cadeia de gestão dele.
@@ -189,21 +254,19 @@ export interface PerfilResponse {
   medicos_no_painel?: number | null;
   recomendacoes_pendentes?: number | null;
 
-  /** Limite do painel em vigor. Já vem resolvido pelo backend: o valor
-   *  personalizado quando existe, senão o padrão de 318. A tela nunca
-   *  precisa saber o padrão nem repetir o COALESCE. */
+  /** Limite do painel em vigor, único para todos, lido de
+   *  tb_renovai_parametros. A edição por propagandista saiu em 18/09/2026
+   *  quando a aba foi alinhada ao protótipo; a tela não exibe mais o valor. */
   limite_painel: number;
-  limite_painel_personalizado: boolean;
+
+  /** As duas especialidades com mais médicos distintos visitados nos últimos
+   *  doze meses, somando os setores da pessoa. Vazio quando não há visita no
+   *  período ou quando a consulta de resumo falhou; a tela mostra não
+   *  disponível. Campo "Especialidades predominantes" do protótipo. */
+  especialidades_predominantes: string[];
 
   atribuicoes: AtribuicaoSetor[];
 }
-
-/** Faixa aceita na edição do limite, espelhando LIMITE_PAINEL_MIN e
- *  LIMITE_PAINEL_MAX em backend/app/schemas/perfil.py. Validar aqui evita
- *  uma ida ao servidor para receber 422; o servidor valida de novo, porque
- *  a tela não é barreira. */
-export const LIMITE_PAINEL_MIN = 50;
-export const LIMITE_PAINEL_MAX = 1000;
 
 /**
  * Perfil do propagandista para a aba Usuário.
@@ -233,15 +296,6 @@ export function salvarNomePerfil(email: string, nome: string | null) {
   });
 }
 
-/**
- * Altera o limite do painel da pessoa.
- *
- * Atende `PUT /auth/perfil/limite-painel`. Rota separada da do nome de
- * propósito: naquela, nome nulo significa desfazer a edição do nome, então
- * mandar as duas coisas juntas apagaria o nome de quem só mexeu no limite.
- *
- * `limite` nulo volta ao padrão.
- */
 /**
  * Envia ou troca a foto de perfil.
  *
@@ -288,14 +342,6 @@ export async function enviarFotoPerfil(email: string, arquivo: File) {
 export function urlFotoPerfil(email: string, versao: number) {
   const sep = email ? `?email=${encodeURIComponent(email)}&` : "?";
   return `${BASE}/auth/perfil/foto${sep}v=${versao}`;
-}
-
-export function salvarLimitePainel(email: string, limite: number | null) {
-  const query = email ? `?email=${encodeURIComponent(email)}` : "";
-  return request<PerfilResponse>(`/auth/perfil/limite-painel${query}`, {
-    method: "PUT",
-    body: JSON.stringify({ limite }),
-  });
 }
 
 /* -------------------------------------------------------------- recomendações */
@@ -460,6 +506,11 @@ export interface DesconsideradaItem {
   /** Data da decisão, seja ela qual for. Aceita não tem
    *  `data_desconsideracao`. */
   data_decisao?: string | null;
+  /** Quando o aceite foi enviado ao SalesFarma; nulo até a exportação existir. */
+  data_exportacao?: string | null;
+  /** Se o botão Desfazer aparece. Regra do backend: desconsiderada sempre;
+   *  aceita só antes do envio ao SalesFarma. */
+  pode_desfazer?: boolean;
   /** Nulo quando a decisão foi aceite. */
   data_desconsideracao?: string | null;
   ciclo_recomendacao: string;
@@ -514,6 +565,8 @@ export interface MedicoRanking {
   ufcrm: string;
   pontos?: number | null;
   no_painel: boolean;
+  /** Última visita registrada, para o card de busca da Home. */
+  data_ultima_visita?: string | null;
   especialidade?: string | null;
   cidade?: string | null;
   uf?: string | null;
@@ -531,6 +584,9 @@ export interface MedicoRanking {
 
 export interface ListaRankingResponse {
   ciclo: string;
+  /** Última carga do histórico de recomendações, para a coluna "Atualizado"
+   *  do cabeçalho. Nulo quando o backend não conseguiu ler. */
+  atualizado_em?: string | null;
   total_medicos: number;
   pontos_lider?: number | null;
   qtd_painel_setor?: number | null;
@@ -578,10 +634,33 @@ export interface MercadoDetalhe {
   ciclos_origem: number[];
 }
 
-export interface MercadoPrescrito {
-  mercado: string;
-  rx?: number | null;
-  cod_linha?: string | null;
+export interface EnderecoAtendimento {
+  /** `salesfarma`, `auditoria` ou `cnes`. Decide a etiqueta do card. */
+  fonte: "salesfarma" | "auditoria" | "cnes" | string;
+  local?: string | null;
+  logradouro?: string | null;
+  /** Só o CNES separa número e complemento; no SalesFarma vêm no logradouro. */
+  numero?: string | null;
+  complemento?: string | null;
+  bairro?: string | null;
+  cidade?: string | null;
+  uf?: string | null;
+  cep?: string | null;
+  telefone?: string | null;
+  /** Só quando `fonte` é `propagandista`: quem corrigiu e quando. */
+  registrado_por?: string | null;
+  registrado_em?: string | null;
+}
+
+export interface EnderecoCorrecao {
+  logradouro: string;
+  numero?: string | null;
+  complemento?: string | null;
+  bairro?: string | null;
+  cidade: string;
+  uf: string;
+  cep?: string | null;
+  observacao?: string | null;
 }
 
 export interface DetalheMedicoResponse {
@@ -598,6 +677,15 @@ export interface DetalheMedicoResponse {
   data_ultima_visita?: string | null;
   meses_sem_visita?: number | null;
   ciclos_no_painel_janela?: number | null;
+  /** Está no painel há toda a janela de ciclos, hoje 3, e nunca foi visitado.
+   *  Nulo quando o médico não está no ranking do ciclo. */
+  nunca_visitado_na_janela?: boolean | null;
+  /** Endereço 1, o da visita: SalesFarma, ou auditoria quando não há. */
+  enderecos: EnderecoAtendimento[];
+  /** Endereço 2, "também atende em", do CNES. Zero ou um item. */
+  outros_locais: EnderecoAtendimento[];
+  /** Endereço 1 e 2 em cidades diferentes: o card pede para conferir. */
+  endereco_divergente: boolean;
 
   /** Segmentação do médico. `perfil_origem` diz de onde veio: propagandista,
    *  salesfarma ou a definir. */
@@ -606,12 +694,6 @@ export interface DetalheMedicoResponse {
 
   /** Registro de conduta, o "Como Trata". Nulo quando ninguém registrou nada
    *  daquele médico neste setor. */
-  /** Top 3 mercados do último ciclo, da AuditPharma. `mercados_referencia` é a
-   *  referência da auditoria, que a tela mostra: ela fecha depois que o mês
-   *  acaba, então fica um mês atrás do ciclo do painel. */
-  mercados?: MercadoPrescrito[];
-  mercados_referencia?: string | null;
-
   conduta_texto?: string | null;
   conduta_em?: string | null;
   conduta_por?: string | null;
@@ -817,6 +899,21 @@ export const CONDUTA_TAMANHO_MAXIMO = 3000;
  * nova: o histórico é o próprio dado. Devolve o detalhe relido, então a tela
  * usa a resposta em vez de assumir o que mandou.
  */
+/**
+ * Registra a correção do endereço de atendimento do médico.
+ *
+ * Atende `PUT /ranking/medico/{ufcrm}/endereco`. Insere, nunca atualiza; a
+ * correção mais recente passa a ser o endereço 1 do card. Devolve o detalhe
+ * recarregado, como a conduta.
+ */
+export function corrigirEndereco(email: string, ufcrm: string, corpo: EnderecoCorrecao) {
+  const query = email ? `?email=${encodeURIComponent(email)}` : "";
+  return request<DetalheMedicoResponse>(
+    `/ranking/medico/${encodeURIComponent(ufcrm)}/endereco${query}`,
+    { method: "PUT", body: JSON.stringify(corpo) },
+  );
+}
+
 export function registrarConduta(
   email: string,
   ufcrm: string,

@@ -114,7 +114,26 @@ class ServingDatabricks:
         return self._token
 
     def conversar(self, mensagens: list[dict], ferramentas: list[dict]) -> Volta:
-        corpo = json.dumps({"messages": mensagens, "tools": ferramentas, "max_tokens": 1200}).encode()
+        return self._chamar(mensagens, ferramentas=ferramentas, max_tokens=1200)
+
+    def extrair_estruturado(self, mensagens: list[dict], max_tokens: int = 160) -> Volta:
+        """Uma resposta curta sem ferramentas, para scripts de extração offline.
+
+        Mantém a autenticação, o tratamento de erro e a medição de tokens do
+        agente. O fluxo conversacional continua usando ``conversar``.
+        """
+        # Uma extração individual usa cerca de 160 tokens. Validações em lote
+        # podem precisar de mais espaço para fechar o array JSON completo.
+        if not 1 <= max_tokens <= 4000:
+            raise ValueError("max_tokens deve estar entre 1 e 4000")
+        return self._chamar(mensagens, ferramentas=None, max_tokens=max_tokens)
+
+    def _chamar(self, mensagens: list[dict], ferramentas: list[dict] | None,
+                max_tokens: int) -> Volta:
+        payload: dict[str, Any] = {"messages": mensagens, "max_tokens": max_tokens}
+        if ferramentas is not None:
+            payload["tools"] = ferramentas
+        corpo = json.dumps(payload).encode()
         req = urllib.request.Request(
             f"{self._host}/serving-endpoints/{self._endpoint}/invocations",
             data=corpo,
@@ -128,7 +147,7 @@ class ServingDatabricks:
             # o token pode ter expirado entre uma volta e outra
             if exc.code == 401 and self._token:
                 self._token = None
-                return self.conversar(mensagens, ferramentas)
+                return self._chamar(mensagens, ferramentas, max_tokens)
             raise LLMError(f"endpoint {self._endpoint} devolveu HTTP {exc.code}") from exc
         except TimeoutError as exc:
             raise LLMTimeoutError(f"endpoint {self._endpoint} não respondeu no tempo limite") from exc

@@ -80,9 +80,9 @@ const FUNDO_CONVERSA = "#F7F7FA";
 function abertura(nome: string | null) {
   const primeiro = nome?.trim().split(" ")[0];
   return (
-    `Olá${primeiro ? `, ${primeiro}` : ""}. Sou o PedAI.\n` +
+    `Olá${primeiro ? `, ${primeiro}` : ""}. Sou o **PedAI**.\n` +
     "Posso te dar o retrato de um médico antes da visita: o que está sendo prescrito, o que você pode oferecer e como conduzir a conversa.\n" +
-    "Me diga o nome ou o CRM de quem você vai visitar agora."
+    "Me diga o **Nome** ou o **CRM** de quem você vai visitar agora."
   );
 }
 
@@ -122,15 +122,21 @@ function ComNegrito({ children }: { children: string }) {
   const partes = children.split(/(\*\*[^*]+\*\*)/g);
   return (
     <>
-      {partes.map((parte, i) =>
-        parte.startsWith("**") && parte.endsWith("**") ? (
-          <strong key={i} className="font-semibold">
-            {parte.slice(2, -2)}
+      {partes.map((parte, i) => {
+        if (!parte.startsWith("**") || !parte.endsWith("**")) return parte;
+        const texto = parte.slice(2, -2);
+        return (
+          <strong
+            key={i}
+            className="font-semibold"
+            // Nome da marca sempre na cor primária do portal, igual ao
+            // protótipo do Figma, onde "PedAI" aparece destacado em rosa.
+            style={texto === "PedAI" ? { color: "var(--color-primary)" } : undefined}
+          >
+            {texto}
           </strong>
-        ) : (
-          parte
-        ),
-      )}
+        );
+      })}
     </>
   );
 }
@@ -293,7 +299,7 @@ function CardMedico({ card, aoIrParaRecomendacoes }: {
   aoIrParaRecomendacoes?: () => void;
 }) {
   return (
-    <div className="rounded-2xl border border-[var(--color-border)] bg-white p-4 shadow-sm">
+    <div className="rounded-lg border border-[var(--color-border)] bg-white p-4 shadow-sm">
       <div className="mb-2 flex items-start justify-between gap-2">
         <p className="text-sm font-semibold">{card.name}</p>
         {card.rank && (
@@ -565,12 +571,12 @@ export function Chat({
 
   return (
     <div className="flex h-full w-full flex-col" style={{ background: FUNDO_CONVERSA }}>
-      <div className="mx-auto w-full max-w-3xl flex-1 space-y-4 overflow-y-auto p-4">
+      <div className="mx-auto w-full flex-1 space-y-4 overflow-y-auto px-4 py-4">
         {itens.map((item, i) =>
           item.tipo === "pergunta" ? (
             <div key={i} className="flex justify-end">
               <div
-                className="max-w-[75%] rounded-2xl rounded-br-sm px-4 py-2.5 text-sm text-white"
+                className="max-w-[75%] rounded-lg rounded-br-sm px-4 py-2.5 text-sm text-white"
                 style={{ background: ROXO }}
               >
                 {item.texto}
@@ -586,7 +592,7 @@ export function Chat({
           ) : (
             <DoRenovai key={i}>
               {item.mensagem && (
-                <div className="rounded-2xl rounded-tl-sm border border-[var(--color-border)] bg-white px-4 py-3 text-sm shadow-sm">
+                <div className="rounded-lg rounded-tl-sm border border-[var(--color-border)] bg-white px-4 py-3 text-sm shadow-sm">
                   <Texto>{item.mensagem}</Texto>
                 </div>
               )}
@@ -613,7 +619,7 @@ export function Chat({
                             key={rotulo}
                             type="button"
                             onClick={() => tocarNoChip(rotulo, item.prontas)}
-                            className="flex items-center justify-between rounded-xl border border-[var(--color-border)] bg-white px-3 py-2 text-left text-sm transition-colors active:bg-[var(--color-muted)]"
+                            className="flex items-center justify-between rounded-lg border border-[var(--color-border)] bg-white px-3 py-2 text-left text-sm transition-colors active:bg-[var(--color-muted)]"
                           >
                             {rotulo}
                             <ChevronRight
@@ -631,7 +637,7 @@ export function Chat({
                   <div
                     key={j}
                     className={cn(
-                      "flex gap-2 rounded-2xl p-3 text-xs leading-relaxed",
+                      "flex gap-2 rounded-lg p-3 text-xs leading-relaxed",
                       card.type === "info-banner" &&
                         "bg-[var(--color-muted)] text-[var(--color-muted-foreground)]",
                     )}
@@ -656,7 +662,7 @@ export function Chat({
 
         {aguardando && (
           <DoRenovai>
-            <div className="w-fit rounded-2xl rounded-tl-sm border border-[var(--color-border)] bg-white px-4 py-3 shadow-sm">
+            <div className="w-fit rounded-lg rounded-tl-sm border border-[var(--color-border)] bg-white px-4 py-3 shadow-sm">
               <div className="flex h-4 items-center gap-1" role="status" aria-label="Consultando">
                 {[0, 1, 2].map((i) => (
                   <span
@@ -679,7 +685,7 @@ export function Chat({
         }}
         className="w-full border-t border-[var(--color-border)] bg-white px-4 pb-5 pt-3"
       >
-        <div className="mx-auto flex w-full max-w-3xl items-center gap-2 rounded-2xl bg-[var(--color-muted)] px-4 py-2.5">
+        <div className="mx-auto flex w-full items-center gap-2 rounded-lg bg-[var(--color-muted)] px-4 py-2.5">
           <input
             value={rascunho}
             onChange={(e) => setRascunho(e.target.value)}

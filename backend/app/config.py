@@ -1,5 +1,5 @@
 from functools import lru_cache
-from typing import List
+from typing import List, Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -54,13 +54,14 @@ class Settings(BaseSettings):
     # por que o match direto contra tb_propagandistas já é suficiente.
     dominios_email_aceitos: str = "ache.com.br,biosintetica.com.br"
 
-    # Modo de autenticação do portal (ver backend/app/auth/sessao.py):
+    # Modo de autenticação do portal:
     #   senha    -> e-mail corporativo + senha gerada pelo time, conferida
-    #               contra o hash em tb_portal_acesso. Modo do piloto.
-    #   entra_id -> autenticação delegada ao Microsoft Entra ID. Usar junto
-    #               com auth_require_jwt=true; POST /auth/login passa a
-    #               responder 404.
-    auth_mode: str = "senha"
+    #               contra o hash em acessos.csv. Modo padrão.
+    #   entra_id -> autenticação feita pelo Azure App Service Easy Auth.
+    #               O backend confia nos headers X-MS-CLIENT-PRINCIPAL-*;
+    #               AUTH_REQUIRE_JWT/AUTH_EMAIL_CLAIM não participam desse
+    #               fluxo. POST /auth/login responde 404.
+    auth_mode: Literal["senha", "entra_id"] = "senha"
 
     # Segredo de assinatura do token de sessão. Obrigatório no modo senha,
     # mínimo de 32 caracteres, injetado pelo ambiente. Em HMG e produção vem
@@ -69,6 +70,20 @@ class Settings(BaseSettings):
     # segredo previsível.
     sessao_jwt_secret: str = ""
     sessao_token_minutos: int = 60
+
+    # Lista administrativa do projeto — quem pode abrir o portal no lugar de
+    # um propagandista, para conferência. Separada por vírgula, injetada pelo
+    # ambiente, vazia por padrão: sem configuração explícita ninguém
+    # personifica. Ver backend/app/auth/administrativo.py.
+    #
+    # Aceita e-mail e login corporativo na mesma lista, porque ainda não está
+    # confirmado com o Flávio qual claim o token do Entra ID traz. Com poucas
+    # pessoas, aceitar as duas formas sai mais barato que esperar a resposta.
+    #
+    # Esta lista NÃO é o acesso de gerente distrital, regional ou nacional.
+    # Aquilo é outra feature, com outra regra de escopo, e a hierarquia para
+    # ela já existe em tb_propagandistas (GD_EMAIL, GR_EMAIL, GN_EMAIL).
+    admin_emails: str = ""
 
     # Caminho dos arquivos estáticos do frontend dentro da imagem.
     frontend_dist: str = "frontend_dist"

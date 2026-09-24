@@ -18,6 +18,23 @@ painel médico para propagandistas, com Bárbara cobrindo todos os papéis
 Alternância de fonte de dados local↔real é via `DATA_SOURCE` em `.env`
 (`local` | `databricks`) — ver `backend/app/db/databricks_connection.py`.
 
+## Status ativo — Task 170097: login por Entra ID / Easy Auth
+
+Arquitetura confirmada em 2026-09-15: o App Service Easy Auth autentica o
+usuário antes de a requisição chegar ao FastAPI e injeta a identidade nos
+headers `X-MS-CLIENT-PRINCIPAL-NAME` e `X-MS-CLIENT-PRINCIPAL`.
+`AUTH_MODE=entra_id` não usa o caminho legado `AUTH_REQUIRE_JWT`/JWKS.
+
+O identificador corporativo confirmado é o UPN. A parte anterior ao primeiro
+`@`, sem domínio hardcoded, deve ser comparada com `REP_LOGIN` usando
+`LOWER()` dos dois lados. `AUTH_MODE=senha` permanece como default e continua
+comparando o e-mail da sessão com `REP_EMAIL`.
+
+Bloqueio externo: `https://pedai.ache.com.br/.auth/login/aad/callback`
+precisa ser incluída como redirect URI no App Registration pelo time de
+infraestrutura. Isso não bloqueia desenvolvimento ou testes locais, mas
+impede validação end-to-end nesse domínio até a correção.
+
 ## Comandos
 
 ```bash
@@ -236,6 +253,44 @@ sem relação) / 3 skipped. **Nada commitado ainda** — próxima sessão
 precisa decidir a divisão de commits (git status mostra os arquivos
 novos/modificados) antes de seguir.
 
+## 2026-09-17 — PRs 23635 e 23670 sincronizados localmente
+
+Os dois PRs de frontend foram aprovados e mesclados com squash em
+`AcheInfo_Apps/dev`: `f82996d` (login) e `54e3c0e` (Home, Chat e
+Recomendações). O diff combinado altera sete arquivos, todos em
+`APP_RENOVAI/`; a cópia Aché está limpa em `dev`. Os mesmos hunks foram
+aplicados em `renovai-local`, preservando duas diferenças locais de linhas
+em branco em `frontend/src/pages/Recomendacoes.tsx`. Nada foi commitado
+em `renovai-local`.
+
+O formulário de e-mail e senha continua disponível. O botão Microsoft do
+PR 23635 permanece visível e clicável, mas não cria a sessão do portal
+quando `AUTH_MODE=senha`; pode iniciar o Easy Auth e encontrar a pendência
+do redirect URI. A decisão é manter `AUTH_MODE=senha` e o Easy Auth em
+`AllowAnonymous` por enquanto. Em 17/09, a imagem de homologação ainda era
+`ed64685-entra-id-20260915`: não houve build nem deploy destes PRs.
+
+Validação local: `npm run lint` passou. A coleta da suíte backend completa
+para no problema preexistente de `test_golden_set.py`; ignorando apenas esse
+arquivo, foram 476 passed, 5 failed e 3 skipped. As cinco falhas são as
+já documentadas em `known-issues.md` (recorrência e massa de registro de
+envios). Nenhuma falha nova foi observada.
+
+## 2026-09-17 — Botão Microsoft desabilitado para o próximo deploy
+
+Após o merge dos PRs 23635/23670, um ajuste local em `frontend/src/pages/Login.tsx`
+trocou o link do Easy Auth por um botão desabilitado, ainda visível. O formulário
+de e-mail e senha permanece. `npm run lint` passou nos dois ambientes locais.
+O ajuste ainda não foi commitado, publicado nem implantado. A imagem de
+homologação segue a anterior, com `AUTH_MODE=senha` e Easy Auth em
+`AllowAnonymous`.
+
+O `acessos.csv` existente na cópia Aché será preservado: gerar outro arquivo
+rotacionaria as senhas dos 25 registros. Ele é ignorado pelo Git; o arquivo
+de distribuição `senhas-portal-*.csv` também é ignorado pelo Git e excluído
+do contexto Docker. O `acessos.csv` só entrará no contexto do build aprovado
+separadamente e será incorporado à imagem, como exige o Dockerfile atual.
+
 ## Índice — ler sob demanda conforme a tarefa
 
 - `docs/context/decisions-log.md` — decisões de negócio/arquitetura datadas
@@ -261,3 +316,57 @@ novos/modificados) antes de seguir.
   resumido + regra de mitigação do `MOTIVO_RECOMENDACAO`.
 
 Não usamos AGENTS.md neste projeto — apenas Claude Code.
+
+## 2026-09-17 — Build dos PRs 23635/23670 com botão Microsoft desabilitado
+
+O ajuste de `Login.tsx` foi commitado em `2982345` e enviado à `dev`.
+O build ACR `cf1u` terminou com sucesso e publicou
+`app-renovai:2982345-login-microsoft-inerte-20260917`.
+O `acessos.csv` existente foi usado no contexto da imagem sem regenerar senhas;
+`acessos.csv` e `senhas-portal-*.csv` seguem fora do Git.
+Homologação ainda usa `ed64685-entra-id-20260915`.
+`AUTH_MODE=senha` e Easy Auth `AllowAnonymous` foram reconfirmados.
+O deploy aguarda autorização separada.
+
+## 2026-09-17 — Deploy em homologação dos PRs 23635/23670
+
+A imagem `app-renovai:2982345-login-microsoft-inerte-20260917` foi configurada
+em `asp-renoveai-hmg`, seguida de restart. O Web App está `Running`.
+`AUTH_MODE=senha` e Easy Auth `AllowAnonymous` permaneceram iguais.
+`/`, `/docs` e `/health` responderam 200; `/auth/contexto` sem sessão, 401.
+`POST /auth/login` consta no OpenAPI. O bundle servido contém o formulário
+de e-mail e senha e o botão Microsoft desabilitado, sem link para Easy Auth.
+O Log Stream registrou erros da própria transmissão; a checagem HTTP passou.
+O login real com uma credencial existente ainda requer validação manual.
+
+## 2026-09-17 — Diagnóstico inicial de performance
+
+O usuário confirmou login real bem-sucedido após o deploy. Métricas de
+homologação mostram janelas com resposta média de 8,98 a 13,74 s, sem 5xx,
+enquanto CPU ficou entre 8,6% e 14,4% e a fila HTTP em zero nessas janelas.
+O diagnóstico detalhado e seus limites estão em `docs/context/known-issues.md`.
+
+## 2026-09-17 — Performance medida no Databricks real
+
+Com o `.env` local carregado somente no processo de teste e o código Aché
+implantado, a consulta de cadastro levou 1,02 s; perfil 5,38 s; entrada
+4,94 s; revisão 4,71 s; ranking 3,84 s. A abertura paralela de entrada,
+revisão e perfil levou 5,35 s na primeira rodada e 3,48 s na segunda.
+O warehouse observado está em 2X-Small serverless, com auto-stop de
+5 minutos. Ver `docs/context/known-issues.md` para limites e detalhes.
+
+## 2026-09-19 — Deploy com rotação dos acessos do piloto
+
+O commit `4be1660` foi enviado à `dev` somente com arquivos de
+`APP_RENOVAI/`. O build ACR `cf1v` publicou
+`app-renovai:4be1660-dualsource-senhas-20260919` e a imagem foi implantada em
+`asp-renoveai-hmg`. Os 25 usuários foram preservados e os 25 hashes foram
+substituídos. `acessos.csv` e `senhas-portal-2026-09-18.csv` continuam fora do
+Git; somente `acessos.csv` entrou na imagem. Ambos permanecem locais com modo
+`0600`.
+
+O container iniciou sem erro e o probe ficou saudável. `/`, `/health`,
+`/docs` e `/openapi.json` responderam 200. `AUTH_MODE=senha` e Easy Auth
+`AllowAnonymous` foram preservados; o botão Microsoft continua visível e
+desabilitado. As senhas antigas deixam de autenticar novos logins, mas tokens
+já emitidos podem continuar válidos por até 60 minutos.

@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import text
 
 from backend.app.auth.jwt_auth import resolver_email_autenticado
+from backend.app.config import Settings, get_settings
 from backend.app.db.databricks_connection import get_engine as _get_engine
 
 auth_router = APIRouter()
@@ -31,9 +32,26 @@ class ContextoResponse(BaseModel):
 # Whitelist evita que `tabela` vire um vetor de SQL injection caso algum dia
 # passe a vir de fora — hoje só é usado internamente por testes de integração.
 _TABELAS_PERMITIDAS = {"tb_propagandistas", "tb_propagandista_teste"}
+_COLUNAS_IDENTIDADE_PERMITIDAS = {"rep_email", "rep_login"}
 
 
-def resolver_contexto(email: str, tabela: str = "tb_propagandistas") -> ContextoResponse:
+def extrair_login_do_upn(upn: str) -> str:
+    """Retorna apenas a parte anterior ao primeiro '@', sem assumir domínio."""
+    return upn.strip().split("@", 1)[0]
+
+
+def coluna_identidade_para_auth_mode(
+    settings: Optional[Settings] = None,
+) -> str:
+    settings = settings or get_settings()
+    return "rep_login" if settings.auth_mode == "entra_id" else "rep_email"
+
+
+def resolver_contexto(
+    email: str,
+    tabela: str = "tb_propagandistas",
+    coluna_identidade: str = "rep_email",
+) -> ContextoResponse:
     # Schema real confirmado em acheinfo_dev.renovai.tb_propagandistas (verificação
     # técnica direta no Databricks, 2026-07): não existe coluna de status
     # ativo/inativo. Registros "VAGO" (vaga sem titular) já são removidos na
@@ -57,6 +75,14 @@ def resolver_contexto(email: str, tabela: str = "tb_propagandistas") -> Contexto
     # duplicidade: zero colisões via LOWER(rep_email) nos 2156 registros reais.
     if tabela not in _TABELAS_PERMITIDAS:
         raise ValueError(f"Tabela não permitida: {tabela}")
+    if coluna_identidade not in _COLUNAS_IDENTIDADE_PERMITIDAS:
+        raise ValueError(f"Coluna de identidade não permitida: {coluna_identidade}")
+
+    identidade = (
+        extrair_login_do_upn(email)
+        if coluna_identidade == "rep_login"
+        else email
+    )
 
     engine = _get_engine()
     with engine.connect() as conn:
@@ -64,9 +90,9 @@ def resolver_contexto(email: str, tabela: str = "tb_propagandistas") -> Contexto
             text(
                 f"SELECT rep_matricula, setor, rep_nome "
                 f"FROM {tabela} "
-                f"WHERE LOWER(rep_email) = LOWER(:email)"
+                f"WHERE LOWER({coluna_identidade}) = LOWER(:email)"
             ),
-            {"email": email},
+            {"email": identidade},
         ).fetchall()
 
     if len(rows) == 0:
@@ -108,4 +134,7 @@ def get_contexto(
     authorization: Optional[str] = Header(None),
 ):
     email_autenticado = resolver_email_autenticado(authorization, email)
-    return resolver_contexto(email_autenticado)
+    return resolver_contexto(
+        email_autenticado,
+        coluna_identidade=coluna_identidade_para_auth_mode(),
+    )

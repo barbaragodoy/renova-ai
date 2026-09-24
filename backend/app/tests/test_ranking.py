@@ -43,17 +43,20 @@ _MEDICO = {
 }
 
 
-def _mock_engine_lista(cabecalho, rows):
-    """A listagem faz duas consultas na mesma conexão: o cabeçalho do setor
-    (fetchone) e a página de médicos (fetchall)."""
+def _mock_engine_lista(cabecalho, rows, atualizado_em="2026-09-18 12:56:35"):
+    """A listagem faz três consultas na mesma conexão, nesta ordem: o
+    cabeçalho do setor (fetchone), a data de carga do histórico (scalar,
+    desde 18/09/2026) e a página de médicos (fetchall)."""
     mock_conn = MagicMock()
     mock_conn.__enter__ = lambda s: s
     mock_conn.__exit__ = MagicMock(return_value=False)
     resultado_cabecalho = MagicMock()
     resultado_cabecalho.mappings.return_value.fetchone.return_value = cabecalho
+    resultado_atualizado = MagicMock()
+    resultado_atualizado.scalar.return_value = atualizado_em
     resultado_rows = MagicMock()
     resultado_rows.mappings.return_value.fetchall.return_value = rows
-    mock_conn.execute.side_effect = [resultado_cabecalho, resultado_rows]
+    mock_conn.execute.side_effect = [resultado_cabecalho, resultado_atualizado, resultado_rows]
     mock_eng = MagicMock()
     mock_eng.connect.return_value = mock_conn
     return mock_eng, mock_conn
@@ -89,7 +92,8 @@ def test_busca_vai_para_a_consulta_em_caixa_alta():
     with patch("backend.app.routers.ranking.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.ranking.get_engine", return_value=mock_eng):
             CLIENT.get("/ranking", params={"email": "ana.silva@ache.com.br", "q": "maria"}, headers=CABECALHO)
-    params_da_lista = mock_conn.execute.call_args_list[1].args[1]
+    # Índice 2: a consulta da página vem depois do cabeçalho e da data de carga.
+    params_da_lista = mock_conn.execute.call_args_list[2].args[1]
     assert params_da_lista["busca"] == "%MARIA%"
 
 
@@ -242,3 +246,22 @@ def test_fonte_desconhecida_degrada_sem_sinalizacao():
     from backend.app.routers.ranking import _fragmentos_recomendacao
 
     assert _fragmentos_recomendacao("desconhecida") == {"select": "", "join": ""}
+
+
+
+def test_busca_casa_nome_ou_ufcrm_e_lista_traz_ultima_visita():
+    """"Pesquisar médico" da Home (20/09/2026): aceita nome ou CRM, e o card
+    mostra a última visita sem abrir o detalhe."""
+    mock_eng, mock_conn = _mock_engine_lista(
+        _CABECALHO_SETOR, [{**_MEDICO, "ufcrm": "RJ0994499", "data_ultima_visita": "2026-09-15"}]
+    )
+    with patch("backend.app.routers.ranking.resolver_contexto", return_value=_CTX_VALIDO):
+        with patch("backend.app.routers.ranking.get_engine", return_value=mock_eng):
+            resp = CLIENT.get(
+                "/ranking", params={"email": "ana.silva@ache.com.br", "q": "994499"}, headers=CABECALHO
+            )
+    assert resp.status_code == 200, resp.text
+    sql = str(mock_conn.execute.call_args_list[2].args[0])
+    assert "r.ufcrm LIKE :busca" in sql
+    assert mock_conn.execute.call_args_list[2].args[1]["busca"] == "%994499%"
+    assert resp.json()["medicos"][0]["data_ultima_visita"] == "2026-09-15"

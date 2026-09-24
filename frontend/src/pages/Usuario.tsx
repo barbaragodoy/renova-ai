@@ -2,20 +2,18 @@ import { useEffect, useState } from "react";
 import { Camera, Pencil, UserCircle } from "lucide-react";
 import {
   ApiError,
-  LIMITE_PAINEL_MAX,
-  LIMITE_PAINEL_MIN,
   enviarFotoPerfil,
   obterPerfil,
-  salvarLimitePainel,
   salvarNomePerfil,
   urlFotoPerfil,
   type PerfilResponse,
 } from "@/lib/api";
 import { Alert } from "@/components/ui/alert";
 import { Card, Secao } from "@/components/ui/card";
+import { PontinhosDeCarregamento } from "@/components/ui/loading";
 
 /**
- * Aba Usuário do PedAI.
+ * Aba Usuário do Ped.AI.
  *
  * Espelha o protótipo `UserScreen` do Figma Make `cuZGbZpvR0aBJhixqBnYYB`,
  * lido em 07/08/2026. A estrutura é a de lá: cartão de identificação com
@@ -96,6 +94,17 @@ function formatarAcesso(valor?: string | null): string | null {
   });
 }
 
+/** "CLINICA GERAL" vira "Clinica Geral". A origem grava em maiúsculas e sem
+ *  acento; a tela não tenta devolver o acento, porque adivinhar erraria em
+ *  parte dos nomes. */
+function capitalizarEspecialidade(valor: string): string {
+  return valor
+    .toLowerCase()
+    .split(" ")
+    .map((parte) => (parte ? parte[0].toUpperCase() + parte.slice(1) : parte))
+    .join(" ");
+}
+
 function numero(valor?: number | null): string | null {
   return valor === null || valor === undefined ? null : String(valor);
 }
@@ -116,123 +125,6 @@ function Indicador({ rotulo, valor }: { rotulo: string; valor?: string | null })
       >
         {vazio ? NAO_DISPONIVEL : valor}
       </p>
-    </Card>
-  );
-}
-
-/** Cartão do limite do painel: mostra o valor em vigor e deixa alterar.
- *
- *  O limite é o corte que o motor aplica no ciclo seguinte, não uma
- *  preferência visual. Por isso o cartão avisa que a mudança só aparece na
- *  próxima geração, e não some com o valor anterior enquanto salva.
- *
- *  Quando o valor é personalizado, aparece a opção de voltar ao padrão. Ela
- *  envia nulo, e o backend limpa a coluna em vez de gravar 318 na mão: assim
- *  a pessoa volta a acompanhar o padrão se ele mudar um dia. */
-function LimitePainel({
-  valor,
-  personalizado,
-  salvando,
-  erro,
-  onSalvar,
-}: {
-  valor: number;
-  personalizado: boolean;
-  salvando: boolean;
-  erro: string | null;
-  onSalvar: (limite: number | null) => void;
-}) {
-  const [editando, setEditando] = useState(false);
-  const [rascunho, setRascunho] = useState(String(valor));
-
-  const numero = Number(rascunho);
-  const invalido =
-    rascunho.trim() === "" ||
-    !Number.isInteger(numero) ||
-    numero < LIMITE_PAINEL_MIN ||
-    numero > LIMITE_PAINEL_MAX;
-
-  function abrir() {
-    setRascunho(String(valor));
-    setEditando(true);
-  }
-
-  return (
-    <Card className="col-span-2 flex flex-col gap-2 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <p className="text-[10px] leading-tight font-semibold tracking-wider text-[var(--color-muted-foreground)] uppercase">
-            Limite do painel
-          </p>
-          {/* Sem o selo "padrão", decisão de George em 20/08/2026: quem lê
-              quer saber o limite, não de onde ele veio. O valor em rosa porque
-              é o número que o propagandista procura no cartão. */}
-          <p className="text-sm leading-snug font-bold text-[var(--color-primary)]">
-            {valor} médicos
-          </p>
-        </div>
-
-        {!editando && (
-          <button
-            type="button"
-            onClick={abrir}
-            aria-label="Alterar o limite do painel"
-            className="flex h-8 w-8 items-center justify-center rounded-full text-[var(--color-muted-foreground)] hover:bg-[var(--color-muted)]"
-          >
-            <Pencil className="h-4 w-4" aria-hidden="true" />
-          </button>
-        )}
-      </div>
-
-      {editando && (
-        <div className="flex flex-col gap-2">
-          <input
-            type="number"
-            inputMode="numeric"
-            min={LIMITE_PAINEL_MIN}
-            max={LIMITE_PAINEL_MAX}
-            value={rascunho}
-            onChange={(e) => setRascunho(e.target.value)}
-            aria-label="Novo limite do painel"
-            className="w-full rounded-[var(--radius-md)] border border-[var(--color-border)] px-3 py-2 text-sm"
-          />
-          <p className="text-xs text-[var(--color-muted-foreground)]">
-            Entre {LIMITE_PAINEL_MIN} e {LIMITE_PAINEL_MAX}. A mudança vale a
-            partir da próxima geração de recomendações.
-          </p>
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              disabled={invalido || salvando}
-              onClick={() => onSalvar(numero)}
-              className="rounded-[var(--radius-md)] bg-[var(--color-primary)] px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-            >
-              {salvando ? "Salvando..." : "Salvar"}
-            </button>
-            <button
-              type="button"
-              disabled={salvando}
-              onClick={() => setEditando(false)}
-              className="rounded-[var(--radius-md)] px-3 py-1.5 text-sm font-medium text-[var(--color-muted-foreground)]"
-            >
-              Cancelar
-            </button>
-            {personalizado && (
-              <button
-                type="button"
-                disabled={salvando}
-                onClick={() => onSalvar(null)}
-                className="rounded-[var(--radius-md)] px-3 py-1.5 text-sm font-medium text-[var(--color-muted-foreground)] underline"
-              >
-                Voltar ao padrão
-              </button>
-            )}
-          </div>
-
-          {erro && <p className="text-xs text-[var(--color-destructive)]">{erro}</p>}
-        </div>
-      )}
     </Card>
   );
 }
@@ -267,6 +159,52 @@ function Campo({
   );
 }
 
+function UsuarioEsqueleto() {
+  return (
+    <div className="space-y-4 px-4 py-5 pb-8" aria-hidden="true">
+      <PontinhosDeCarregamento texto="Carregando seu perfil" />
+
+      <Card className="p-5">
+        <div className="flex flex-col items-center space-y-3">
+          <div className="h-20 w-20 rounded-full skeleton-shimmer" />
+          <div className="flex flex-col items-center gap-2">
+            <div className="h-4 w-32 rounded-sm skeleton-shimmer" />
+            <div className="h-3 w-20 rounded-sm skeleton-shimmer" />
+          </div>
+          <div className="h-5 w-16 rounded-full skeleton-shimmer" />
+        </div>
+        <div className="mt-4 border-t border-[var(--color-border)] pt-4">
+          <div className="h-10 w-full rounded-xl skeleton-shimmer" />
+        </div>
+      </Card>
+
+      <div className="space-y-2">
+        <div className="h-3 w-20 rounded-sm skeleton-shimmer" />
+        <div className="grid grid-cols-2 gap-3">
+          {[0, 1, 2, 3].map((i) => (
+            <Card key={i} className="flex flex-col gap-2 p-4">
+              <div className="h-2.5 w-3/4 rounded-sm skeleton-shimmer" />
+              <div className="h-4 w-1/2 rounded-sm skeleton-shimmer" />
+            </Card>
+          ))}
+        </div>
+      </div>
+
+      <div className="space-y-2">
+        <div className="h-3 w-24 rounded-sm skeleton-shimmer" />
+        <Card className="divide-y divide-[var(--color-border)]">
+          {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((i) => (
+            <div key={i} className="flex items-center justify-between gap-3 px-4 py-3.5">
+              <div className="h-2.5 w-1/3 rounded-sm skeleton-shimmer" />
+              <div className="h-2.5 w-1/4 rounded-sm skeleton-shimmer" />
+            </div>
+          ))}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
 export function Usuario({ email }: UsuarioProps) {
   const [perfil, setPerfil] = useState<PerfilResponse | null>(null);
   const [erro, setErro] = useState<string | null>(null);
@@ -275,13 +213,12 @@ export function Usuario({ email }: UsuarioProps) {
   const [rascunho, setRascunho] = useState("");
   const [salvando, setSalvando] = useState(false);
   const [erroEdicao, setErroEdicao] = useState<string | null>(null);
-  const [salvandoLimite, setSalvandoLimite] = useState(false);
   // Incrementado a cada troca de foto para forçar o <img> a recarregar. Sem
   // isso o navegador serviria a imagem antiga do cache, mesma URL.
   const [versaoFoto, setVersaoFoto] = useState(0);
   const [erroFoto, setErroFoto] = useState<string | null>(null);
   const [enviandoFoto, setEnviandoFoto] = useState(false);
-  const [erroLimite, setErroLimite] = useState<string | null>(null);
+  const [fotoQuebrada, setFotoQuebrada] = useState(false);
 
   useEffect(() => {
     let ativo = true;
@@ -311,13 +248,7 @@ export function Usuario({ email }: UsuarioProps) {
   }, [email]);
 
   if (carregando) {
-    return (
-      <div className="px-4 py-8">
-        <p className="text-[var(--color-muted-foreground)]">
-          Carregando seu perfil...
-        </p>
-      </div>
-    );
+    return <UsuarioEsqueleto />;
   }
 
   // A lista vazia não deveria chegar aqui: o backend responde 404 quando não
@@ -377,6 +308,7 @@ export function Usuario({ email }: UsuarioProps) {
     enviarFotoPerfil(email, arquivo)
       .then(() => {
         setVersaoFoto((v) => v + 1);
+        setFotoQuebrada(false);
         // Recarrega o perfil para foto_path refletir o novo estado; sem isso
         // o avatar continuaria caindo no ícone padrão até o próximo acesso.
         return obterPerfil(email).then(setPerfil);
@@ -389,24 +321,6 @@ export function Usuario({ email }: UsuarioProps) {
         );
       })
       .finally(() => setEnviandoFoto(false));
-  }
-
-  // `null` volta ao padrão. O backend limpa a coluna em vez de gravar 318,
-  // então quem voltou ao padrão continua acompanhando o padrão se ele mudar.
-  function salvarLimite(limite: number | null) {
-    setSalvandoLimite(true);
-    setErroLimite(null);
-
-    salvarLimitePainel(email, limite)
-      .then(setPerfil)
-      .catch((excecao) => {
-        setErroLimite(
-          excecao instanceof ApiError
-            ? excecao.message
-            : "Não foi possível salvar o limite. Tente novamente.",
-        );
-      })
-      .finally(() => setSalvandoLimite(false));
   }
 
   return (
@@ -426,11 +340,12 @@ export function Usuario({ email }: UsuarioProps) {
                   : { borderColor: FUNDO_AVATAR, background: FUNDO_AVATAR }
               }
             >
-              {perfil.foto_path ? (
+              {perfil.foto_path && !fotoQuebrada ? (
                 <img
                   src={urlFotoPerfil(email, versaoFoto)}
                   alt="Foto de perfil"
                   className="h-full w-full rounded-full object-cover"
+                  onError={() => setFotoQuebrada(true)}
                 />
               ) : (
                 <UserCircle
@@ -528,21 +443,8 @@ export function Usuario({ email }: UsuarioProps) {
                 </button>
               </div>
 
-              {/* Só quem editou vê a opção de voltar. Para quem nunca editou
-                  ela não faria nada, e oferecer confundiria. */}
-              {perfil.nome_editado && (
-                <button
-                  type="button"
-                  onClick={() => salvar(null)}
-                  disabled={salvando}
-                  className="mt-2 w-full text-center text-[11px] text-[var(--color-muted-foreground)] underline"
-                >
-                  Usar o nome do cadastro
-                </button>
-              )}
-
               <p className="mt-2 text-center text-[11px] text-[var(--color-muted-foreground)]">
-                Nesta versão apenas o nome pode ser editado.
+                Nesta versão apenas nome e foto podem ser editados.
               </p>
             </>
           ) : (
@@ -571,9 +473,17 @@ export function Usuario({ email }: UsuarioProps) {
             }
             valor={setores}
           />
+          {/* As duas especialidades com mais médicos visitados em doze meses,
+              nome e regra do protótipo. Substituiu "Especialidades da linha"
+              em 18/09/2026; as franquias da linha desceram para o campo
+              "Linha de produtos" em Informações. */}
           <Indicador
-            rotulo="Especialidades da linha"
-            valor={perfil.franquias_linha.join(" · ") || null}
+            rotulo="Especialidades predominantes"
+            valor={
+              perfil.especialidades_predominantes
+                .map(capitalizarEspecialidade)
+                .join(" · ") || null
+            }
           />
           <Indicador
             rotulo="Médicos no painel"
@@ -582,13 +492,6 @@ export function Usuario({ email }: UsuarioProps) {
           <Indicador
             rotulo="Recomendações pendentes"
             valor={numero(perfil.recomendacoes_pendentes)}
-          />
-          <LimitePainel
-            valor={perfil.limite_painel}
-            personalizado={perfil.limite_painel_personalizado}
-            salvando={salvandoLimite}
-            erro={erroLimite}
-            onSalvar={salvarLimite}
           />
         </div>
       </Secao>
@@ -599,7 +502,13 @@ export function Usuario({ email }: UsuarioProps) {
           <Campo rotulo="Cargo" valor={perfil.cargo} />
           <Campo rotulo="Regional" valor={perfil.regional} />
           <Campo rotulo="Cidade / Estado" valor={cidadeEstado} />
-          <Campo rotulo="Linha de produtos" valor={perfil.linha_nome} />
+          {/* As franquias da linha, como no protótipo ("Cardiovascular &
+              Endocrinologia"), e não o nome ou o número da linha. Decisão de
+              George em 18/09/2026. */}
+          <Campo
+            rotulo="Linha de produtos"
+            valor={perfil.franquias_linha.join(" · ") || perfil.linha_nome}
+          />
           <Campo rotulo="Supervisor" valor={primeira.gd_nome} />
           <Campo rotulo="Matrícula" valor={perfil.matricula} />
           <Campo rotulo="E-mail corporativo" valor={perfil.email} />

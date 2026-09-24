@@ -5,7 +5,11 @@ from uuid import UUID
 from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import text
 
-from backend.app.auth.context import resolver_contexto, StatusContexto
+from backend.app.auth.context import (
+    StatusContexto,
+    coluna_identidade_para_auth_mode,
+    resolver_contexto,
+)
 from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.config import get_settings
 from backend.app.db.databricks_connection import get_engine
@@ -51,13 +55,6 @@ _COLUNAS_POR_FONTE = {
         "ciclo_referencia": "CICLO_RECOMENDACAO",
         "motivo_revisao": "MOTIVO_RECOMENDACAO",
         "qtd_medicos_painel_ciclo": "QTD_MEDICOS_PAINEL_CICLO",
-        # Sprint 6 — limite por propagandista (substitui o corte fixo de
-        # 400). tb_perfil_portal já existe na fonte real (usada por
-        # auth/perfil.py para NOME_EXIBICAO/FOTO_PATH desde antes desta
-        # task); aqui só o de-para das colunas de limite, mesmo padrão
-        # LEFT JOIN ON REP_MATRICULA confirmado pelo Hugo.
-        "tabela_perfil_portal": "tb_perfil_portal",
-        "limite_painel": "LIMITE_PAINEL",
         # tb_renovai_parametros — criada pelo George em 26/08/2026, fonte
         # única do LIMITE_PAINEL_PADRAO (318 confirmado via DESCRIBE/SELECT
         # reais). Substitui o literal 318 hardcoded que existia aqui antes
@@ -76,6 +73,10 @@ _COLUNAS_POR_FONTE = {
         # (ALTER TABLE conferido: 20 colunas antes, 22 depois).
         "aceito_por": "ACEITO_POR",
         "data_aceite": "DATA_ACEITE",
+        # Data em que o aceite foi enviado ao SalesFarma. Criada em 08/09/2026;
+        # nenhum processo a preenche ainda. É a trava do desfazer: aceite com
+        # esta data não volta, porque o SalesFarma já recebeu.
+        "data_exportacao": "DATA_EXPORTACAO",
         # LEFT JOIN com tb_dim_medicos (espelho local do Databricks, ver
         # known-issues.md — "RESOLVIDO POR VIA ALTERNATIVA").
         "tabela_dim_medicos": "tb_dim_medicos",
@@ -98,11 +99,6 @@ _COLUNAS_POR_FONTE = {
         # Não existe no schema local — filtro de defesa em profundidade
         # (painel > limite) fica desativado nessa fonte, ver listar_revisao().
         "qtd_medicos_painel_ciclo": None,
-        # Sprint 6 — tb_perfil_portal criada localmente em
-        # data/scripts/13_create_tb_perfil_portal.sql, mesmo de-para de
-        # nomes (minúsculo) usado no resto do schema local.
-        "tabela_perfil_portal": "tb_perfil_portal",
-        "limite_painel": "limite_painel",
         # tb_renovai_parametros criada localmente em
         # data/scripts/14_create_tabelas_chat_ranking_agente.sql, mesmo
         # de-para de nomes (minúsculo) usado no resto do schema local.
@@ -118,6 +114,8 @@ _COLUNAS_POR_FONTE = {
         # funcionar fora do Databricks.
         "aceito_por": "aceito_por",
         "data_aceite": "data_aceite",
+        # A tabela local precisa de `data_exportacao timestamptz` desde 20/09/2026.
+        "data_exportacao": "data_exportacao",
         # tb_dim_medicos faz parte do espelho local criado pelo script 14.
         # DATA_ULTIMA_VISITA_CONSIDERADA ainda não existe na recomendação
         # local, então apenas meses_sem_visita continua indisponível.
@@ -153,40 +151,22 @@ def _ciclo_mais_recente(col: dict) -> str:
 
 
 def _limite_painel(matricula: str, col: dict) -> int:
-    """Resolve o limite de painel em vigor para o propagandista (Sprint 6:
-    substitui o corte fixo de 400 médicos no painel pelo limite
-    personalizável por propagandista).
+    """Limite do painel em vigor: o padrão único de tb_renovai_parametros.
 
-    COALESCE(LIMITE_PAINEL, (SELECT LIMITE_PAINEL_PADRAO FROM
-    tb_renovai_parametros WHERE ID=1)) — o literal 318 que vivia direto no
-    SQL foi substituído pela tabela de parâmetros que o George criou em
-    26/08/2026 (fonte única, confirmada com o mesmo valor 318 via
-    DESCRIBE/SELECT reais — ver docs/context/decisions-log.md). Não é
-    settings.limite_painel_padrao (config local do portal): é dado, muda
-    sem deploy, igual ao notebook de geração que lê a mesma tabela.
+    Até 18/09/2026 esta função fazia COALESCE(LIMITE_PAINEL, padrão) sobre
+    tb_perfil_portal, o limite personalizável por propagandista da Sprint 6.
+    George decidiu, ao alinhar o portal ao protótipo, que a personalização
+    sai e o padrão passa a 300. A coluna LIMITE_PAINEL de tb_perfil_portal
+    não é mais lida em lugar nenhum do backend.
 
-    Nota de hardening registrada em docs/context/known-issues.md: esta
-    fórmula falha de verdade (exceção) se tb_renovai_parametros estiver
-    inacessível, mas devolve NULL em silêncio se a tabela existir sem a
-    linha ID=1 — o comentário real da coluna sinaliza intenção de erro
-    declarado nesse segundo caso, não implementada aqui por decisão
-    explícita (fórmula mantida exatamente como especificada)."""
+    `matricula` fica na assinatura para não mudar os pontos de chamada; o
+    valor não influencia mais o resultado.
+
+    Nota de hardening mantida de docs/context/known-issues.md: a consulta
+    falha de verdade se tb_renovai_parametros estiver inacessível, mas
+    devolve NULL em silêncio se a tabela existir sem a linha ID=1.
+    """
     with _engine().connect() as conn:
-        row = conn.execute(
-            text(f"""
-                SELECT COALESCE(
-                    {col['limite_painel']},
-                    (SELECT {col['limite_painel_padrao']} FROM {col['tabela_parametros']} WHERE id = 1)
-                ) AS limite
-                FROM {col['tabela_perfil_portal']}
-                WHERE {col['rep_matricula']} = :mat
-            """),
-            {"mat": matricula},
-        ).fetchone()
-        if row is not None:
-            return row.limite
-        # Ninguém personalizou (sem linha em tb_perfil_portal, caso mais
-        # comum hoje) — mesmo default, buscado da mesma fonte única.
         return conn.execute(
             text(f"SELECT {col['limite_painel_padrao']} FROM {col['tabela_parametros']} WHERE id = 1")
         ).scalar()
@@ -270,7 +250,10 @@ def _aplicar_fallback_nome_medico(row) -> dict:
 
 
 def _validar_contexto(email: str):
-    ctx = resolver_contexto(email)
+    ctx = resolver_contexto(
+        email,
+        coluna_identidade=coluna_identidade_para_auth_mode(),
+    )
     if ctx.status != StatusContexto.SETOR_RESOLVIDO:
         raise HTTPException(
             status_code=403,
@@ -646,6 +629,15 @@ def listar_desconsideradas(
     `data_decisao` unifica as duas datas, e `status_recomendacao` diz qual foi
     a decisão. O nome da rota fica como está: renomear quebraria o contrato
     publicado no OpenAPI sem ganho para quem consome.
+
+    **O filtro é por decisão registrada, e não por status.** Decisão de George
+    em 08/09/2026: um aceite que não vira aplicado até a virada do ciclo passa
+    a expirar, e o médico volta a aparecer como pendente pela linha nova que a
+    geração cria no ciclo seguinte. Filtrar por `STATUS_RECOMENDACAO`, como
+    era antes, faria a decisão sumir da tela no dia da virada, e o
+    propagandista veria o próprio aceite desaparecer sem explicação. As
+    colunas `DATA_ACEITE` e `DATA_DESCONSIDERACAO` sobrevivem à expiração,
+    então elas são o registro estável do que a pessoa decidiu.
     """
     ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
@@ -665,6 +657,7 @@ def listar_desconsideradas(
                {col['data_desconsideracao']}             AS data_desconsideracao,
                COALESCE({col['data_desconsideracao']},
                         {col['data_aceite']})            AS data_decisao,
+               {col['data_exportacao']}                  AS data_exportacao,
                {col['ciclo_referencia']}                 AS ciclo_recomendacao,
                LEFT({col['tabela']}.{col['ufcrm']}, 2) AS uf
                {dm['especialidade']}
@@ -673,7 +666,8 @@ def listar_desconsideradas(
         FROM {col['tabela']}
         {dm['join']}
         WHERE {col['rep_matricula']} = :mat
-          AND {col['status_recomendacao']} IN ('DESCONSIDERADA', 'ACEITA')
+          AND ({col['data_desconsideracao']} IS NOT NULL
+            OR {col['data_aceite']} IS NOT NULL)
         -- `id_recomendacao` desempata: sem ele, decisões com a mesma data
         -- alternariam de ordem entre consultas.
         ORDER BY COALESCE({col['data_desconsideracao']},
@@ -684,8 +678,29 @@ def listar_desconsideradas(
     with _engine().connect() as conn:
         rows = conn.execute(query, {"mat": ctx.matricula}).mappings().fetchall()
 
-    items = [DesconsideradaItem(**_aplicar_fallback_nome_medico(r)) for r in rows]
+    items = []
+    for r in rows:
+        dados = _aplicar_fallback_nome_medico(r)
+        dados["pode_desfazer"] = _pode_desfazer(
+            dados.get("status_recomendacao"), dados.get("data_exportacao")
+        )
+        items.append(DesconsideradaItem(**dados))
     return ListaDesconsideradasResponse(total=len(items), recomendacoes=items)
+
+
+def _pode_desfazer(status: Optional[str], data_exportacao) -> bool:
+    """Regra única do botão "Desfazer" do Histórico, decidida por George em
+    20/09/2026 ao alinhar a aba ao protótipo.
+
+    Desconsiderada sempre volta. Aceita volta enquanto o aceite não foi
+    enviado ao SalesFarma: depois do envio o SalesFarma já recebeu, e depois
+    de APLICADA o médico já está (ou já saiu) do painel de lá. O protótipo
+    mostra o botão nos dois tipos de card; esta função é o que diz quando
+    ele aparece, para a tela não repetir a regra.
+    """
+    if status == "DESCONSIDERADA":
+        return True
+    return status == "ACEITA" and data_exportacao is None
 
 
 @router.post("/{id_recomendacao}/reverter", response_model=ReverterResponse)
@@ -694,15 +709,24 @@ def reverter(
     email: Optional[str] = Query(None),
     authorization: Optional[str] = Header(None),
 ):
-    """POST /recomendacoes/{id_recomendacao}/reverter — aba Arquivadas (reversão).
+    """POST /recomendacoes/{id_recomendacao}/reverter — botão Desfazer do Histórico.
 
-    Sem payload no corpo. Reverte uma recomendação DESCONSIDERADA: volta a
-    PENDENTE se o ciclo da recomendação ainda é o mais recente
-    (_ciclo_mais_recente(), mesma lógica de /entrada e /revisao), ou EXPIRADA
-    se já é de um ciclo anterior. Limpa motivo_desconsideracao,
-    desconsiderado_por, bloquear_novas_recomendacoes e data_desconsideracao
-    (voltam a NULL) — mas mantém qtd_vezes_desconsiderado como histórico
-    acumulado, mesmo após a reversão.
+    Sem payload no corpo. Volta a recomendação a PENDENTE se o ciclo dela
+    ainda é o mais recente (_ciclo_mais_recente(), mesma lógica de /entrada e
+    /revisao), ou a EXPIRADA se já é de um ciclo anterior.
+
+    Dois caminhos, um por decisão que está sendo desfeita:
+
+    - DESCONSIDERADA: limpa motivo_desconsideracao, desconsiderado_por,
+      bloquear_novas_recomendacoes e data_desconsideracao. Mantém
+      qtd_vezes_desconsiderado, que é histórico acumulado.
+    - ACEITA sem data_exportacao: limpa aceito_por e data_aceite. Aceite já
+      enviado ao SalesFarma, ou já APLICADA, responde 409 com a data: não há
+      como voltar o que o SalesFarma recebeu. Regra decidida por George em
+      20/09/2026; ver _pode_desfazer, que é a mesma regra do lado da lista.
+
+    Desfazer um aceite apaga a data do aceite, sem rastro. George aceitou isso
+    em 20/09/2026 em vez de criar coluna para guardar o histórico.
     """
     ctx = _validar_contexto(resolver_email_autenticado(authorization, email))
     settings = get_settings()
@@ -714,7 +738,8 @@ def reverter(
             text(f"""
                 SELECT {col['rep_matricula']}       AS rep_matricula,
                        {col['status_recomendacao']} AS status_recomendacao,
-                       {col['ciclo_referencia']}     AS ciclo_referencia
+                       {col['ciclo_referencia']}     AS ciclo_referencia,
+                       {col['data_exportacao']}      AS data_exportacao
                 FROM {col['tabela']}
                 WHERE {col['id_recomendacao']} = :id
             """),
@@ -728,45 +753,83 @@ def reverter(
     if row["rep_matricula"] != ctx.matricula:
         raise HTTPException(status_code=403, detail="Não autorizado a reverter esta recomendação.")
 
-    if row["status_recomendacao"] != "DESCONSIDERADA":
+    status = row["status_recomendacao"]
+    data_exportacao = row.get("data_exportacao")
+
+    if status == "ACEITA" and data_exportacao is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Aceite enviado ao SalesFarma em {_data_curta(data_exportacao)}. "
+                "Não é possível desfazer."
+            ),
+        )
+    if status == "APLICADA":
+        raise HTTPException(
+            status_code=409,
+            detail="Recomendação já aplicada no SalesFarma. Não é possível desfazer.",
+        )
+    if not _pode_desfazer(status, data_exportacao):
         raise HTTPException(
             status_code=400,
-            detail=f"Recomendação em estado incompatível para reversão: '{row['status_recomendacao']}'.",
+            detail=f"Recomendação em estado incompatível para reversão: '{status}'.",
         )
 
     ciclo_atual = _ciclo_mais_recente(col)
     novo_status = "PENDENTE" if row["ciclo_referencia"] == ciclo_atual else "EXPIRADA"
 
-    # UPDATE atômico: o WHERE repete status_recomendacao = 'DESCONSIDERADA'
-    # (mesma condição já checada acima) para garantir que, sob concorrência,
-    # só uma das requisições simultâneas efetivamente grava — a outra recebe
+    # UPDATE atômico: o WHERE repete o status já checado acima (e, no aceite,
+    # a ausência de exportação) para garantir que, sob concorrência, só uma
+    # das requisições simultâneas efetivamente grava — a outra recebe
     # rowcount == 0 e é tratada como 400 abaixo, sem precisar de lock
     # explícito. qtd_vezes_desconsiderado propositalmente NÃO é tocado.
+    if status == "DESCONSIDERADA":
+        sql_update = f"""
+            UPDATE {col['tabela']}
+            SET {col['status_recomendacao']}         = :novo_status,
+                {col['motivo_desconsideracao']}       = NULL,
+                {col['desconsiderado_por']}           = NULL,
+                {col['bloquear_novas_recomendacoes']} = NULL,
+                {col['data_desconsideracao']}         = NULL
+            WHERE {col['id_recomendacao']} = :id
+              AND {col['status_recomendacao']} = 'DESCONSIDERADA'
+        """
+    else:
+        sql_update = f"""
+            UPDATE {col['tabela']}
+            SET {col['status_recomendacao']} = :novo_status,
+                {col['aceito_por']}          = NULL,
+                {col['data_aceite']}         = NULL
+            WHERE {col['id_recomendacao']} = :id
+              AND {col['status_recomendacao']} = 'ACEITA'
+              AND {col['data_exportacao']} IS NULL
+        """
+
     with _engine().connect() as conn:
-        resultado = conn.execute(
-            text(f"""
-                UPDATE {col['tabela']}
-                SET {col['status_recomendacao']}         = :novo_status,
-                    {col['motivo_desconsideracao']}       = NULL,
-                    {col['desconsiderado_por']}           = NULL,
-                    {col['bloquear_novas_recomendacoes']} = NULL,
-                    {col['data_desconsideracao']}         = NULL
-                WHERE {col['id_recomendacao']} = :id
-                  AND {col['status_recomendacao']} = 'DESCONSIDERADA'
-            """),
-            {"novo_status": novo_status, "id": id_str},
-        )
+        resultado = conn.execute(text(sql_update), {"novo_status": novo_status, "id": id_str})
         conn.commit()
 
     if resultado.rowcount == 0:
         raise HTTPException(
             status_code=400,
-            detail="Recomendação não está mais em estado 'DESCONSIDERADA' (alterada por outra requisição).",
+            detail=f"Recomendação não está mais em estado '{status}' (alterada por outra requisição).",
         )
 
     return ReverterResponse(
         success=True,
-        message=f"Recomendação {id_str} revertida com sucesso.",
+        message=(
+            f"Aceite da recomendação {id_str} desfeito."
+            if status == "ACEITA"
+            else f"Recomendação {id_str} revertida com sucesso."
+        ),
         id_recomendacao=id_str,
         status_recomendacao=novo_status,
     )
+
+
+def _data_curta(valor) -> str:
+    """dd/mm/aaaa para a mensagem de erro; aceita datetime ou texto."""
+    try:
+        return valor.strftime("%d/%m/%Y")
+    except AttributeError:
+        return str(valor)[:10]

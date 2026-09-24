@@ -1,0 +1,25 @@
+{
+  "visitas_total": 1076,
+  "comentarios_distintos": 704,
+  "visitas_sem_conteudo_traco": 200,
+  "chamadas_processadas": 703,
+  "tokens_entrada": 284945,
+  "tokens_saida": 25920,
+  "estados": {
+    "COM_BARREIRA": {
+      "visitas": 617,
+      "medicos": 572,
+      "textos": 514
+    },
+    "SEM_CONTEUDO_REAL": {
+      "visitas": 200,
+      "medicos": 164,
+      "textos": 1
+    },
+    "COM_CONTEUDO_SEM_BARREIRA": {
+      "visitas": 259,
+      "medicos": 257,
+      "textos": 189
+    }
+  }
+}

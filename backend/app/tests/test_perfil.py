@@ -42,12 +42,12 @@ def _linha(setor: str, linha_produto: str, gd_nome: str) -> dict:
         # nunca editou nem acessou, que é todo mundo até a aba entrar em uso.
         "nome_exibicao": None,
         "foto_path": None,
-        "limite_painel": None,
         "dt_acesso_anterior": None,
         # Vinda do CROSS JOIN com tb_renovai_parametros (Fase 3.5,
         # 26/08/2026) — fonte única do default, substitui o antigo literal
         # 318 em Python. Linha única real: sempre presente, nunca NULL.
-        "limite_painel_padrao": 318,
+        "limite_painel_padrao": 300,
+        "especialidades_predominantes": "CLINICA GERAL,CARDIOLOGIA",
         # Contagens do bloco 2, que passaram a vir na mesma consulta da
         # identidade em 07/08/2026.
         "medicos_no_painel": 392,
@@ -476,8 +476,9 @@ def test_consulta_filtra_status_e_ciclo():
         "CICLO_REFERENCIA = ( SELECT MAX(CICLO_REFERENCIA) "
         "FROM tb_ranking_medicos_validacao )" in consulta
     )
-    # Os setores saem da própria consulta, e é isso que permite juntar as duas.
-    assert consulta.count("SETOR IN (SELECT setor FROM pessoa)") == 2
+    # Os setores saem da própria consulta, e é isso que permite juntar as
+    # três contagens: painel, pendentes e especialidades predominantes.
+    assert consulta.count("SETOR IN (SELECT setor FROM pessoa)") == 3
     # Atributo do setor, repetido em todas as linhas dele: o MAX agrupado
     # devolve o valor, não um máximo de verdade.
     assert "MAX(QTD_MEDICOS_PAINEL_SETOR)" in consulta
@@ -584,19 +585,54 @@ def test_linha_desconhecida_devolve_lista_vazia_e_nao_derruba_o_perfil():
     assert perfil.matricula == "184480"
 
 
-def test_limite_do_painel_cai_no_padrao_quando_ninguem_personalizou():
-    with _com_linhas([_linha("010103040755", "5", "EWERTON PAULA")]):
-        perfil = resolver_perfil("antonio.vaz@ache.com.br")
+def test_limite_do_painel_e_o_padrao_unico_da_tabela_de_parametros():
+    """Desde 18/09/2026 não existe limite por propagandista.
 
-    assert perfil.limite_painel == 318
-    assert perfil.limite_painel_personalizado is False
-
-
-def test_limite_personalizado_vence_o_padrao():
+    O valor vem só de tb_renovai_parametros. Uma coluna LIMITE_PAINEL que ainda
+    exista na linha, por dado antigo, não pode influenciar: é o que este teste
+    garante ao colocá-la no mock e esperar que seja ignorada.
+    """
     linha = _linha("010103040755", "5", "EWERTON PAULA")
-    linha["limite_painel"] = 450
+    linha["limite_painel"] = 450  # resto de dado antigo, deve ser ignorado
     with _com_linhas([linha]):
         perfil = resolver_perfil("antonio.vaz@ache.com.br")
 
-    assert perfil.limite_painel == 450
-    assert perfil.limite_painel_personalizado is True
+    assert perfil.limite_painel == 300
+    assert not hasattr(perfil, "limite_painel_personalizado")
+
+
+def test_limite_cai_no_literal_quando_a_tabela_de_parametros_nao_responde():
+    linha = _linha("010103040755", "5", "EWERTON PAULA")
+    linha["limite_painel_padrao"] = None
+    with _com_linhas([linha]):
+        perfil = resolver_perfil("antonio.vaz@ache.com.br")
+
+    assert perfil.limite_painel == 300
+
+
+def test_especialidades_predominantes_vem_da_consulta_de_resumo():
+    with _com_linhas([_linha("010103040755", "5", "EWERTON PAULA")]):
+        perfil = resolver_perfil("antonio.vaz@ache.com.br")
+
+    assert perfil.especialidades_predominantes == ["CLINICA GERAL", "CARDIOLOGIA"]
+
+
+def test_especialidades_predominantes_vazia_sem_visita_no_periodo():
+    linha = _linha("010103040755", "5", "EWERTON PAULA")
+    linha["especialidades_predominantes"] = None
+    with _com_linhas([linha]):
+        perfil = resolver_perfil("antonio.vaz@ache.com.br")
+
+    assert perfil.especialidades_predominantes == []
+
+
+def test_consulta_de_predominantes_exclui_medico_sem_especialidade_e_limita_a_duas():
+    """Medido em 18/09/2026: em 4,3% dos setores "(sem especialidade)" ficaria
+    entre as duas primeiras. Não é informação para o propagandista."""
+    from backend.app.auth.perfil import _SQL_COM_RESUMO
+
+    consulta = " ".join(_SQL_COM_RESUMO.split())
+    assert "COUNT(DISTINCT vc.UFCRM)" in consulta
+    assert "m.ESPECIALIDADE IS NOT NULL AND m.ESPECIALIDADE <> ''" in consulta
+    assert "DATE_SUB(CURRENT_DATE(), 365)" in consulta
+    assert "ORDER BY medicos DESC, especialidade LIMIT 2" in consulta

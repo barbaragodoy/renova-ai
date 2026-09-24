@@ -1,0 +1,11 @@
+{
+  "visitas_recorte": 9940,
+  "comentarios_distintos_recorte": 9571,
+  "visitas_com_texto_repetido": 638,
+  "chamadas_piloto": 20,
+  "tokens_entrada": 15189,
+  "tokens_saida": 700,
+  "estados": {
+    "EXTRAIDO": 20
+  }
+}

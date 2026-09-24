@@ -10,8 +10,16 @@ duplicidade de e-mail nos 2156 registros reais. Por isso o teste de
 IDENTIDADE_AMBIGUA é necessariamente mockado — não é reprodutível com dado
 real hoje, mas a lógica defensiva é mantida no código.
 """
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import pytest
-from backend.app.auth.context import resolver_contexto, StatusContexto
+from backend.app.auth.context import (
+    StatusContexto,
+    coluna_identidade_para_auth_mode,
+    extrair_login_do_upn,
+    resolver_contexto,
+)
 
 # Este arquivo testa contra a seed do Postgres local — deve continuar
 # passando independente do DATA_SOURCE configurado no .env real (que pode
@@ -23,6 +31,87 @@ pytestmark = pytest.mark.usefixtures("forcar_data_source_local")
 EMAIL_ACHE = "ana.lima@ache.com.br"
 # E-mail que não existe no banco
 EMAIL_INEXISTENTE = "fulano.naoexiste@ache.com.br"
+
+
+def test_extrai_login_de_upn_ache():
+    assert extrair_login_do_upn("usuario.teste@ache.com.br") == "usuario.teste"
+
+
+def test_extrai_login_sem_assumir_dominio():
+    assert (
+        extrair_login_do_upn("usuario.teste@biosintetica.com.br")
+        == "usuario.teste"
+    )
+
+
+def test_extrai_login_preservando_caixa_para_comparacao_no_banco():
+    assert (
+        extrair_login_do_upn("USUARIO.TESTE@DOMINIO-EXEMPLO.COM")
+        == "USUARIO.TESTE"
+    )
+
+
+def test_coluna_de_identidade_depende_do_auth_mode():
+    assert coluna_identidade_para_auth_mode(
+        SimpleNamespace(auth_mode="senha")
+    ) == "rep_email"
+    assert coluna_identidade_para_auth_mode(
+        SimpleNamespace(auth_mode="entra_id")
+    ) == "rep_login"
+
+
+def test_entra_id_resolve_por_rep_login_customizado_case_insensitive():
+    registro = {
+        "rep_email": "caixa.portal@ache.com.br",
+        "rep_login": "USUARIO.TESTE",
+        "rep_matricula": "REP-FICTICIO",
+        "setor": "SETOR_TESTE",
+        "rep_nome": "Pessoa Fictícia",
+    }
+    execucao = {}
+
+    class FakeConn:
+        def execute(self, query, params):
+            execucao["sql"] = str(query)
+            execucao["params"] = params
+            resultado = MagicMock()
+            if params["email"].lower() == registro["rep_login"].lower():
+                resultado.fetchall.return_value = [
+                    MagicMock(
+                        rep_matricula=registro["rep_matricula"],
+                        setor=registro["setor"],
+                        rep_nome=registro["rep_nome"],
+                    )
+                ]
+            else:
+                resultado.fetchall.return_value = []
+            return resultado
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            pass
+
+    with patch("backend.app.auth.context._get_engine") as engine:
+        engine.return_value.connect.return_value = FakeConn()
+        ctx = resolver_contexto(
+            "usuario.teste@biosintetica.com.br",
+            coluna_identidade="rep_login",
+        )
+
+    assert ctx.status == StatusContexto.SETOR_RESOLVIDO
+    assert ctx.matricula == "REP-FICTICIO"
+    assert "LOWER(rep_login) = LOWER(:email)" in execucao["sql"]
+    assert execucao["params"] == {"email": "usuario.teste"}
+
+
+def test_coluna_de_identidade_fora_da_whitelist_e_rejeitada():
+    with pytest.raises(ValueError, match="Coluna de identidade não permitida"):
+        resolver_contexto(
+            "usuario.teste",
+            coluna_identidade="rep_matricula",
+        )
 
 
 @pytest.mark.requer_banco
@@ -41,8 +130,6 @@ def test_setor_resolvido_dominio_biosintetica(monkeypatch):
     de dados local (02_populate_propagandistas.sql) só tem e-mails
     @ache.com.br; em produção o match é o mesmo, apenas contra REP_EMAIL.
     """
-    from unittest.mock import MagicMock, patch
-
     row = {"rep_matricula": "REP123", "setor": "SP_CAPITAL", "rep_nome": "Carlos Bio"}
 
     class FakeConn:
@@ -83,8 +170,6 @@ def test_identidade_ambigua(monkeypatch):
     ocorre no dado real hoje (2156/2156 e-mails únicos confirmado) — só
     validável via massa sintética/mock, como aqui.
     """
-    from unittest.mock import MagicMock, patch
-
     row1 = {"rep_matricula": "REP001", "setor": "SP_INTERIOR", "rep_nome": "Ana"}
     row2 = {"rep_matricula": "REP999", "setor": "RJ_CAPITAL", "rep_nome": "Ana Clone"}
 

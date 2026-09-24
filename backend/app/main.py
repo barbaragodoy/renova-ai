@@ -2,16 +2,23 @@ import time
 import logging
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.routers import agente, chat, prescricoes, ranking, recomendacoes, gerencial, webhooks_twilio
+from backend.app.auth.administrativo import (
+    HEADER_VER_COMO,
+    METODOS_SOMENTE_LEITURA,
+    admin_router,
+    registrar_alvo,
+)
 from backend.app.auth.context import auth_router
 from backend.app.auth.foto import foto_router
 from backend.app.auth.perfil import perfil_router
 from backend.app.auth.sessao import sessao_router
+from backend.app.auth.jwt_auth import capturar_cabecalhos_easy_auth
 from backend.app.config import get_settings
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -19,7 +26,11 @@ logger = logging.getLogger("renovai")
 
 settings = get_settings()
 
-app = FastAPI(title="RenovAI API", version="0.1.0")
+app = FastAPI(
+    title="RenovAI API",
+    version="0.1.0",
+    dependencies=[Depends(capturar_cabecalhos_easy_auth)],
+)
 
 # Na imagem única o portal e a API compartilham a origem, então não há
 # requisição cross-origin em HMG. A entrada abaixo cobre o Vite em
@@ -50,6 +61,44 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def acesso_administrativo(request: Request, call_next):
+    """Registra o setor pedido no header e barra escrita durante conferência.
+
+    Aqui só se lê o header; a permissão é conferida em
+    `auth/administrativo.aplicar_personificacao`, que é o único ponto com a
+    identidade real do token em mãos. Um header enviado por quem não está na
+    lista é ignorado e registrado lá.
+
+    A recusa de escrita é feita antes da autenticação de propósito: vale para
+    qualquer requisição que carregue o header, inclusive as que nem chegariam a
+    autenticar. Uma sessão de conferência que gravasse um aceite ou uma
+    desconsideração deixaria o registro no nome do propagandista, e a pergunta
+    "quem decidiu isto" ficaria sem resposta.
+    """
+    setor_alvo = request.headers.get(HEADER_VER_COMO)
+    registrar_alvo(setor_alvo)
+
+    if setor_alvo and request.method.upper() not in METODOS_SOMENTE_LEITURA:
+        logger.warning(
+            "escrita bloqueada em sessao personificada | method=%s path=%s setor=%s",
+            request.method,
+            request.url.path,
+            setor_alvo,
+        )
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": (
+                    "Sessão de conferência é somente leitura. "
+                    "Saia do modo de visualização para registrar uma ação."
+                )
+            },
+        )
+
+    return await call_next(request)
+
+
 app.include_router(auth_router, prefix="/auth", tags=["auth"])
 app.include_router(perfil_router, prefix="/auth", tags=["auth"])
 app.include_router(foto_router, prefix="/auth", tags=["auth"])
@@ -60,6 +109,7 @@ app.include_router(ranking.router, prefix="/ranking", tags=["ranking"])
 app.include_router(gerencial.router, prefix="/gerencial", tags=["gerencial"])
 app.include_router(chat.router, prefix="/chat", tags=["chat"])
 app.include_router(agente.router, prefix="/agente", tags=["agente"])
+app.include_router(admin_router, prefix="/admin", tags=["admin"])
 app.include_router(webhooks_twilio.router, prefix="/webhooks/twilio", tags=["webhooks"])
 
 

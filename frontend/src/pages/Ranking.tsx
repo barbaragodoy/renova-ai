@@ -1,37 +1,33 @@
 import { useEffect, useRef, useState } from "react";
-import { Info, Search, TrendingUp, X } from "lucide-react";
+import { Info, MapPin, Search, TrendingUp, X } from "lucide-react";
 import {
   ApiError,
-  classificarMedico,
-  CONDUTA_TAMANHO_MAXIMO,
   detalharMedico,
-  enriquecerPerfil,
   listarRanking,
-  PERFIS_SEGMENTACAO,
-  registrarConduta,
-  textoDoMercado,
-  type MercadoDetalhe,
   type DetalheMedicoResponse,
   type MedicoRanking,
-  type MemoriaDeVisitas,
-  type PerfilSegmentacao,
+  corrigirEndereco,
+  type EnderecoAtendimento,
+  type EnderecoCorrecao,
 } from "@/lib/api";
 import { Alert } from "@/components/ui/alert";
-import { CardMemoriaDeVisitas } from "@/components/CardMemoriaDeVisitas";
 import { GavetaDeAcao } from "@/components/GavetaDeAcao";
 
 /**
- * Aba Ranking do PedAI.
+ * Aba Ranking do Ped.AI.
  *
  * Espelha o `RankingScreen` do Figma Make `cuZGbZpvR0aBJhixqBnYYB`, relido em
  * 11/08/2026: cartão de cabeçalho roxo com os números do setor, busca, lista
  * de médicos e gaveta de detalhes.
  *
- * Pontos em que o conteúdo não segue o protótipo ao pé da letra, todos por
- * decisão de George em 11/08/2026:
+ * Pontos em que o conteúdo não segue o protótipo ao pé da letra:
  *
- * 1. Sem medalhas nem cor especial para as três primeiras posições, e a
- *    pontuação é sempre rosa, sem a escala verde/roxo/cinza do protótipo.
+ * 1. Pódio ouro, prata e bronze nos três primeiros e verde no top 10, como
+ *    no protótipo, desde 18/09/2026, quando o portal foi alinhado a ele. A
+ *    decisão de 11/08/2026 de não ter medalha foi revertida. Da 11ª à 50ª a
+ *    pontuação é roxa e da 51ª em diante cinza escuro, copiado do protótipo
+ *    por decisão de George na mesma data, enquanto a Ju não confirma outro
+ *    critério.
  * 2. O selo "Fora" virou a informação completa: cada médico mostra
  *    "No painel" ou "Fora do painel".
  * 3. A lista é o ranking real do setor, paginada de 50 em 50, com busca por
@@ -47,9 +43,66 @@ import { GavetaDeAcao } from "@/components/GavetaDeAcao";
  *    pendente de confirmação no cofre.
  */
 
-/** Roxo do cartão de cabeçalho no protótipo, sem token no design system. */
-const ROXO_HEADER = "#4B3B8C";
-const ROXO_HEADER_CLARO = "#6B52C8";
+/** Roxo do cartão de cabeçalho, o `#512D67` do protótipo, sem token no design
+ *  system. O gradiente que existia aqui saiu em 18/09/2026: o protótipo usa a
+ *  cor chapada e o contraste do cartão passou a seguir o desenho. */
+const ROXO_HEADER = "#512D67";
+/** Roxo dos textos de apoio, o `PURPLE` do protótipo. */
+const ROXO_TEXTO = "#4B3B8C";
+
+/** Pódio das três primeiras posições e verde do top 10, cores do protótipo. */
+const OURO = "#FFB800";
+const PRATA = "#9CA3AF";
+const BRONZE = "#CD7F32";
+const VERDE_TOP10 = "#16A34A";
+/** Vermelho de alerta do protótipo, para "Sim" em sem visita e nunca visitado. */
+const VERMELHO_ALERTA = "#DC2626";
+/** Cinza escuro do protótipo, pontuação da 51ª posição em diante. */
+const CINZA_ESCURO = "#374151";
+
+function corDaMedalha(posicao?: number | null): string | null {
+  if (posicao === 1) return OURO;
+  if (posicao === 2) return PRATA;
+  if (posicao === 3) return BRONZE;
+  return null;
+}
+
+/** Cor da pontuação na lista, a escala do protótipo: verde até a 10ª, roxo
+ *  até a 50ª, cinza escuro depois. George mandou copiar o protótipo em
+ *  18/09/2026, enquanto a Ju não confirma outro critério. */
+function corDaPontuacao(posicao?: number | null): string {
+  if (posicao === null || posicao === undefined) return "var(--color-primary)";
+  if (posicao <= 10) return VERDE_TOP10;
+  if (posicao <= 50) return ROXO_TEXTO;
+  return CINZA_ESCURO;
+}
+
+/** Os quatro textos de "Por que está nesta posição?" do protótipo, por faixa.
+ *  O primeiro nome entra como lá. */
+function textoDaPosicao(posicao?: number | null, nome?: string): string {
+  const primeiro = capitalizarNome((nome ?? "").split(" ")[0] || "o médico");
+  if (posicao === null || posicao === undefined) {
+    return "Posição não disponível para este médico no ciclo atual.";
+  }
+  if (posicao <= 10) {
+    return `Alta pontuação combinada de prescrição, demanda regional e relevância estratégica dos produtos coloca ${primeiro} entre os primeiros do setor.`;
+  }
+  if (posicao <= 100) {
+    return `Bom histórico prescritivo e alinhamento com os critérios de mercado posicionam ${primeiro} entre os destaques do setor.`;
+  }
+  if (posicao <= 500) {
+    return "Presença relevante no setor, com potencial de ascensão caso o volume prescritivo aumente nos próximos ciclos.";
+  }
+  return "Baixa pontuação combinada, principalmente prescrição abaixo da média do setor, resulta nessa posição no ranking.";
+}
+
+/** "Set 2026" a partir de "202609", recuo da coluna Atualizado do cabeçalho. */
+function formatarCicloCurto(ciclo: string): string {
+  const mes = Number(ciclo.slice(4, 6));
+  const ano = ciclo.slice(0, 4);
+  const nome = MESES_LONGOS[mes - 1];
+  return nome ? `${nome.slice(0, 3)} ${ano}` : ciclo;
+}
 const LARANJA_EXCLUSAO = "#F59E0B";
 
 const MESES_LONGOS = [
@@ -85,6 +138,12 @@ function formatarPontos(valor?: number | null): string {
   })} pts`;
 }
 
+/** "2026-09-18 12:56:35" vira "18/09/2026". */
+function formatarDataCurta(iso: string): string {
+  const [ano, mes, dia] = iso.slice(0, 10).split("-");
+  return dia && mes && ano ? `${dia}/${mes}/${ano}` : iso;
+}
+
 function formatarData(iso?: string | null): string {
   if (!iso) return "Sem visita registrada";
   const [ano, mes, dia] = iso.split("-");
@@ -92,38 +151,55 @@ function formatarData(iso?: string | null): string {
 }
 
 /* Frases da recomendação, as mesmas do chat e da aba Recomendações. */
+/** Texto do alerta de recomendação, por tipo e pelo motivo que o ranking
+ *  registrou. Pedido de George em 20/09/2026: nada de frase genérica, o
+ *  propagandista lê por que o sistema está dizendo aquilo. "Painel", nunca
+ *  "ranking", no que é dele: o protótipo trocou por engano. */
 function fraseDaRecomendacao(d: DetalheMedicoResponse): string {
-  const nome = capitalizarNome(d.nome_medico);
-  const visita = d.meses_sem_visita
-    ? `não recebe visita há ${d.meses_sem_visita} meses`
-    : "não tem visita registrada";
+  const posicao = d.posicao ? `na posição ${d.posicao} do ranking do setor` : "bem colocado no ranking do setor";
+  const meses = d.meses_sem_visita;
+  const semVisita =
+    meses === null || meses === undefined
+      ? "não tem visita registrada"
+      : meses === 0
+        ? "não recebe visita neste mês"
+        : `não recebe visita há ${meses} ${meses === 1 ? "mês" : "meses"}`;
+  const visitado =
+    meses === null || meses === undefined
+      ? "sem visita registrada"
+      : meses === 0
+        ? "foi visitado neste mês"
+        : meses === 1
+          ? "foi visitado há um mês"
+          : `foi visitado há ${meses} meses`;
   switch (d.recomendacao) {
     case "ADICIONAR":
-      return `${nome} deveria estar no seu painel por conta da pontuação e do ranking, que vêm do que prescreve da sua linha.`;
+      return `Recomendamos incluir este médico no seu painel: está ${posicao}, dentro do limite do painel.`;
     case "CONTINUAR":
-      return `${nome} deve seguir no seu painel.`;
+      return `Recomendamos que este médico permaneça no seu painel: está ${posicao} e ${visitado}.`;
     case "REMOVER":
       switch (d.criterio_saida) {
         case "ranking e visita":
-          return `${nome} caiu no ranking do seu setor, passou do limite do seu painel ideal e ainda ${visita}.`;
+          return `Recomendamos excluir este médico do seu painel: caiu para a posição ${d.posicao ?? "—"} do ranking, fora do limite do painel, e ${semVisita}.`;
         case "saiu do corte":
-          return `${nome} caiu no ranking do seu setor e passou do limite do seu painel ideal.`;
-        case "sem visita registrada":
-          return `${nome} está dentro do limite do seu painel ideal, mas não tem visita registrada.`;
+          return `Recomendamos excluir este médico do seu painel: caiu para a posição ${d.posicao ?? "—"} do ranking, fora do limite do painel.`;
         default:
-          return `${nome} está dentro do limite do seu painel ideal, mas ${visita}.`;
+          return `Recomendamos excluir este médico do seu painel: ${semVisita}.`;
       }
     default:
-      return `${nome} não tem ação recomendada neste ciclo.`;
+      return "Sem recomendação do sistema para este médico neste ciclo.";
   }
 }
 
-const ROTULO_RECOMENDACAO: Record<string, { texto: string; cor: string }> = {
-  ADICIONAR: { texto: "Entrada no painel", cor: "var(--color-primary)" },
-  REMOVER: { texto: "Saída do painel", cor: LARANJA_EXCLUSAO },
-  CONTINUAR: { texto: "Permanência", cor: ROXO_HEADER },
-  SEM_ACAO: { texto: "Sem ação", cor: "#6B7280" },
+/** Cores do alerta, decisão de George em 20/09/2026: verde para incluir,
+ *  rosa para excluir, amarelo para permanecer. Fundo pastel e texto escuro
+ *  da mesma família, como o alerta do protótipo. */
+const ESTILO_RECOMENDACAO: Record<string, { fundo: string; texto: string }> = {
+  ADICIONAR: { fundo: "#DCFCE7", texto: "#166534" },
+  REMOVER: { fundo: "#FCE7F3", texto: "#BE185D" },
+  CONTINUAR: { fundo: "#FEF3C7", texto: "#92400E" },
 };
+const ESTILO_SEM_ACAO = { fundo: "#F3F4F6", texto: "#4B5563" };
 
 function SeloPainel({ noPainel }: { noPainel: boolean }) {
   return (
@@ -155,24 +231,14 @@ function SeloPainel({ noPainel }: { noPainel: boolean }) {
  *  aviso, e quem já entendeu não precisa vê-lo em toda visita à aba. A escolha
  *  não é persistida de propósito, para não guardar preferência de tela sem
  *  necessidade. */
-function SobreORanking({ aoFechar }: { aoFechar: () => void }) {
+function SobreORanking() {
   return (
     <div className="space-y-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-4 shadow-sm">
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Info className="h-4 w-4 flex-shrink-0 text-[var(--color-primary)]" aria-hidden="true" />
-          <p className="text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
-            O que é o ranking?
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={aoFechar}
-          aria-label="Fechar a explicação do ranking"
-          className="flex-shrink-0 rounded-full p-1 text-[var(--color-muted-foreground)]"
-        >
-          <X className="h-4 w-4" aria-hidden="true" />
-        </button>
+      <div className="flex items-center gap-2">
+        <Info className="h-4 w-4 flex-shrink-0 text-[var(--color-primary)]" aria-hidden="true" />
+        <p className="text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
+          O que é o ranking?
+        </p>
       </div>
 
       <p className="text-xs leading-relaxed text-[var(--color-muted-foreground)]">
@@ -214,7 +280,7 @@ function SobreORanking({ aoFechar }: { aoFechar: () => void }) {
       </p>
 
       <div className="mt-1 rounded-xl bg-[var(--color-muted)] p-3">
-        <p className="text-xs leading-relaxed" style={{ color: ROXO_HEADER }}>
+        <p className="text-xs leading-relaxed" style={{ color: ROXO_TEXTO }}>
           O ranking funciona como um{" "}
           <span className="font-semibold">apoio à tomada de decisão</span>,
           indicando oportunidades com base nos dados e critérios disponíveis.
@@ -275,11 +341,13 @@ const SELO_DO_ESTADO: Record<string, { texto: string; fundo: string; cor: string
 function GavetaDeAcaoDoRanking({
   medico,
   email,
+  passoInicial,
   onFechar,
   onResolvida,
 }: {
   medico: MedicoRanking;
   email: string;
+  passoInicial?: "escolha" | "motivo";
   onFechar: () => void;
   onResolvida: (statusNovo: string | null) => void;
 }) {
@@ -301,6 +369,7 @@ function GavetaDeAcaoDoRanking({
       idRecomendacao={medico.id_recomendacao_pendente!}
       tipoRecomendacao={medico.tipo_recomendacao_pendente}
       frase={frase}
+      passoInicial={passoInicial}
       onFechar={onFechar}
       onResolvida={onResolvida}
     />
@@ -311,12 +380,12 @@ interface RankingProps {
   email: string;
   setor: string;
   /** Leva o médico para o chat, na aba Home. */
-  onConversar: (nomeMedico: string) => void;
 }
 
-export function Ranking({ email, setor, onConversar }: RankingProps) {
+export function Ranking({ email, setor }: RankingProps) {
   const [medicos, setMedicos] = useState<MedicoRanking[]>([]);
   const [ciclo, setCiclo] = useState("");
+  const [atualizadoEm, setAtualizadoEm] = useState<string | null>(null);
   const [totalMedicos, setTotalMedicos] = useState(0);
   const [pontosLider, setPontosLider] = useState<number | null>(null);
   const [busca, setBusca] = useState("");
@@ -324,11 +393,13 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
   const [carregandoMais, setCarregandoMais] = useState(false);
   const [erro, setErro] = useState<string | null>(null);
   const [ufcrmAberto, setUfcrmAberto] = useState<string | null>(null);
-  const [sobreAberto, setSobreAberto] = useState(true);
   // Médico cuja recomendação pendente está sendo resolvida na gaveta de ação.
   // Separado de `ufcrmAberto`, que abre a gaveta de detalhes: tocar no selo
   // age sobre a recomendação, tocar no resto da linha abre o detalhe.
   const [acaoAberta, setAcaoAberta] = useState<MedicoRanking | null>(null);
+  // Passo em que a gaveta de ação abre. O selo da lista abre na escolha; os
+  // botões do card abrem na escolha ou direto nos motivos.
+  const [passoAcao, setPassoAcao] = useState<"escolha" | "motivo">("escolha");
 
   // A busca espera a pessoa parar de digitar para não disparar uma consulta
   // ao warehouse por tecla.
@@ -344,6 +415,7 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
       .then((resp) => {
         if (id !== idRequisicao.current) return;
         setCiclo(resp.ciclo);
+        setAtualizadoEm(resp.atualizado_em ?? null);
         setTotalMedicos(resp.total_medicos);
         setPontosLider(resp.pontos_lider ?? null);
         setMedicos((atual) => (offset === 0 ? resp.medicos : [...atual, ...resp.medicos]));
@@ -396,10 +468,7 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
   return (
     <div className="mx-auto w-full max-w-3xl space-y-4 px-4 py-5 sm:px-6">
       {/* Cartão de cabeçalho */}
-      <div
-        className="rounded-2xl p-4 text-white"
-        style={{ background: `linear-gradient(135deg, ${ROXO_HEADER} 0%, ${ROXO_HEADER_CLARO} 100%)` }}
-      >
+      <div className="rounded-2xl p-4 text-white" style={{ background: ROXO_HEADER }}>
         <p className="mb-0.5 text-base font-bold">Ranking de médicos</p>
         <p className="mb-3 text-xs opacity-80">
           {formatarCiclo(ciclo)} · Setor S{setor}
@@ -407,21 +476,31 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
         <div className="flex gap-4">
           <div>
             <p className="text-[10px] uppercase tracking-wider opacity-70">Médicos</p>
-            {/* Em rosa, como o limite do painel na aba Usuário: os dois falam
-                do tamanho do painel e passam a ser lidos juntos. */}
-            <p className="text-lg font-bold text-[var(--color-primary)]">
-              {totalMedicos.toLocaleString("pt-BR")}
-            </p>
+            {/* Branco como no protótipo. Era rosa para ler junto com o limite
+                do painel na aba Usuário; o limite saiu de lá em 18/09/2026. */}
+            <p className="text-lg font-bold">{totalMedicos.toLocaleString("pt-BR")}</p>
           </div>
           <div className="w-px bg-white/20" />
           <div>
             <p className="text-[10px] uppercase tracking-wider opacity-70">Líder</p>
             <p className="text-sm font-bold leading-tight">{formatarPontos(pontosLider)}</p>
           </div>
+          <div className="w-px bg-white/20" />
+          <div>
+            <p className="text-[10px] uppercase tracking-wider opacity-70">Atualizado</p>
+            {/* Data da última carga do histórico de recomendações, indicada
+                por George em 18/09/2026 porque a tabela do ranking só tem o
+                ciclo. Cai no ciclo quando o backend não conseguiu ler. */}
+            <p className="text-sm font-bold">
+              {atualizadoEm ? formatarDataCurta(atualizadoEm) : formatarCicloCurto(ciclo)}
+            </p>
+          </div>
         </div>
       </div>
 
-      {sobreAberto && <SobreORanking aoFechar={() => setSobreAberto(false)} />}
+      {/* Permanente desde 18/09/2026, decisão de George ao alinhar ao
+          protótipo. Antes fechava com um X e não voltava. */}
+      <SobreORanking />
 
       {/* Busca */}
       <div className="flex items-center gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] px-4 py-2.5 shadow-sm">
@@ -450,19 +529,33 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
             dentro do outro: botão dentro de botão é HTML inválido e o leitor
             de tela não sabe qual anunciar. A linha abre o detalhe; o selo da
             recomendação resolve a recomendação. */}
-        {medicos.map((medico) => (
+        {medicos.map((medico) => {
+          const medalha = corDaMedalha(medico.posicao);
+          return (
           <div
             key={medico.ufcrm}
             className="flex w-full items-center gap-3 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] px-4 py-3 shadow-sm"
+            style={medalha ? { borderLeft: `3px solid ${medalha}` } : undefined}
           >
             <button
               type="button"
               onClick={() => setUfcrmAberto(medico.ufcrm)}
               className="flex min-w-0 flex-1 items-center gap-3 text-left transition-opacity active:opacity-75"
             >
-              <span className="w-10 flex-shrink-0 text-center text-sm font-bold text-[var(--color-muted-foreground)]">
-                {medico.posicao}
-              </span>
+              {/* Pódio nos três primeiros: círculo na cor da medalha com o
+                  número em branco, como no protótipo. */}
+              {medalha ? (
+                <span
+                  className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-full text-xs font-bold text-white"
+                  style={{ background: medalha }}
+                >
+                  {medico.posicao}
+                </span>
+              ) : (
+                <span className="w-7 flex-shrink-0 text-center text-sm font-bold text-[var(--color-muted-foreground)]">
+                  {medico.posicao}
+                </span>
+              )}
               <div className="min-w-0 flex-1">
                 <p className="truncate text-sm font-semibold text-[var(--color-foreground)]">
                   {capitalizarNome(medico.nome_medico)}
@@ -474,7 +567,7 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
             </button>
 
             <div className="flex flex-shrink-0 flex-col items-end gap-1">
-              <p className="text-sm font-bold text-[var(--color-primary)]">
+              <p className="text-sm font-bold" style={{ color: corDaPontuacao(medico.posicao) }}>
                 {formatarPontos(medico.pontos)}
               </p>
               {/* Recomendação pendente vira ação; sem ela, volta o selo de
@@ -484,7 +577,10 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
                 <button
                   type="button"
                   aria-label={`Resolver recomendação de ${capitalizarNome(medico.nome_medico)}`}
-                  onClick={() => setAcaoAberta(medico)}
+                  onClick={() => {
+                    setPassoAcao("escolha");
+                    setAcaoAberta(medico);
+                  }}
                   className="flex-shrink-0 rounded-full px-2 py-0.5 text-[10px] font-bold transition-opacity active:opacity-75"
                   style={{
                     background: seloDaRecomendacao(medico.tipo_recomendacao_pendente).fundo,
@@ -509,7 +605,8 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
               )}
             </div>
           </div>
-        ))}
+          );
+        })}
 
         {medicos.length === 0 && (
           <div className="flex flex-col items-center space-y-2 py-12 text-[var(--color-muted-foreground)]">
@@ -534,9 +631,10 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
 
       {acaoAberta && (
         <GavetaDeAcaoDoRanking
-          key={acaoAberta.ufcrm}
+          key={`${acaoAberta.ufcrm}-${passoAcao}`}
           medico={acaoAberta}
           email={email}
+          passoInicial={passoAcao}
           onFechar={() => setAcaoAberta(null)}
           // A recomendação deixou de estar pendente, então o selo de ação
           // some da linha sem precisar recarregar a lista inteira.
@@ -564,10 +662,13 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
           key={ufcrmAberto}
           email={email}
           ufcrm={ufcrmAberto}
+          medico={medicos.find((m) => m.ufcrm === ufcrmAberto) ?? null}
           onFechar={() => setUfcrmAberto(null)}
-          onConversar={(nome) => {
-            setUfcrmAberto(null);
-            onConversar(nome);
+          onResolver={(passo) => {
+            const alvo = medicos.find((m) => m.ufcrm === ufcrmAberto);
+            if (!alvo) return;
+            setPassoAcao(passo);
+            setAcaoAberta(alvo);
           }}
         />
       )}
@@ -575,139 +676,200 @@ export function Ranking({ email, setor, onConversar }: RankingProps) {
   );
 }
 
+/** Etiqueta da fonte do endereço. A auditoria pede conferência porque grava
+ *  cidade agregada e endereço sem tipo de logradouro; o CNES é vínculo
+ *  institucional, hospital ou posto, e pode não ser o consultório. */
+function CardEndereco({
+  endereco: e,
+  onCorrigir,
+}: {
+  endereco: EnderecoAtendimento;
+  /** Abre o formulário de correção preenchido com este cartão. */
+  onCorrigir?: () => void;
+}) {
+  const linha1 = [capitalizarNome(e.logradouro ?? ""), e.numero, e.complemento && capitalizarNome(e.complemento)]
+    .filter(Boolean)
+    .join(", ");
+  const linha2 = [e.bairro && capitalizarNome(e.bairro), e.cidade && capitalizarNome(e.cidade), e.uf]
+    .filter(Boolean)
+    .join(", ");
+  return (
+    <div className="flex items-start gap-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+      <MapPin className="mt-0.5 h-4 w-4 flex-shrink-0" style={{ color: ROXO_TEXTO }} aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        {e.local && (
+          <p className="text-xs font-semibold text-[var(--color-foreground)]">{capitalizarNome(e.local)}</p>
+        )}
+        <p className="text-xs leading-relaxed text-[var(--color-foreground)]">{linha1}</p>
+        <p className="text-xs leading-relaxed text-[var(--color-muted-foreground)]">
+          {linha2}
+          {e.cep ? ` · CEP ${e.cep}` : ""}
+        </p>
+        {e.telefone && (
+          <p className="text-xs leading-relaxed text-[var(--color-muted-foreground)]">Tel. {e.telefone}</p>
+        )}
+        {onCorrigir && (
+          <button
+            type="button"
+            onClick={onCorrigir}
+            className="mt-2 text-[11px] font-semibold text-[var(--color-primary)]"
+          >
+            Endereço incorreto?
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Formulário de correção do endereço, na própria gaveta. Pré-preenchido com
+ *  o endereço 1 atual, para a pessoa só mudar o que está errado. Os campos
+ *  seguem o corpo do PUT; a validação de UF e CEP é a do backend, repetida
+ *  aqui só para não ir ao servidor buscar um 422. */
+function FormularioEndereco({
+  inicial,
+  salvando,
+  erro,
+  onSalvar,
+  onCancelar,
+}: {
+  inicial: EnderecoAtendimento | null;
+  salvando: boolean;
+  erro: string | null;
+  onSalvar: (corpo: EnderecoCorrecao) => void;
+  onCancelar: () => void;
+}) {
+  // No SalesFarma o número vem dentro do logradouro; deixa como está e a
+  // pessoa separa se quiser.
+  const [logradouro, setLogradouro] = useState(inicial?.logradouro ?? "");
+  const [numero, setNumero] = useState(inicial?.numero ?? "");
+  const [complemento, setComplemento] = useState(inicial?.complemento ?? "");
+  const [bairro, setBairro] = useState(inicial?.bairro ?? "");
+  const [cidade, setCidade] = useState((inicial?.cidade ?? "").replace(/-\s*[A-Za-z]{2}\s*$/, ""));
+  const [uf, setUf] = useState(inicial?.uf ?? "");
+  const [cep, setCep] = useState(inicial?.cep ?? "");
+  const [observacao, setObservacao] = useState("");
+
+  const cepDigitos = cep.replace(/\D/g, "");
+  const invalido =
+    logradouro.trim().length < 3 ||
+    cidade.trim().length < 2 ||
+    !/^[A-Za-z]{2}$/.test(uf.trim()) ||
+    (cepDigitos.length > 0 && cepDigitos.length !== 8);
+
+  const campo = "w-full rounded-xl border border-[var(--color-border)] bg-white px-3 py-2 text-sm text-[var(--color-foreground)] outline-none focus:border-pink-300";
+
+  return (
+    <div className="space-y-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+      <p className="text-xs font-semibold text-[var(--color-foreground)]">Corrigir endereço de atendimento</p>
+      <input className={campo} placeholder="Logradouro" value={logradouro} onChange={(e) => setLogradouro(e.target.value)} />
+      <div className="flex gap-2">
+        <input className={campo} placeholder="Número" value={numero} onChange={(e) => setNumero(e.target.value)} />
+        <input className={campo} placeholder="Complemento" value={complemento} onChange={(e) => setComplemento(e.target.value)} />
+      </div>
+      <input className={campo} placeholder="Bairro" value={bairro} onChange={(e) => setBairro(e.target.value)} />
+      <div className="flex gap-2">
+        <input className={campo} placeholder="Cidade" value={cidade} onChange={(e) => setCidade(e.target.value)} />
+        <input className={`${campo} max-w-[72px] uppercase`} placeholder="UF" maxLength={2} value={uf} onChange={(e) => setUf(e.target.value)} />
+      </div>
+      <input className={campo} placeholder="CEP" value={cep} onChange={(e) => setCep(e.target.value)} />
+      <input className={campo} placeholder="O que estava errado? (opcional)" value={observacao} onChange={(e) => setObservacao(e.target.value)} />
+      {erro && <p className="text-xs text-[var(--color-destructive)]">{erro}</p>}
+      <div className="flex gap-2 pt-1">
+        <button
+          type="button"
+          disabled={salvando}
+          onClick={onCancelar}
+          className="flex-1 rounded-xl bg-[var(--color-muted)] py-2.5 text-sm font-medium text-[var(--color-muted-foreground)]"
+        >
+          Cancelar
+        </button>
+        <button
+          type="button"
+          disabled={salvando || invalido}
+          onClick={() =>
+            onSalvar({
+              logradouro: logradouro.trim(),
+              numero: numero.trim() || null,
+              complemento: complemento.trim() || null,
+              bairro: bairro.trim() || null,
+              cidade: cidade.trim(),
+              uf: uf.trim().toUpperCase(),
+              cep: cepDigitos || null,
+              observacao: observacao.trim() || null,
+            })
+          }
+          className="flex-1 rounded-xl py-2.5 text-sm font-bold text-white disabled:opacity-50"
+          style={{ background: "var(--color-primary)" }}
+        >
+          {salvando ? "Salvando..." : "Salvar"}
+        </button>
+      </div>
+      <p className="text-[11px] text-[var(--color-muted-foreground)]">
+        A correção vale para todos que visitam este médico e fica registrada com
+        seu nome. O SalesFarma será atualizado quando a integração existir.
+      </p>
+    </div>
+  );
+}
+
 interface GavetaMedicoProps {
   email: string;
   ufcrm: string;
+  /** A recomendação pendente do médico, se houver. Quem já está no painel e
+   *  não tem sugestão não ganha rodapé de ação. Só estes dois campos, para a
+   *  aba Recomendações abrir a mesma gaveta a partir do item da lista. */
+  medico?: Pick<MedicoRanking, "id_recomendacao_pendente" | "tipo_recomendacao_pendente"> | null;
   onFechar: () => void;
   /** Leva a conversa para a aba Home com o médico já perguntado. */
-  onConversar: (nomeMedico: string) => void;
+  /** Abre a gaveta de ação sobre a recomendação pendente, no passo pedido:
+   *  "escolha" para aceitar, "motivo" para desconsiderar. Botões do rodapé,
+   *  decisão de George em 18/09/2026. */
+  onResolver?: (passo: "escolha" | "motivo") => void;
+  /** "recomendacao" é o detalhe do protótipo na aba Recomendações: sem
+   *  endereços e com só dois dados (está no painel e tamanho do painel).
+   *  Decisão de George em 20/09/2026. O padrão é o card completo do Ranking. */
+  variante?: "completa" | "recomendacao";
 }
 
-/** 202607 vira 2026/07. A referência aparece na tela porque a auditoria fecha
- *  depois que o mês acaba e fica sempre um mês atrás do ciclo do painel: sem
- *  ela, o propagandista compara com o ciclo corrente e conclui que o número
- *  está errado. */
-function formatarReferencia(ref: string): string {
-  return /^\d{6}$/.test(ref) ? `${ref.slice(0, 4)}/${ref.slice(4)}` : ref;
-}
-
-/** Cor de cada perfil, em tom pastel.
- *
- *  Pastel e não saturado porque são quatro categorias lado a lado, sem ordem
- *  entre elas: cor forte sugeriria que uma é melhor que a outra. O tom de
- *  fundo separa os perfis, e o texto escuro da mesma família garante
- *  contraste legível.
- *
- *  RELACIONAL reaproveita o `accent` do tema, que já é o rosa pastel da
- *  marca. Os outros três são vizinhos dele em saturação. */
-const COR_PERFIL: Record<string, { fundo: string; texto: string }> = {
-  ANALITICO: { fundo: "#DBEAFE", texto: "#1E40AF" },
-  PERFORMANCE: { fundo: "#FEF3C7", texto: "#92400E" },
-  PESSOAL: { fundo: "#DCFCE7", texto: "#166534" },
-  RELACIONAL: { fundo: "#FCE7F3", texto: "#9D174D" },
-  "A DEFINIR": { fundo: "#F0F1F5", texto: "#6B7280" },
-};
-
-/** Rótulo de exibição dos perfis. O banco guarda sem acento, por causa da
- *  restrição CHECK; a tela mostra em português corrente. */
-function rotularPerfil(perfil?: string | null): string {
-  const mapa: Record<string, string> = {
-    ANALITICO: "Analítico",
-    PERFORMANCE: "Performance",
-    PESSOAL: "Pessoal",
-    RELACIONAL: "Relacional",
-    "A DEFINIR": "A definir",
-  };
-  return perfil ? (mapa[perfil] ?? perfil) : "A definir";
-}
-
-function GavetaMedico({ email, ufcrm, onFechar, onConversar }: GavetaMedicoProps) {
+/** Card do médico. Compartilhado com a aba Recomendações desde 20/09/2026:
+ *  o "Ver detalhes" do protótipo é este mesmo card, com os mesmos botões. */
+export function GavetaMedico({
+  email,
+  ufcrm,
+  medico,
+  onFechar,
+  onResolver,
+  variante = "completa",
+}: GavetaMedicoProps) {
+  const compacta = variante === "recomendacao";
   const [detalhe, setDetalhe] = useState<DetalheMedicoResponse | null>(null);
   const [erro, setErro] = useState<string | null>(null);
-  // A Memória de Visitas chega por outra rota e depois do detalhe, que é
-  // instantâneo. Falha aqui não mostra nada: a gaveta continua inteira.
-  const [memoria, setMemoria] = useState<MemoriaDeVisitas | null>(null);
-  const [salvandoPerfil, setSalvandoPerfil] = useState(false);
-  const [erroPerfil, setErroPerfil] = useState<string | null>(null);
-  // Perfil escolhido e ainda não confirmado. Um clique sozinho não grava: a
-  // gaveta abre com o dedo perto dos botões e trocar o perfil de um médico
-  // por engano é silencioso, ninguém percebe depois.
-  const [perfilPendente, setPerfilPendente] = useState<PerfilSegmentacao | null>(null);
-  // Editor do Como Trata. Abre em tela cheia, e nao em caixa de rolagem dentro
-  // da gaveta: a gaveta ja rola, e rolagem aninhada faz o dedo nao saber qual
-  // das duas esta movendo.
-  // Documento da KB do mercado. Um por vez: abrir outro fecha o anterior, para
-  // a gaveta não virar uma pilha de textos abertos.
-  const [kbAberto, setKbAberto] = useState<string | null>(null);
-  const [kbDetalhe, setKbDetalhe] = useState<MercadoDetalhe | null>(null);
-  const [kbCarregando, setKbCarregando] = useState(false);
+  // Correção de endereço. Decisão de George em 18/09/2026: o propagandista
+  // mantém o endereço no portal. Desde 20/09/2026 todo cartão oferece a
+  // correção, e o formulário abre preenchido com o cartão clicado:
+  // `undefined` é fechado, `null` é "informar endereço" do zero.
+  const [enderecoEmCorrecao, setEnderecoEmCorrecao] = useState<EnderecoAtendimento | null | undefined>(undefined);
+  const [salvandoEndereco, setSalvandoEndereco] = useState(false);
+  const [erroEndereco, setErroEndereco] = useState<string | null>(null);
 
-  function abrirKb(mercado: string, codLinha: string) {
-    if (kbAberto === mercado) {
-      setKbAberto(null);
-      return;
-    }
-    setKbAberto(mercado);
-    setKbDetalhe(null);
-    setKbCarregando(true);
-    textoDoMercado(email, mercado, codLinha)
-      .then(setKbDetalhe)
-      .catch(() => setKbDetalhe(null))
-      .finally(() => setKbCarregando(false));
-  }
-
-  const [editandoConduta, setEditandoConduta] = useState(false);
-  const [rascunhoConduta, setRascunhoConduta] = useState("");
-  const [salvandoConduta, setSalvandoConduta] = useState(false);
-  const [erroConduta, setErroConduta] = useState<string | null>(null);
-
-  function abrirConduta() {
-    setRascunhoConduta(detalhe?.conduta_texto ?? "");
-    setErroConduta(null);
-    setEditandoConduta(true);
-  }
-
-  function salvarConduta() {
-    const texto = rascunhoConduta.trim();
-    if (!texto) return;
-    setSalvandoConduta(true);
-    setErroConduta(null);
-
-    registrarConduta(email, ufcrm, texto)
+  function salvarEndereco(corpo: EnderecoCorrecao) {
+    setSalvandoEndereco(true);
+    setErroEndereco(null);
+    corrigirEndereco(email, ufcrm, corpo)
       .then((atualizado) => {
         setDetalhe(atualizado);
-        setEditandoConduta(false);
+        setEnderecoEmCorrecao(undefined);
       })
-      .catch(() =>
-        setErroConduta("Não foi possível salvar. Tente novamente."),
+      .catch((excecao) =>
+        setErroEndereco(
+          excecao instanceof ApiError ? excecao.message : "Não foi possível salvar o endereço. Tente novamente.",
+        ),
       )
-      .finally(() => setSalvandoConduta(false));
+      .finally(() => setSalvandoEndereco(false));
   }
-
-  // A resposta traz o detalhe relido da view, então a tela reflete o que ficou
-  // gravado e não o que foi enviado.
-  function confirmarClassificacao() {
-    if (!perfilPendente) return;
-    setSalvandoPerfil(true);
-    setErroPerfil(null);
-
-    classificarMedico(email, ufcrm, perfilPendente)
-      .then((atualizado) => {
-        setDetalhe(atualizado);
-        setPerfilPendente(null);
-      })
-      .catch(() =>
-        setErroPerfil("Não foi possível salvar o perfil. Tente novamente."),
-      )
-      .finally(() => setSalvandoPerfil(false));
-  }
-
   useEffect(() => {
     let ativo = true;
-    // Se a mesma instância receber outro médico, a memória anterior não pode
-    // continuar na tela enquanto a nova não chega, nem sobreviver a uma nova
-    // chamada que falhe ou volte indisponível.
-    setMemoria(null);
     detalharMedico(email, ufcrm)
       .then((resp) => ativo && setDetalhe(resp))
       .catch((excecao) => {
@@ -718,80 +880,28 @@ function GavetaMedico({ email, ufcrm, onFechar, onConversar }: GavetaMedicoProps
             : "Não foi possível carregar os detalhes.",
         );
       });
-    enriquecerPerfil(ufcrm)
-      .then((extra) => {
-        if (ativo && extra.visitas?.disponivel) setMemoria(extra.visitas);
-      })
-      .catch(() => {
-        /* silencioso: a seção simplesmente não aparece */
-      });
     return () => {
       ativo = false;
     };
   }, [email, ufcrm]);
+
+  // Corte de 3 meses fechado em 18/09/2026. Nulo quando o dado não veio.
+  const semVisita3Meses =
+    detalhe?.meses_sem_visita === null || detalhe?.meses_sem_visita === undefined
+      ? null
+      : detalhe.meses_sem_visita >= 3;
+
+  // Uma lista só, na ordem: endereço da visita primeiro, depois o do CNES.
+  // Sem etiqueta de fonte, sem "também atende em" e sem aviso de cidades
+  // diferentes: decisão de George em 20/09/2026, para o card não virar
+  // relatório. A regra de escolha continua em backend/app/enderecos.py.
+  const todosOsEnderecos = detalhe ? [...detalhe.enderecos, ...detalhe.outros_locais] : [];
 
   const pctLider =
     detalhe?.pontos && detalhe?.pontos_lider
       ? Math.min(100, Math.round((detalhe.pontos / detalhe.pontos_lider) * 100))
       : null;
 
-  const rotulo = detalhe ? ROTULO_RECOMENDACAO[detalhe.recomendacao] : null;
-
-  // Editor em tela cheia. Fica antes da gaveta e assume a tela inteira: com
-  // ate 3000 caracteres, escrever dentro de uma folha que ja rola e ruim, e no
-  // celular o teclado cobriria metade do campo.
-  if (editandoConduta) {
-    const restantes = CONDUTA_TAMANHO_MAXIMO - rascunhoConduta.length;
-    return (
-      <div className="fixed inset-0 z-50 flex flex-col bg-[var(--color-card)]">
-        <div className="flex items-center justify-between gap-3 border-b border-[var(--color-border)] px-5 py-4">
-          <div className="min-w-0">
-            <p className="text-[11px] font-bold tracking-widest text-[var(--color-primary)] uppercase">
-              Como trata
-            </p>
-            <p className="truncate text-sm font-semibold">{detalhe?.nome_medico}</p>
-          </div>
-          <button
-            type="button"
-            onClick={() => setEditandoConduta(false)}
-            aria-label="Fechar"
-            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-full text-[var(--color-muted-foreground)]"
-          >
-            <X className="h-5 w-5" aria-hidden="true" />
-          </button>
-        </div>
-
-        <textarea
-          value={rascunhoConduta}
-          onChange={(e) => setRascunhoConduta(e.target.value.slice(0, CONDUTA_TAMANHO_MAXIMO))}
-          maxLength={CONDUTA_TAMANHO_MAXIMO}
-          autoFocus
-          placeholder="O que ele costuma prescrever, para que tipo de paciente, o que já disse sobre a conduta dele."
-          aria-label="Como este médico trata"
-          className="flex-1 resize-none px-5 py-4 text-sm leading-relaxed outline-none"
-        />
-
-        <div className="flex items-center justify-between gap-3 border-t border-[var(--color-border)] px-5 py-3">
-          <span className="text-[11px] text-[var(--color-muted-foreground)]">
-            {restantes} caracteres restantes
-          </span>
-          <div className="flex items-center gap-2">
-            {erroConduta && (
-              <span className="text-xs text-[var(--color-destructive)]">{erroConduta}</span>
-            )}
-            <button
-              type="button"
-              disabled={salvandoConduta || !rascunhoConduta.trim()}
-              onClick={salvarConduta}
-              className="rounded-[var(--radius-md)] bg-[var(--color-primary)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"
-            >
-              {salvandoConduta ? "Salvando..." : "Salvar"}
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -842,21 +952,47 @@ function GavetaMedico({ email, ufcrm, onFechar, onConversar }: GavetaMedicoProps
 
         {detalhe && (
           <div className="flex-1 space-y-4 overflow-y-auto px-5 pb-6">
+            {/* Recomendação do sistema: alerta colorido pelo tipo, sem
+                título nem selo, como no protótipo. */}
+            {(() => {
+              const estilo = ESTILO_RECOMENDACAO[detalhe.recomendacao] ?? ESTILO_SEM_ACAO;
+              return (
+                <div
+                  role="status"
+                  className="rounded-2xl px-4 py-3 text-sm font-semibold leading-relaxed"
+                  style={{ background: estilo.fundo, color: estilo.texto }}
+                >
+                  {fraseDaRecomendacao(detalhe)}
+                </div>
+              );
+            })()}
+
             {/* Posição e pontos */}
             <div className="flex gap-3">
-              <div className="flex-1 rounded-2xl bg-[var(--color-muted)] px-4 py-3 text-center">
-                <p className="text-2xl font-bold text-[var(--color-foreground)]">
-                  #{detalhe.posicao ?? "—"}
-                </p>
+              {/* Caixas do protótipo: posição em lilás, pontuação em verde. */}
+              <div className="flex flex-1 flex-col items-center rounded-2xl px-4 py-3 text-center" style={{ background: "#F0EDF8" }}>
+                {/* Medalha nos três primeiros, como na lista e no protótipo. */}
+                {corDaMedalha(detalhe.posicao) ? (
+                  <span
+                    className="mb-1 flex h-9 w-9 items-center justify-center rounded-full text-base font-bold text-white"
+                    style={{ background: corDaMedalha(detalhe.posicao)! }}
+                  >
+                    {detalhe.posicao}
+                  </span>
+                ) : (
+                  <p className="text-2xl font-bold" style={{ color: "#5D4A95" }}>
+                    #{detalhe.posicao ?? "—"}
+                  </p>
+                )}
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
                   Posição no ranking
                 </p>
               </div>
-              <div className="flex-1 rounded-2xl bg-[var(--color-accent)] px-4 py-3 text-center">
-                <p className="text-base font-bold leading-tight text-[var(--color-primary)]">
+              <div className="flex-1 rounded-2xl px-4 py-3 text-center" style={{ background: "#ECF6EF" }}>
+                <p className="text-base font-bold leading-tight" style={{ color: "#18A158" }}>
                   {formatarPontos(detalhe.pontos)}
                 </p>
-                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-[#9B1B5A]">
+                <p className="mt-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--color-muted-foreground)]">
                   Pontuação
                 </p>
               </div>
@@ -878,14 +1014,100 @@ function GavetaMedico({ email, ufcrm, onFechar, onConversar }: GavetaMedicoProps
               </div>
             )}
 
+            {/* Por que está nesta posição: os textos do protótipo, um por
+                faixa de posição, copiados palavra por palavra. Decisão de
+                George em 18/09/2026. São genéricos de propósito: o motor não
+                expõe os fatores por médico. */}
+            <div className="space-y-1.5 rounded-2xl p-4" style={{ background: "#EDE8F5" }}>
+              <p className="text-[10px] font-bold uppercase tracking-widest" style={{ color: ROXO_TEXTO }}>
+                Por que está nesta posição?
+              </p>
+              <p className="text-xs leading-relaxed" style={{ color: ROXO_TEXTO }}>
+                {textoDaPosicao(detalhe.posicao, detalhe.nome_medico)}
+              </p>
+            </div>
+
+            {/* Endereços, na posição do protótipo. Endereço 1 é o da visita,
+                SalesFarma ou auditoria; endereço 2 é "também atende em", do
+                CNES. Regra e medições em backend/app/enderecos.py. A edição
+                com sincronização de volta ao SalesFarma fica para quando a
+                integração existir, decisão de George em 18/09/2026. */}
+            {!compacta && (
+            <div>
+              <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
+                {todosOsEnderecos.length > 1 ? "Endereços de atendimento" : "Endereço de atendimento"}
+              </p>
+              {enderecoEmCorrecao !== undefined ? (
+                <FormularioEndereco
+                  inicial={enderecoEmCorrecao}
+                  salvando={salvandoEndereco}
+                  erro={erroEndereco}
+                  onSalvar={salvarEndereco}
+                  onCancelar={() => {
+                    setEnderecoEmCorrecao(undefined);
+                    setErroEndereco(null);
+                  }}
+                />
+              ) : todosOsEnderecos.length === 0 ? (
+                <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
+                  <p className="text-xs text-[var(--color-muted-foreground)]">
+                    Endereço não cadastrado no SalesFarma nem na auditoria.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setEnderecoEmCorrecao(null)}
+                    className="mt-2 text-[11px] font-semibold text-[var(--color-primary)]"
+                  >
+                    Informar endereço
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {todosOsEnderecos.map((e, i) => (
+                    <CardEndereco
+                      key={`${e.fonte}-${e.cep}-${i}`}
+                      endereco={e}
+                      onCorrigir={() => setEnderecoEmCorrecao(e)}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+            )}
+
             {/* Dados do médico */}
             <div>
               <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
                 Dados do médico
               </p>
               <div className="divide-y divide-[var(--color-border)] rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
-                {[
-                  { rotulo: "Está no painel", valor: detalhe.no_painel ? "Sim" : "Não" },
+                {(compacta
+                  ? [
+                      {
+                        rotulo: "Está no painel",
+                        valor: detalhe.no_painel ? "Sim" : "Não",
+                        cor: detalhe.no_painel ? VERDE_TOP10 : VERMELHO_ALERTA,
+                      },
+                      {
+                        rotulo: "Tamanho do painel do setor",
+                        valor: detalhe.qtd_painel_setor != null ? `${detalhe.qtd_painel_setor} médicos` : "—",
+                      },
+                    ]
+                  : [
+                  // Verde no Sim e vermelho no Não, cores do protótipo. O
+                  // rótulo é "painel", não "ranking": decisão de nomenclatura
+                  // de 16/09/2026, reafirmada por George em 18/09/2026.
+                  {
+                    rotulo: "Está no painel",
+                    valor: detalhe.no_painel ? "Sim" : "Não",
+                    cor: detalhe.no_painel ? VERDE_TOP10 : VERMELHO_ALERTA,
+                  },
+                  // Ordem pedida por George em 20/09/2026: primeiro o que é do
+                  // painel (está, há quantos ciclos), depois o que é de visita.
+                  {
+                    rotulo: "Ciclos no painel",
+                    valor: detalhe.ciclos_no_painel_janela?.toString() ?? "—",
+                  },
                   { rotulo: "Última visita", valor: formatarData(detalhe.data_ultima_visita) },
                   {
                     rotulo: "Meses desde a última visita",
@@ -894,297 +1116,75 @@ function GavetaMedico({ email, ufcrm, onFechar, onConversar }: GavetaMedicoProps
                         ? `${detalhe.meses_sem_visita} ${detalhe.meses_sem_visita === 1 ? "mês" : "meses"}`
                         : "—",
                   },
+                  // Corte de 3 meses fechado por George em 18/09/2026; o
+                  // protótipo mostra 5. Em vermelho quando é Sim, como lá.
                   {
-                    rotulo: "Ciclos no painel",
-                    valor: detalhe.ciclos_no_painel_janela?.toString() ?? "—",
+                    rotulo: "Sem visita há 3 meses ou mais",
+                    valor: semVisita3Meses === null ? "—" : semVisita3Meses ? "Sim" : "Não",
+                    alerta: semVisita3Meses === true,
                   },
-                ].map((linha) => (
+                  // Pela flag do ranking: no painel há toda a janela de 3
+                  // ciclos e nunca visitado. O protótipo diz "(5 ciclos)"; o
+                  // corte de 3 é decisão de George em 18/09/2026.
+                  {
+                    rotulo: "Nunca visitado (3 ciclos)",
+                    valor:
+                      detalhe.nunca_visitado_na_janela === null || detalhe.nunca_visitado_na_janela === undefined
+                        ? "—"
+                        : detalhe.nunca_visitado_na_janela ? "Sim" : "Não",
+                    alerta: detalhe.nunca_visitado_na_janela === true,
+                  },
+                ]).map((linha) => (
                   <div key={linha.rotulo} className="flex items-center justify-between gap-3 px-4 py-3">
                     <p className="flex-1 text-xs text-[var(--color-muted-foreground)]">{linha.rotulo}</p>
-                    <p className="flex-shrink-0 text-right text-xs font-semibold text-[var(--color-foreground)]">
+                    <p
+                      className="flex-shrink-0 text-right text-xs font-semibold"
+                      style={{
+                        color:
+                          "cor" in linha && linha.cor
+                            ? linha.cor
+                            : "alerta" in linha && linha.alerta
+                              ? VERMELHO_ALERTA
+                              : "var(--color-foreground)",
+                      }}
+                    >
                       {linha.valor}
                     </p>
                   </div>
                 ))}
               </div>
             </div>
+          </div>
+        )}
 
-            {/* Memória de visitas: o mesmo conteúdo do chat, resumido. O card
-                traz o próprio título e o selo do momento da relação. */}
-            {memoria && <CardMemoriaDeVisitas memoria={memoria} resumido />}
-
-            {/* Como Trata --------------------------------------------------- */}
-            <div>
-              <p className="mb-2 text-[11px] font-bold tracking-widest text-[var(--color-primary)] uppercase">
-                Como trata
-              </p>
-              <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-                {detalhe.conduta_texto ? (
-                  <>
-                    {/* Quatro linhas na abertura. O texto inteiro fica atrás do
-                        "ver tudo", em tela cheia. */}
-                    <p className="line-clamp-4 text-sm leading-snug whitespace-pre-wrap text-[var(--color-foreground)]">
-                      {detalhe.conduta_texto}
-                    </p>
-                    <div className="mt-2 flex items-center justify-between gap-3">
-                      <button
-                        type="button"
-                        onClick={abrirConduta}
-                        className="text-xs font-semibold text-[var(--color-primary)]"
-                      >
-                        Ver tudo e editar
-                      </button>
-                      {detalhe.conduta_em && (
-                        <span className="text-[11px] text-[var(--color-muted-foreground)]">
-                          {formatarData(detalhe.conduta_em)}
-                          {detalhe.conduta_por ? ` · ${detalhe.conduta_por}` : ""}
-                        </span>
-                      )}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <p className="text-sm text-[var(--color-muted-foreground)]">
-                      Você ainda não registrou como este médico vem tratando os
-                      pacientes.
-                    </p>
-                    <button
-                      type="button"
-                      onClick={abrirConduta}
-                      className="mt-3 rounded-[var(--radius-md)] bg-[var(--color-primary)] px-3 py-1.5 text-sm font-semibold text-white"
-                    >
-                      Registrar
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {/* Perfil de comunicação ------------------------------------- */}
-            <div>
-              <p className="mb-2 text-[11px] font-bold tracking-widest text-[var(--color-primary)] uppercase">
-                Perfil de comunicação
-              </p>
-              <div className="rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-                <div className="mb-3 flex items-center justify-between gap-3">
-                  <span
-                    className="rounded-full px-3 py-1 text-xs font-bold"
-                    style={{
-                      background: (COR_PERFIL[detalhe.perfil_comunicacao ?? "A DEFINIR"] ?? COR_PERFIL["A DEFINIR"]).fundo,
-                      color: (COR_PERFIL[detalhe.perfil_comunicacao ?? "A DEFINIR"] ?? COR_PERFIL["A DEFINIR"]).texto,
-                    }}
-                  >
-                    {rotularPerfil(detalhe.perfil_comunicacao)}
-                  </span>
-                  <p className="text-[11px] text-[var(--color-muted-foreground)]">
-                    {detalhe.perfil_origem === "propagandista"
-                      ? "definido por você"
-                      : detalhe.perfil_origem === "salesfarma"
-                        ? "sugerido pela base"
-                        : "ainda sem definição"}
-                  </p>
-                </div>
-
-                <p className="mb-3 text-xs text-[var(--color-foreground)]">
-                  Este perfil combina com o médico que você visita? Se não
-                  combinar, escolha outro abaixo.
-                </p>
-
-                <div className="flex flex-wrap gap-2">
-                  {PERFIS_SEGMENTACAO.map((opcao) => {
-                    const ativa = detalhe.perfil_comunicacao === opcao;
-                    const escolhida = perfilPendente === opcao;
-                    const cor = COR_PERFIL[opcao];
-                    return (
-                      <button
-                        key={opcao}
-                        type="button"
-                        disabled={salvandoPerfil}
-                        onClick={() => {
-                          setErroPerfil(null);
-                          setPerfilPendente(ativa ? null : opcao);
-                        }}
-                        aria-pressed={ativa}
-                        className={
-                          "rounded-full px-3 py-1.5 text-xs font-semibold transition-all disabled:opacity-50 " +
-                          (ativa || escolhida
-                            ? "ring-2 ring-offset-1"
-                            : "opacity-70")
-                        }
-                        style={{
-                          background: cor.fundo,
-                          color: cor.texto,
-                          // O anel usa a própria cor do perfil: com quatro
-                          // pastéis lado a lado, um anel de cor única não
-                          // diria qual deles está marcado.
-                          ...(ativa || escolhida
-                            ? ({ "--tw-ring-color": cor.texto } as React.CSSProperties)
-                            : {}),
-                        }}
-                      >
-                        {rotularPerfil(opcao)}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {perfilPendente && (
-                  <div className="mt-3 rounded-xl border border-[var(--color-border)] bg-[var(--color-muted)] p-3">
-                    <p className="text-xs text-[var(--color-foreground)]">
-                      Alterar de{" "}
-                      <strong>{rotularPerfil(detalhe.perfil_comunicacao)}</strong> para{" "}
-                      <strong>{rotularPerfil(perfilPendente)}</strong>?
-                    </p>
-                    <div className="mt-2 flex gap-2">
-                      <button
-                        type="button"
-                        disabled={salvandoPerfil}
-                        onClick={confirmarClassificacao}
-                        className="rounded-[var(--radius-md)] bg-[var(--color-primary)] px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
-                      >
-                        {salvandoPerfil ? "Salvando..." : "Confirmar"}
-                      </button>
-                      <button
-                        type="button"
-                        disabled={salvandoPerfil}
-                        onClick={() => setPerfilPendente(null)}
-                        className="rounded-[var(--radius-md)] px-3 py-1.5 text-xs font-semibold text-[var(--color-muted-foreground)]"
-                      >
-                        Cancelar
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {erroPerfil && (
-                  <p className="mt-2 text-xs text-[var(--color-destructive)]">{erroPerfil}</p>
-                )}
-              </div>
-            </div>
-
-            {/* Recomendação do sistema */}
-            <div>
-              <p className="mb-2 text-[11px] font-bold uppercase tracking-widest text-[var(--color-primary)]">
-                Recomendação do sistema
-              </p>
-              <div className="space-y-2 rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)] p-4">
-                {rotulo && (
-                  <span
-                    className="inline-block rounded-full px-2.5 py-1 text-xs font-bold text-white"
-                    style={{ background: rotulo.cor }}
-                  >
-                    {rotulo.texto}
-                  </span>
-                )}
-                <p className="text-xs leading-relaxed text-[var(--color-muted-foreground)]">
-                  {fraseDaRecomendacao(detalhe)}
-                </p>
-              </div>
-            </div>
-
-            {/* O que mais prescreveu no último ciclo -------------------------- */}
-            <div>
-              <div className="mb-2 flex items-baseline justify-between gap-3">
-                <p className="text-[11px] font-bold tracking-widest text-[var(--color-primary)] uppercase">
-                  O que mais prescreveu no último ciclo
-                </p>
-                {detalhe.mercados_referencia && (
-                  <span className="text-[11px] text-[var(--color-muted-foreground)]">
-                    {formatarReferencia(detalhe.mercados_referencia)}
-                  </span>
-                )}
-              </div>
-
-              <div className="divide-y divide-[var(--color-border)] rounded-2xl border border-[var(--color-border)] bg-[var(--color-card)]">
-                {(detalhe.mercados ?? []).length === 0 && (
-                  <p className="px-4 py-3 text-xs text-[var(--color-muted-foreground)]">
-                    Sem prescrição registrada na auditoria deste ciclo.
-                  </p>
-                )}
-
-                {(detalhe.mercados ?? []).map((m, i) => (
-                  <div key={m.mercado} className="px-4 py-3">
-                    <div className="flex items-center justify-between gap-3">
-                      <p className="flex-1 text-sm font-semibold text-[var(--color-foreground)]">
-                        {i + 1}. {capitalizarNome(m.mercado)}
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => abrirKb(m.mercado, m.cod_linha ?? "")}
-                        className="flex-shrink-0 text-xs font-semibold text-[var(--color-primary)]"
-                      >
-                        Mais informação
-                      </button>
-                    </div>
-
-                    {kbAberto === m.mercado && (
-                      <div className="mt-3 space-y-3 rounded-xl bg-[var(--color-muted)] p-3">
-                        {kbCarregando && (
-                          <p className="text-xs text-[var(--color-muted-foreground)]">Carregando...</p>
-                        )}
-
-                        {!kbCarregando && !kbDetalhe && (
-                          <p className="text-xs text-[var(--color-muted-foreground)]">
-                            Sem material para este mercado.
-                          </p>
-                        )}
-
-                        {!kbCarregando && kbDetalhe && (
-                          <>
-                            {kbDetalhe.indicacao && (
-                              <div>
-                                <p className="text-[10px] font-bold tracking-wider text-[var(--color-primary)] uppercase">
-                                  Para que serve
-                                </p>
-                                <p className="mt-1 text-xs leading-relaxed text-[var(--color-foreground)]">
-                                  {kbDetalhe.indicacao}
-                                </p>
-                              </div>
-                            )}
-
-                            {kbDetalhe.beneficios.length > 0 && (
-                              <div>
-                                <p className="text-[10px] font-bold tracking-wider text-[var(--color-muted-foreground)] uppercase">
-                                  Argumentos
-                                </p>
-                                <ul className="mt-1 space-y-1">
-                                  {kbDetalhe.beneficios.map((b) => (
-                                    <li key={b} className="text-xs leading-relaxed text-[var(--color-foreground)]">
-                                      · {b}
-                                    </li>
-                                  ))}
-                                </ul>
-                              </div>
-                            )}
-
-                            {!kbDetalhe.indicacao && kbDetalhe.beneficios.length === 0 && (
-                              <p className="text-xs text-[var(--color-muted-foreground)]">
-                                Sem material da Aché para este produto.
-                              </p>
-                            )}
-
-                            {kbDetalhe.ciclos_origem.length > 0 && (
-                              <p className="text-[10px] text-[var(--color-muted-foreground)]">
-                                Material da Aché, ciclo{" "}
-                                {kbDetalhe.ciclos_origem[0].toString().padStart(2, "0")}
-                              </p>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Conduzir a conversa no chat ---------------------------------- */}
+        {/* Rodapé de ação, fixo, como no protótipo. Só aparece para médico
+            com recomendação pendente: quem já está no painel e não tem
+            sugestão não tem o que aceitar. Os dois botões abrem a mesma
+            GavetaDeAcao, que já chama os endpoints; o de desconsiderar pula
+            direto para os motivos. */}
+        {detalhe && medico?.id_recomendacao_pendente && onResolver && (
+          <div className="flex-shrink-0 space-y-2 border-t border-[var(--color-border)] px-5 py-4">
             <button
               type="button"
-              onClick={() => onConversar(detalhe.nome_medico)}
-              className="w-full rounded-2xl bg-[var(--color-primary)] px-4 py-3 text-sm font-semibold text-white"
+              onClick={() => onResolver("escolha")}
+              className="w-full rounded-2xl py-3 text-sm font-bold text-white transition-opacity active:opacity-80"
+              style={{
+                background:
+                  medico.tipo_recomendacao_pendente === "ENTRADA_PAINEL"
+                    ? "var(--color-primary)"
+                    : LARANJA_EXCLUSAO,
+              }}
             >
-              Como conduzir a conversa
+              {medico.tipo_recomendacao_pendente === "ENTRADA_PAINEL"
+                ? "Aceitar inclusão"
+                : "Aceitar exclusão"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onResolver("motivo")}
+              className="w-full rounded-2xl border border-[var(--color-border)] bg-white py-3 text-sm font-semibold text-[var(--color-muted-foreground)] transition-opacity active:opacity-80"
+            >
+              Desconsiderar sugestão
             </button>
           </div>
         )}

@@ -154,6 +154,13 @@ class DesconsideradaItem(BaseModel):
     # A data da decisão, seja ela qual for. Existe para a tela ordenar e
     # exibir sem precisar saber de qual coluna veio.
     data_decisao: Optional[datetime] = None
+    # Quando o aceite foi enviado ao SalesFarma. Nula até a exportação
+    # existir. A tela mostra "aguardando envio" ou "enviada em dd/mm".
+    data_exportacao: Optional[datetime] = None
+    # Se o botão Desfazer aparece. Calculado no backend (_pode_desfazer em
+    # routers/recomendacoes.py) para a tela não repetir a regra: desconsiderada
+    # sempre; aceita só antes do envio ao SalesFarma.
+    pode_desfazer: bool = False
     ciclo_recomendacao: str
     # Mesmo tratamento de RecomendacaoItem — ver comentário lá.
     especialidade: Optional[str] = None

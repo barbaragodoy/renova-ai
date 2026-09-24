@@ -1,0 +1,40 @@
+{
+  "grupos_candidatos": 16,
+  "grupos_excluidos": 3,
+  "ja_apareciam_no_piloto": [
+    "Baixa lembrança da marca",
+    "Preferência terapêutica ou por concorrente já estabelecida",
+    "Custo ou baixa acessibilidade financeira",
+    "Preferência ou limitação de formulação, apresentação ou posologia",
+    "Hábito, protocolo ou diretriz consolidada",
+    "Dúvida ou desconhecimento técnico",
+    "Falta de experiência ou incorporação à prática",
+    "Restrição institucional ou da rede de atendimento",
+    "Prescrição por molécula ou genérico em vez da marca",
+    "Receio de segurança ou tolerabilidade",
+    "Baixa disponibilidade ou desabastecimento",
+    "Falta ou desequilíbrio de amostras"
+  ],
+  "novas_na_escala": [
+    "Resistência, percepção ou adesão do paciente",
+    "Dúvida sobre eficácia, benefício ou evidência",
+    "Resistência ou baixo interesse do médico",
+    "Restrição clínica específica à adoção"
+  ],
+  "categorias_piloto_original": [
+    "Baixa disponibilidade ou desabastecimento",
+    "Baixa lembrança da marca",
+    "Baixa oportunidade clínica ou desalinhamento com o perfil atendido",
+    "Custo ou baixa acessibilidade financeira",
+    "Dúvida ou desconhecimento técnico",
+    "Falta de experiência ou incorporação à prática",
+    "Falta ou desequilíbrio de amostras",
+    "Hábito, protocolo ou diretriz consolidada",
+    "Preferência ou limitação de formulação, apresentação ou posologia",
+    "Preferência terapêutica ou por concorrente já estabelecida",
+    "Prescrição por molécula ou genérico em vez da marca",
+    "Receio de segurança ou tolerabilidade",
+    "Restrição institucional ou da rede de atendimento",
+    "Substituição da marca após a prescrição na farmácia"
+  ]
+}

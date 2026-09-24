@@ -25,7 +25,11 @@ from backend.app.agente.ferramentas import Contexto
 from backend.app.agente.modelo import ServingDatabricks
 from backend.app.agente.orquestrador import Orquestrador
 from backend.app.agente import registro
-from backend.app.auth.context import StatusContexto, resolver_contexto
+from backend.app.auth.context import (
+    StatusContexto,
+    coluna_identidade_para_auth_mode,
+    resolver_contexto,
+)
 from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.chat.executor import ExecutorDoPortal
 from backend.app.config import get_settings
@@ -76,7 +80,10 @@ def perguntar(body: PerguntaRequest, authorization: Optional[str] = Header(None)
         raise HTTPException(status_code=400, detail="pergunta vazia")
 
     email = resolver_email_autenticado(authorization, None)
-    contexto = resolver_contexto(email)
+    contexto = resolver_contexto(
+        email,
+        coluna_identidade=coluna_identidade_para_auth_mode(),
+    )
     if contexto.status != StatusContexto.SETOR_RESOLVIDO:
         raise HTTPException(status_code=403,
                             detail={"status": contexto.status, "mensagem": contexto.mensagem})
@@ -156,7 +163,10 @@ def enriquecer(body: EnriquecerRequest,
     mostra a seção.
     """
     email = resolver_email_autenticado(authorization, None)
-    contexto = resolver_contexto(email)
+    contexto = resolver_contexto(
+        email,
+        coluna_identidade=coluna_identidade_para_auth_mode(),
+    )
     if contexto.status != StatusContexto.SETOR_RESOLVIDO or not (contexto.setor or "").strip():
         raise HTTPException(status_code=403, detail={"status": contexto.status,
                                                      "mensagem": contexto.mensagem})

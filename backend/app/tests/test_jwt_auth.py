@@ -6,14 +6,20 @@ Modo produção (AUTH_REQUIRE_JWT=true): exige Bearer token válido, e-mail vem
 da claim configurada (AUTH_EMAIL_CLAIM) — mockado aqui, sem bater num Auth0/
 Entra ID real.
 """
+import base64
+import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import jwt as pyjwt
 import pytest
-from fastapi import HTTPException
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.testclient import TestClient
 
-from backend.app.auth.jwt_auth import resolver_email_autenticado
+from backend.app.auth.jwt_auth import (
+    capturar_cabecalhos_easy_auth,
+    resolver_email_autenticado,
+)
 
 
 def _settings(**overrides):
@@ -31,6 +37,80 @@ def _settings(**overrides):
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def _client_principal(*claims: dict) -> str:
+    payload = json.dumps({"claims": list(claims)}).encode("utf-8")
+    return base64.b64encode(payload).decode("ascii")
+
+
+def test_entra_id_usa_principal_name_e_ignora_bearer_e_email_param():
+    settings = _settings(auth_mode="entra_id", auth_require_jwt=True)
+
+    with patch("backend.app.auth.jwt_auth._get_jwks_client") as jwks:
+        upn = resolver_email_autenticado(
+            "Bearer token-legado",
+            "email.informado@ache.com.br",
+            settings=settings,
+            client_principal_name="usuario.teste@biosintetica.com.br",
+        )
+
+    assert upn == "usuario.teste@biosintetica.com.br"
+    jwks.assert_not_called()
+
+
+def test_entra_id_faz_fallback_para_claim_upn():
+    upn = resolver_email_autenticado(
+        None,
+        None,
+        settings=_settings(auth_mode="entra_id"),
+        client_principal_name="   ",
+        client_principal=_client_principal(
+            {"typ": "name", "val": "Nome Fictício"},
+            {"typ": "upn", "val": "USUARIO.TESTE@DOMINIO-EXEMPLO.COM"},
+        ),
+    )
+
+    assert upn == "USUARIO.TESTE@DOMINIO-EXEMPLO.COM"
+
+
+@pytest.mark.parametrize(
+    "principal",
+    [None, "", "base64-invalido", _client_principal({"typ": "sub", "val": "123"})],
+)
+def test_entra_id_sem_upn_retorna_401(principal):
+    with pytest.raises(HTTPException) as exc:
+        resolver_email_autenticado(
+            None,
+            None,
+            settings=_settings(auth_mode="entra_id"),
+            client_principal=principal,
+        )
+
+    assert exc.value.status_code == 401
+
+
+def test_dependency_global_captura_header_easy_auth():
+    settings = _settings(auth_mode="entra_id")
+    app = FastAPI(dependencies=[Depends(capturar_cabecalhos_easy_auth)])
+
+    @app.get("/identidade")
+    def identidade():
+        return {
+            "upn": resolver_email_autenticado(None, None, settings=settings)
+        }
+
+    resposta = TestClient(app).get(
+        "/identidade",
+        headers={
+            "X-MS-CLIENT-PRINCIPAL-NAME": "conta.ficticia@biosintetica.com.br"
+        },
+    )
+
+    assert resposta.status_code == 200
+    assert resposta.json() == {
+        "upn": "conta.ficticia@biosintetica.com.br"
+    }
 
 
 def test_modo_dev_usa_email_do_parametro():

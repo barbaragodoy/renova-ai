@@ -1,0 +1,11 @@
+# Fotografias e saídas brutas podem conter nomes e detalhes de visitas médicas.
+**/fonte_snapshot.json
+**/extracoes*.jsonl
+**/manifesto*.jsonl
+**/revisao_residual.jsonl
+**/barreiras_candidatas.json
+**/gabarito*.jsonl
+**/comparacao*.jsonl
+**/validacao_corte*.jsonl
+**/classificacoes_manuais.jsonl
+**/resultados*.jsonl

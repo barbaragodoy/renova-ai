@@ -4,6 +4,7 @@ import { gravarSessao, type Sessao } from "@/auth/sessao";
 import { USA_SENHA } from "@/auth/modo";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 
@@ -78,77 +79,100 @@ export function Login({ onEntrar, aviso }: LoginProps) {
     // partir de lg, onde há largura para ele sem espremer o formulário.
     <div className="grid min-h-dvh grid-cols-1 lg:grid-cols-[1fr_minmax(0,44%)]">
       <main className="flex flex-col justify-center px-6 py-12 sm:px-10 lg:px-16">
-        <div className="mx-auto w-full max-w-sm">
-          <p className="text-sm font-semibold tracking-[0.08em] text-[var(--color-primary)] uppercase">
-            PedAI
-          </p>
+        <div className="mx-auto w-full max-w-md">
+          <Card className="p-6 sm:p-8">
+            <p className="text-sm font-semibold tracking-[0.08em] text-[var(--color-primary)] uppercase">
+              PedAI
+            </p>
 
-          <h1 className="mt-6 text-3xl leading-tight font-semibold sm:text-4xl">
-            Acessar o portal
-          </h1>
-          <p className="mt-2 text-[var(--color-muted-foreground)]">
-            Use seu e-mail corporativo e a senha que você recebeu.
-          </p>
+            <h1 className="mt-6 text-3xl leading-tight font-semibold sm:text-4xl">
+              Acessar o portal
+            </h1>
+            <p className="mt-2 text-sm text-[var(--color-muted-foreground)]">
+              Use seu e-mail corporativo e a senha que você recebeu.
+            </p>
 
-          <form onSubmit={entrar} className="mt-8" noValidate>
-            <Label htmlFor="email">E-mail corporativo</Label>
-            <Input
-              id="email"
-              name="email"
-              type="email"
-              inputMode="email"
-              autoComplete="username"
-              autoFocus
-              required
-              placeholder="nome.sobrenome@ache.com.br"
-              value={email}
-              onChange={(evento) => setEmail(evento.target.value)}
-              aria-invalid={erro ? true : undefined}
-              aria-describedby={erro ? "erro-login" : undefined}
-            />
-
-            <div className="mt-4">
-              <Label htmlFor="senha">Senha</Label>
+            <form onSubmit={entrar} className="mt-8" noValidate>
+              <Label htmlFor="email">E-mail corporativo</Label>
               <Input
-                id="senha"
-                name="senha"
-                type="password"
-                autoComplete="current-password"
-                // A senha vem em blocos separados por hífen: sem correção
-                // automática nem primeira letra maiúscula no celular.
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
+                id="email"
+                name="email"
+                type="email"
+                inputMode="email"
+                autoComplete="username"
+                autoFocus
                 required
-                value={senha}
-                onChange={(evento) => setSenha(evento.target.value)}
+                placeholder="nome.sobrenome@ache.com.br"
+                value={email}
+                onChange={(evento) => setEmail(evento.target.value)}
                 aria-invalid={erro ? true : undefined}
                 aria-describedby={erro ? "erro-login" : undefined}
               />
-            </div>
 
-            {erro && (
-              <Alert className="mt-4">
-                <span id="erro-login">{erro}</span>
-              </Alert>
+              <div className="mt-4">
+                <Label htmlFor="senha">Senha</Label>
+                <Input
+                  id="senha"
+                  name="senha"
+                  type="password"
+                  autoComplete="current-password"
+                  // A senha vem em blocos separados por hífen: sem correção
+                  // automática nem primeira letra maiúscula no celular.
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  spellCheck={false}
+                  required
+                  value={senha}
+                  onChange={(evento) => setSenha(evento.target.value)}
+                  aria-invalid={erro ? true : undefined}
+                  aria-describedby={erro ? "erro-login" : undefined}
+                />
+              </div>
+
+              {erro && (
+                <Alert className="mt-4">
+                  <span id="erro-login">{erro}</span>
+                </Alert>
+              )}
+
+              <Button
+                type="submit"
+                size="lg"
+                className="mt-6 w-full"
+                disabled={carregando || !podeEnviar}
+              >
+                {carregando ? "Entrando..." : "Entrar"}
+              </Button>
+            </form>
+
+            {USA_SENHA && (
+              <p className="mt-6 text-xs text-[var(--color-muted-foreground)]">
+                Não recebeu sua senha ou precisa de uma nova? Fale com o time
+                do PedAI.
+              </p>
             )}
 
-            <Button
-              type="submit"
-              size="lg"
-              className="mt-6 w-full"
-              disabled={carregando || !podeEnviar}
-            >
-              {carregando ? "Entrando..." : "Entrar"}
-            </Button>
-          </form>
+            <div className="mt-8 flex items-center gap-3" aria-hidden="true">
+              <span className="h-px flex-1 bg-[var(--color-border)]" />
+              <span className="text-xs tracking-[0.08em] text-[var(--color-muted-foreground)] uppercase">
+                conta corporativa
+              </span>
+              <span className="h-px flex-1 bg-[var(--color-border)]" />
+            </div>
 
-          {USA_SENHA && (
-            <p className="mt-6 text-sm text-[var(--color-muted-foreground)]">
-              Não recebeu sua senha ou precisa de uma nova? Fale com o time do
-              PedAI.
+            <button
+              type="button"
+              disabled
+              aria-describedby="microsoft-login-status"
+              className="mt-4 inline-flex h-12 w-full cursor-not-allowed items-center justify-center gap-2 rounded-[var(--radius-md)] border border-[var(--color-border)] bg-[var(--color-card)] px-6 text-base font-medium text-[var(--color-foreground)] opacity-60"
+            >
+              <img src="/microsoft.svg" alt="" className="h-4 w-4 shrink-0" />
+              Entrar com a conta Microsoft
+            </button>
+            <p id="microsoft-login-status" className="mt-2 text-center text-xs text-[var(--color-destructive)]">
+              Funcionalidade em desenvolvimento
             </p>
-          )}
+          </Card>
         </div>
       </main>
 

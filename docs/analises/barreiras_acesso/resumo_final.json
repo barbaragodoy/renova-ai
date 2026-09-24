@@ -1,0 +1,24 @@
+{
+  "visitas": 1076,
+  "comentarios_distintos": 704,
+  "chamadas_reais_incluindo_teste_inicial": 713,
+  "tokens_entrada_reais": 288771,
+  "tokens_saida_reais": 26270,
+  "estados": {
+    "COM_BARREIRA": {
+      "visitas": 634,
+      "medicos_distintos": 589,
+      "comentarios_distintos": 530
+    },
+    "SEM_CONTEUDO_REAL": {
+      "visitas": 216,
+      "medicos_distintos": 180,
+      "comentarios_distintos": 15
+    },
+    "COM_CONTEUDO_SEM_BARREIRA": {
+      "visitas": 226,
+      "medicos_distintos": 225,
+      "comentarios_distintos": 159
+    }
+  }
+}

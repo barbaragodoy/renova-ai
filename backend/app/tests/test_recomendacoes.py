@@ -124,8 +124,9 @@ def _mock_engine_ciclo(ciclo_max: str, capturados: list):
     def _exec(query, params=None):
         sql = str(query)
         result = MagicMock()
-        if "perfil_portal" in sql.lower():
-            result.fetchone.return_value = MagicMock(limite=318)
+        if "renovai_parametros" in sql.lower():
+            # Limite único de tb_renovai_parametros, lido por .scalar().
+            result.scalar.return_value = 300
         elif "MAX(" in sql:
             result.fetchone.return_value = MagicMock(ciclo=ciclo_max)
         else:
@@ -207,8 +208,8 @@ def test_revisao_com_ciclo_explicito_nao_consulta_max():
             def _exec(query, params=None):
                 sql = str(query)
                 result = MagicMock()
-                if "perfil_portal" in sql.lower():
-                    result.fetchone.return_value = MagicMock(limite=318)
+                if "renovai_parametros" in sql.lower():
+                    result.scalar.return_value = 300
                     return result
                 if "MAX(" in sql:
                     chamadas_max.append(True)
@@ -304,9 +305,14 @@ def test_lista_desconsideradas_com_bloqueio_nulo_nao_quebra():
 
 
 def test_lista_desconsideradas_filtra_por_status_e_matricula_autenticada():
-    """A query filtra status_recomendacao = 'DESCONSIDERADA' e usa a
-    matrícula resolvida via contexto autenticado (nunca aceita de outro
-    propagandista/input externo) — garante que não vaza dado de terceiro."""
+    """A query filtra por decisao registrada e usa a matricula resolvida via
+    contexto autenticado, nunca aceita de outro propagandista, o que garante
+    que nao vaza dado de terceiro.
+
+    Desde 08/09/2026 o filtro e por DATA_DESCONSIDERACAO ou DATA_ACEITE nao
+    nulas, e nao por status: um aceite que expira na virada do ciclo precisa
+    continuar visivel no Historico, senao o propagandista ve a propria decisao
+    sumir sem explicacao."""
     capturados = []
     with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
         with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(captured=capturados)):
@@ -314,8 +320,8 @@ def test_lista_desconsideradas_filtra_por_status_e_matricula_autenticada():
                 "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
             )
     assert resp.status_code == 200
-    sql = capturados[0]["sql"]
-    assert "DESCONSIDERADA" in sql
+    sql = " ".join(capturados[0]["sql"].split())
+    assert "data_desconsideracao IS NOT NULL OR data_aceite IS NOT NULL" in sql
     assert capturados[0]["params"] == {"mat": "REP001"}
 
 
@@ -349,7 +355,8 @@ def test_historico_traz_desconsideradas_e_aceitas():
                 "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
             )
     sql = " ".join(capturados[0]["sql"].split())
-    assert "status_recomendacao IN ('DESCONSIDERADA', 'ACEITA')" in sql
+    assert "data_desconsideracao IS NOT NULL OR data_aceite IS NOT NULL" in sql
+    assert "status_recomendacao IN" not in sql
     assert "AS status_recomendacao" in sql
     assert "AS data_decisao" in sql
 
@@ -498,12 +505,14 @@ def test_limite_painel_padrao_vem_de_tb_renovai_parametros_nao_de_literal():
     assert _limite_painel("REP004", col) == 318
 
 
-def _mock_engine_limite(limite_por_matricula: dict, capturados: list):
-    """Mocka _engine() respondendo à query de limite (tb_perfil_portal) com o
-    valor configurado por matrícula, resolvendo o ciclo via MAX(...) e
-    capturando os parâmetros da query principal de listagem — mesmo estilo
-    de _mock_engine_ciclo, com um terceiro tipo de query distinguido pelo
-    texto SQL."""
+def _mock_engine_limite(limite_padrao: int, capturados: list):
+    """Mocka _engine() respondendo à consulta de tb_renovai_parametros com o
+    limite único, resolvendo o ciclo via MAX(...) e capturando os parâmetros
+    da query principal de listagem.
+
+    Até 18/09/2026 este helper respondia por matrícula, porque o limite era
+    personalizável em tb_perfil_portal. A personalização saiu; hoje o valor
+    é um só para todo propagandista."""
     mock_eng = MagicMock()
     conn = MagicMock()
     conn.__enter__ = lambda s: s
@@ -512,9 +521,12 @@ def _mock_engine_limite(limite_por_matricula: dict, capturados: list):
     def _exec(query, params=None):
         sql = str(query)
         result = MagicMock()
-        if "perfil_portal" in sql.lower():
-            mat = params["mat"]
-            result.fetchone.return_value = MagicMock(limite=limite_por_matricula[mat])
+        if "renovai_parametros" in sql.lower():
+            result.scalar.return_value = limite_padrao
+        elif "perfil_portal" in sql.lower():
+            raise AssertionError(
+                "tb_perfil_portal não deve mais ser consultada para o limite do painel"
+            )
         elif "MAX(" in sql:
             result.fetchone.return_value = MagicMock(ciclo="202608")
         else:
@@ -527,23 +539,23 @@ def _mock_engine_limite(limite_por_matricula: dict, capturados: list):
     return mock_eng
 
 
-def test_revisao_usa_limite_personalizado_no_filtro(monkeypatch):
-    """Databricks é a fonte que tem QTD_MEDICOS_PAINEL_CICLO — o filtro de
-    defesa em profundidade só existe nela (ver _schema()['local']). Propagandista
-    com limite personalizado (450) deve ter esse valor, não 318 nem 400,
-    passado como bind param :limite_painel."""
+def test_revisao_usa_o_limite_unico_da_tabela_de_parametros(monkeypatch):
+    """Databricks é a fonte que tem QTD_MEDICOS_PAINEL_CICLO, então o filtro
+    de defesa em profundidade só existe nela. O bind :limite_painel precisa
+    ser o valor de tb_renovai_parametros, e tb_perfil_portal não pode ser
+    consultada no caminho."""
     monkeypatch.setenv("DATA_SOURCE", "databricks")
     get_settings.cache_clear()
-    ctx_rep002 = ContextoResponse(
+    ctx = ContextoResponse(
         status=StatusContexto.SETOR_RESOLVIDO, matricula="REP002",
         setor="SP_INTERIOR", cod_linha="CARDIO", nome="Bruno Melo",
     )
     capturados = []
     try:
-        with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=ctx_rep002):
+        with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=ctx):
             with patch(
                 "backend.app.routers.recomendacoes._engine",
-                _mock_engine_limite({"REP002": 450}, capturados),
+                _mock_engine_limite(300, capturados),
             ):
                 resp = CLIENT.get(
                     "/recomendacoes/revisao",
@@ -551,78 +563,50 @@ def test_revisao_usa_limite_personalizado_no_filtro(monkeypatch):
                     headers=CABECALHO,
                 )
     finally:
+        monkeypatch.delenv("DATA_SOURCE", raising=False)
         get_settings.cache_clear()
+
     assert resp.status_code == 200
-    assert capturados[0]["limite_painel"] == 450
+    assert capturados, "a query principal de listagem deveria ter sido executada"
+    assert capturados[0]["limite_painel"] == 300
 
 
-def test_revisao_sem_personalizacao_usa_default_318(monkeypatch):
-    """Propagandista sem linha em tb_perfil_portal (ou com limite_painel
-    NULL) cai no default 318 — mesmo valor que o notebook de geração usa na
-    fonte real via COALESCE."""
+def test_revisao_dois_propagandistas_recebem_o_mesmo_limite(monkeypatch):
+    """O oposto do que valia até 18/09/2026: matrículas diferentes, mesmo
+    :limite_painel. É o que confirma que a personalização saiu de verdade."""
     monkeypatch.setenv("DATA_SOURCE", "databricks")
     get_settings.cache_clear()
-    ctx_rep004 = ContextoResponse(
-        status=StatusContexto.SETOR_RESOLVIDO, matricula="REP004",
-        setor="RJ_CAPITAL", cod_linha="CARDIO", nome="Diego Costa",
-    )
-    capturados = []
-    try:
-        with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=ctx_rep004):
-            with patch(
-                "backend.app.routers.recomendacoes._engine",
-                _mock_engine_limite({"REP004": 318}, capturados),
-            ):
-                resp = CLIENT.get(
-                    "/recomendacoes/revisao",
-                    params={"email": "diego.costa@ache.com.br", "ciclo": "202608"},
-                    headers=CABECALHO,
-                )
-    finally:
-        get_settings.cache_clear()
-    assert resp.status_code == 200
-    assert capturados[0]["limite_painel"] == 318
-
-
-def test_revisao_dois_propagandistas_limites_diferentes_geram_filtros_diferentes(monkeypatch):
-    """Teste comparativo: dois propagandistas com limites diferentes (250 e
-    450) devem gerar bind params :limite_painel diferentes entre si na
-    mesma execução — confirma que o filtro não está fixo em nenhum valor
-    único (nem 400, nem 318), e sim resolvido por matrícula a cada chamada."""
-    monkeypatch.setenv("DATA_SOURCE", "databricks")
-    get_settings.cache_clear()
-    ctx_rep001 = ContextoResponse(
-        status=StatusContexto.SETOR_RESOLVIDO, matricula="REP001",
-        setor="SP_INTERIOR", cod_linha="CARDIO", nome="Ana Lima",
-    )
-    ctx_rep002 = ContextoResponse(
-        status=StatusContexto.SETOR_RESOLVIDO, matricula="REP002",
-        setor="SP_INTERIOR", cod_linha="CARDIO", nome="Bruno Melo",
-    )
-    limites = {"REP001": 250, "REP002": 450}
+    ctxs = {
+        "REP001": ContextoResponse(
+            status=StatusContexto.SETOR_RESOLVIDO, matricula="REP001",
+            setor="SP_INTERIOR", cod_linha="CARDIO", nome="Ana Lima",
+        ),
+        "REP002": ContextoResponse(
+            status=StatusContexto.SETOR_RESOLVIDO, matricula="REP002",
+            setor="SP_INTERIOR", cod_linha="CARDIO", nome="Bruno Melo",
+        ),
+    }
     resultados = {}
     try:
-        for mat, ctx in (("REP001", ctx_rep001), ("REP002", ctx_rep002)):
+        for mat, ctx in ctxs.items():
             capturados = []
             with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=ctx):
                 with patch(
                     "backend.app.routers.recomendacoes._engine",
-                    _mock_engine_limite(limites, capturados),
+                    _mock_engine_limite(300, capturados),
                 ):
                     resp = CLIENT.get(
                         "/recomendacoes/revisao",
-                        params={"email": "x@ache.com.br", "ciclo": "202608"},
+                        params={"email": f"{mat.lower()}@ache.com.br", "ciclo": "202608"},
                         headers=CABECALHO,
                     )
             assert resp.status_code == 200
             resultados[mat] = capturados[0]["limite_painel"]
     finally:
+        monkeypatch.delenv("DATA_SOURCE", raising=False)
         get_settings.cache_clear()
-    assert resultados["REP001"] == 250
-    assert resultados["REP002"] == 450
-    assert resultados["REP001"] != resultados["REP002"]
 
-
+    assert resultados == {"REP001": 300, "REP002": 300}
 def test_entrada_nao_tem_filtro_de_limite_painel():
     """/entrada não ganhou filtro de limite (Fase 0 não indicou necessidade
     — sempre foi assim, mesmo antes do corte fixo 400 existir só em
@@ -789,3 +773,65 @@ def test_historico_aceita_sem_motivo_nao_quebra():
     assert item["motivo_desconsideracao"] is None
     assert item["data_desconsideracao"] is None
     assert item["data_decisao"]
+
+
+def _linha_historico(**sobrescrever):
+    base = {
+        "id_recomendacao": uuid.uuid4(),
+        "nome_medico": "MEDICO",
+        "ufcrm": "SP0000009",
+        "tipo_recomendacao": "ENTRADA_PAINEL",
+        "motivo_recomendacao": None,
+        "motivo_desconsideracao": None,
+        "bloquear_novas_recomendacoes": None,
+        "status_recomendacao": "ACEITA",
+        "data_desconsideracao": None,
+        "data_decisao": datetime(2026, 9, 4, 10, 0, tzinfo=timezone.utc),
+        "data_exportacao": None,
+        "ciclo_recomendacao": "202609",
+        "uf": "SP",
+        "especialidade": None,
+        "cidade": None,
+        "meses_sem_visita": None,
+    }
+    base.update(sobrescrever)
+    return base
+
+
+def _historico(rows):
+    with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
+        with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(rows=rows)):
+            resp = CLIENT.get(
+                "/recomendacoes/desconsideradas",
+                params={"email": "ana.silva@ache.com.br"},
+                headers=CABECALHO,
+            )
+    assert resp.status_code == 200, resp.text
+    return resp.json()["recomendacoes"]
+
+
+def test_historico_diz_quando_pode_desfazer():
+    """Regra de 20/09/2026, calculada no backend para a tela nao repetir:
+    desconsiderada sempre; aceita so antes do envio ao SalesFarma."""
+    itens = _historico([
+        _linha_historico(status_recomendacao="DESCONSIDERADA",
+                         data_desconsideracao=datetime(2026, 9, 4, tzinfo=timezone.utc)),
+        _linha_historico(status_recomendacao="ACEITA"),
+        _linha_historico(status_recomendacao="ACEITA",
+                         data_exportacao=datetime(2026, 10, 3, tzinfo=timezone.utc)),
+        _linha_historico(status_recomendacao="APLICADA"),
+        _linha_historico(status_recomendacao="EXPIRADA"),
+    ])
+    assert [i["pode_desfazer"] for i in itens] == [True, True, False, False, False]
+    assert itens[2]["data_exportacao"].startswith("2026-10-03")
+
+
+def test_historico_seleciona_a_data_de_exportacao():
+    capturados = []
+    with patch("backend.app.routers.recomendacoes.resolver_contexto", return_value=_CTX_VALIDO):
+        with patch("backend.app.routers.recomendacoes._engine", _mock_engine_desconsideradas(captured=capturados)):
+            CLIENT.get(
+                "/recomendacoes/desconsideradas", params={"email": "ana.silva@ache.com.br"}, headers=CABECALHO
+            )
+    sql = " ".join(capturados[0]["sql"].split())
+    assert "AS data_exportacao" in sql

@@ -1,0 +1,20 @@
+{
+  "visitas": 9940,
+  "comentarios_distintos": 9571,
+  "decisoes_manuais_top_250": 250,
+  "textos_curtos": 99,
+  "gabarito_piloto_reaproveitado": 146,
+  "chamadas_novas_esperadas": 9101,
+  "estados_textos": {
+    "COM_CONTEUDO_SEM_BARREIRA": 8327,
+    "COM_BARREIRA": 1045,
+    "SEM_CONTEUDO_REAL": 199
+  },
+  "estados_visitas": {
+    "COM_CONTEUDO_SEM_BARREIRA": 8488,
+    "SEM_CONTEUDO_REAL": 399,
+    "COM_BARREIRA": 1053
+  },
+  "tokens_entrada_escala": 6938258,
+  "tokens_saida_escala": 294215
+}

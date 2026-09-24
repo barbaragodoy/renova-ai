@@ -16,6 +16,14 @@
 
 const CHAVE = "renovai.sessao";
 
+/** Propagandista que um administrador escolheu visualizar. Fica na sessão
+ *  para sobreviver ao recarregamento da página; a autorização continua sendo
+ *  conferida no servidor a cada chamada. */
+export interface VerComo {
+  setor: string;
+  nome: string | null;
+}
+
 export interface Sessao {
   email: string;
   nome: string | null;
@@ -26,6 +34,8 @@ export interface Sessao {
    *  O backend devolve `expira_em` como duração em segundos; a conversão
    *  para instante absoluto acontece no login. */
   expiraEm?: number;
+  /** Preenchido só na sessão de conferência de um administrador. */
+  verComo?: VerComo | null;
 }
 
 export function lerSessao(): Sessao | null {

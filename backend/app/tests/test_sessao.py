@@ -21,6 +21,11 @@ from backend.app.auth.credenciais import (
 from backend.app.auth.sessao import Identidade, sessao_router
 from backend.app.config import Settings
 
+# Estes testes cobrem a mecânica de login (token, tarefa de fundo, registro
+# de acesso) — a integração com STATUS_ACESSO tem cobertura dedicada em
+# test_status_acesso.py. Fixture compartilhada em conftest.py.
+pytestmark = pytest.mark.usefixtures("liberar_acesso_por_padrao")
+
 SEGREDO = "x" * 40
 SENHA = "Kd7m-Qw3x-Rt9p"
 

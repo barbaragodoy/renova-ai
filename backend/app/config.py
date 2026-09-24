@@ -71,20 +71,6 @@ class Settings(BaseSettings):
     sessao_jwt_secret: str = ""
     sessao_token_minutos: int = 60
 
-    # Lista administrativa do projeto — quem pode abrir o portal no lugar de
-    # um propagandista, para conferência. Separada por vírgula, injetada pelo
-    # ambiente, vazia por padrão: sem configuração explícita ninguém
-    # personifica. Ver backend/app/auth/administrativo.py.
-    #
-    # Aceita e-mail e login corporativo na mesma lista, porque ainda não está
-    # confirmado com o Flávio qual claim o token do Entra ID traz. Com poucas
-    # pessoas, aceitar as duas formas sai mais barato que esperar a resposta.
-    #
-    # Esta lista NÃO é o acesso de gerente distrital, regional ou nacional.
-    # Aquilo é outra feature, com outra regra de escopo, e a hierarquia para
-    # ela já existe em tb_propagandistas (GD_EMAIL, GR_EMAIL, GN_EMAIL).
-    admin_emails: str = ""
-
     # Caminho dos arquivos estáticos do frontend dentro da imagem.
     frontend_dist: str = "frontend_dist"
 

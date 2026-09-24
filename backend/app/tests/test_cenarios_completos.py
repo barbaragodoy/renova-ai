@@ -25,6 +25,10 @@ from backend.app.main import app
 from backend.app.tests.apoio_sessao import CABECALHO
 from backend.app.auth.context import ContextoResponse, StatusContexto
 
+# Cenários fim a fim, não sobre STATUS_ACESSO em si — cobertura dedicada em
+# test_status_acesso.py. Fixture compartilhada em conftest.py.
+pytestmark = pytest.mark.usefixtures("liberar_acesso_por_padrao")
+
 CLIENT = TestClient(app)
 
 # ---------------------------------------------------------------------------

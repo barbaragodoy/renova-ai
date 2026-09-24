@@ -9,6 +9,7 @@ não é usado quando AUTH_MODE=entra_id.
 import base64
 import binascii
 import json
+import logging
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import AsyncIterator, TYPE_CHECKING, Optional
@@ -19,6 +20,8 @@ from jwt import PyJWKClient
 
 if TYPE_CHECKING:
     from backend.app.config import Settings
+
+logger = logging.getLogger("renovai")
 
 _jwks_clients: dict[str, PyJWKClient] = {}
 
@@ -36,6 +39,36 @@ _cabecalhos_easy_auth: ContextVar[CabecalhosEasyAuth] = ContextVar(
 )
 
 
+def _logar_headers_easy_auth_temporario(
+    client_principal_name: Optional[str], client_principal: Optional[str]
+) -> None:
+    """Log de diagnóstico TEMPORÁRIO — Fase 0 da Task 170097.
+
+    Objetivo único: capturar, no Log Stream de `asp-renoveai-hmg`, o valor
+    exato que o Easy Auth entrega nestes dois headers para um login real,
+    porque `/.auth/me` (lista crua de claims) pode divergir do que é
+    repassado ao app. Remover esta função e a chamada abaixo assim que a
+    Fase 0 for confirmada por escrito em `jwt_auth.py`.
+    """
+    logger.info("EASY_AUTH_DEBUG X-MS-CLIENT-PRINCIPAL-NAME=%r", client_principal_name)
+    if not client_principal:
+        return
+    try:
+        codificado = client_principal.strip()
+        codificado += "=" * (-len(codificado) % 4)
+        payload = json.loads(base64.b64decode(codificado, validate=True).decode("utf-8"))
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        logger.info("EASY_AUTH_DEBUG falha ao decodificar X-MS-CLIENT-PRINCIPAL: %s", exc)
+        return
+
+    claims = payload.get("claims") if isinstance(payload, dict) else None
+    if isinstance(claims, list):
+        resumo = [(c.get("typ"), c.get("val")) for c in claims if isinstance(c, dict)]
+        logger.info("EASY_AUTH_DEBUG claims=%r", resumo)
+    else:
+        logger.info("EASY_AUTH_DEBUG client_principal sem 'claims': %r", payload)
+
+
 async def capturar_cabecalhos_easy_auth(
     client_principal_name: Optional[str] = Header(
         None, alias="X-MS-CLIENT-PRINCIPAL-NAME"
@@ -45,6 +78,9 @@ async def capturar_cabecalhos_easy_auth(
     ),
 ) -> AsyncIterator[None]:
     """Captura os headers do Easy Auth uma única vez por requisição."""
+    if client_principal_name or client_principal:
+        _logar_headers_easy_auth_temporario(client_principal_name, client_principal)
+
     token = _cabecalhos_easy_auth.set(
         CabecalhosEasyAuth(
             client_principal_name=client_principal_name,
@@ -182,6 +218,17 @@ def resolver_email_autenticado(
         client_principal_name=client_principal_name,
         client_principal=client_principal,
     )
+
+    # Checagem de STATUS_ACESSO sobre a identidade REAL, sempre antes de
+    # qualquer outra resolução (matrícula/setor via resolver_contexto(),
+    # personificação abaixo). Import local: status_acesso.py importa
+    # coluna_identidade_para_auth_mode de auth/context.py, e um import no
+    # topo deste módulo fecharia o ciclo (mesmo motivo do import de
+    # administrativo mais abaixo).
+    from backend.app.auth.status_acesso import exigir_acesso_liberado
+
+    exigir_acesso_liberado(email_real, settings)
+
     if not aplicar_admin:
         return email_real
 

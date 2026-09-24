@@ -19,7 +19,9 @@ from backend.app.auth.context import ContextoResponse, StatusContexto
 
 CLIENT = TestClient(app)
 
-pytestmark = pytest.mark.usefixtures("forcar_data_source_local")
+pytestmark = pytest.mark.usefixtures(
+    "forcar_data_source_local", "liberar_acesso_por_padrao"
+)
 
 _CTX = ContextoResponse(
     status=StatusContexto.SETOR_RESOLVIDO,

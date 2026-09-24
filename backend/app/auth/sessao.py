@@ -36,6 +36,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy import text
 
+from backend.app.auth.status_acesso import exigir_acesso_liberado
 from backend.app.auth.credenciais import (
     RepositorioDeAcessos,
     gerar_hash,
@@ -231,7 +232,16 @@ def login(
         corpo.senha, acesso.senha_hash if acesso else HASH_DESCARTAVEL
     )
 
-    identidade = buscar_cadastro(email) if (acesso and senha_confere) else None
+    # STATUS_ACESSO checado IMEDIATAMENTE após a senha conferir, antes de
+    # buscar_cadastro() — ordem explícita: quem não tem linha em
+    # tb_perfil_portal (ou está BLOQUEADO) recebe 403 ACESSO_BLOQUEADO em
+    # vez do 401 genérico de "e-mail ou senha inválidos", mesmo que a senha
+    # esteja certa. Só roda quando a senha já conferiu, para não vazar por
+    # tempo de resposta/código de erro se um e-mail existe em acessos.csv.
+    identidade = None
+    if acesso and senha_confere:
+        exigir_acesso_liberado(email, settings)
+        identidade = buscar_cadastro(email)
 
     if not (acesso and senha_confere and identidade):
         tentativas.registrar_falha(email)

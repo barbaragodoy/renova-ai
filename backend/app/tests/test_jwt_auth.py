@@ -21,6 +21,12 @@ from backend.app.auth.jwt_auth import (
     resolver_email_autenticado,
 )
 
+# Este arquivo testa a extração de identidade (JWT/headers Easy Auth), não a
+# checagem de STATUS_ACESSO — ela é testada em test_status_acesso.py. Sem
+# isto, toda identidade fictícia usada aqui seria bloqueada por não ter linha
+# real em tb_perfil_portal. Fixture compartilhada em conftest.py.
+pytestmark = pytest.mark.usefixtures("liberar_acesso_por_padrao")
+
 
 def _settings(**overrides):
     # `auth_mode` entrou no contrato em 04/08/2026, quando o modo `senha` passou

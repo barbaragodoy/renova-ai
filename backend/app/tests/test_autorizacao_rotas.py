@@ -24,6 +24,11 @@ from backend.app.auth import sessao as modulo_sessao
 from backend.app.auth.jwt_auth import resolver_email_autenticado
 from backend.app.config import Settings
 
+# Este arquivo testa autorização de rota (token válido/ausente, e-mail por
+# query ignorado), não a checagem de STATUS_ACESSO — ela é testada em
+# test_status_acesso.py. Fixture compartilhada em conftest.py.
+pytestmark = pytest.mark.usefixtures("liberar_acesso_por_padrao")
+
 SEGREDO = "z" * 48
 
 IDENTIDADE = modulo_sessao.Identidade(

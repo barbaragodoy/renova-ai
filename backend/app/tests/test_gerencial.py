@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 from backend.app.main import app
 from backend.app.tests.apoio_sessao import CABECALHO
 
+pytestmark = pytest.mark.usefixtures("liberar_acesso_por_padrao")
+
 CLIENT = TestClient(app)
 
 GD_EMAIL = "marcos.vieira@ache.com.br"

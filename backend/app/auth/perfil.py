@@ -43,6 +43,7 @@ from fastapi import APIRouter, Header, HTTPException, Query
 from sqlalchemy import text
 
 from backend.app.auth.jwt_auth import resolver_email_autenticado
+from backend.app.auth.status_acesso import resolver_status_acesso
 from backend.app.db.databricks_connection import get_engine as _get_engine
 from backend.app.schemas.perfil import (
     AtribuicaoSetor,
@@ -250,6 +251,13 @@ def resolver_perfil(email: str) -> PerfilResponse:
     medicos = primeira.get("medicos_no_painel")
     pendentes = primeira.get("recomendacoes_pendentes")
 
+    # Status da conta é sobre a pessoa cujo perfil está sendo exibido, não
+    # sobre quem está autenticado — em sessão de conferência (X-Ver-Como) é
+    # o status do propagandista personificado que a tela deve mostrar, não o
+    # do administrador. Por isso usa `primeira["rep_email"]` (o e-mail real
+    # dessa linha), não repete a checagem de acesso.
+    status_acesso = resolver_status_acesso(primeira["rep_email"]).status_acesso
+
     return PerfilResponse(
         matricula=primeira["rep_matricula"],
         nome=nome_editado or primeira["rep_nome"],
@@ -257,6 +265,7 @@ def resolver_perfil(email: str) -> PerfilResponse:
         email=primeira["rep_email"],
         login=primeira["rep_login"],
         foto_path=primeira["foto_path"],
+        status_acesso=status_acesso,
         cargo=primeira["cargo"],
         regional=primeira["regional"],
         uf=primeira["uf"],

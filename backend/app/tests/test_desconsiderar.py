@@ -22,7 +22,9 @@ CLIENT = TestClient(app)
 # real (test_desconsiderar_integracao_real_some_da_lista_entrada) precisa
 # do Postgres local independente do que estiver em .env (que pode estar em
 # 'databricks' — ver test_recomendacoes.py). Mesmo padrão do resto do projeto.
-pytestmark = pytest.mark.usefixtures("forcar_data_source_local")
+pytestmark = pytest.mark.usefixtures(
+    "forcar_data_source_local", "liberar_acesso_por_padrao"
+)
 
 _CTX = ContextoResponse(
     status=StatusContexto.SETOR_RESOLVIDO,

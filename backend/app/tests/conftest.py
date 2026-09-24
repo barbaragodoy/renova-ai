@@ -69,6 +69,29 @@ def pytest_collection_modifyitems(config, items):
 
 
 @pytest.fixture
+def liberar_acesso_por_padrao(monkeypatch):
+    """
+    Mocka `resolver_status_acesso` para devolver sempre ATIVO/PROPAGANDISTA,
+    qualquer que seja a identidade pedida — para arquivos de teste que não
+    testam a checagem de STATUS_ACESSO em si (JWT, roteamento, personificação
+    administrativa) e não deveriam precisar de massa real em tb_perfil_portal
+    para cada e-mail fictício que usam.
+
+    Uso: `pytestmark = pytest.mark.usefixtures("liberar_acesso_por_padrao")`
+    no topo do arquivo. Propositalmente NÃO é autouse aqui no conftest — os
+    testes que verificam a própria checagem de acesso (test_status_acesso.py)
+    e os de integração real precisam do comportamento de verdade.
+    """
+    from unittest.mock import MagicMock
+
+    import backend.app.auth.status_acesso as status_acesso_mod
+
+    mock = MagicMock(return_value=status_acesso_mod.StatusAcesso("ATIVO", "PROPAGANDISTA"))
+    monkeypatch.setattr(status_acesso_mod, "resolver_status_acesso", mock)
+    yield mock
+
+
+@pytest.fixture
 def forcar_data_source_local(monkeypatch):
     """
     Força DATA_SOURCE=local para a duração do teste, independente do que

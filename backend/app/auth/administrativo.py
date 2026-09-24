@@ -75,21 +75,24 @@ def alvo_atual() -> Optional[str]:
     return _SETOR_ALVO.get()
 
 
-def administradores(settings) -> set[str]:
-    """Lista administrativa normalizada, vinda de `ADMIN_EMAILS`.
-
-    Aceita e-mail e login corporativo na mesma lista. Comparação em minúsculas
-    porque parte dos registros corporativos vem em maiúsculas, mesmo motivo já
-    tratado em `auth/context.py`.
-    """
-    bruto = getattr(settings, "admin_emails", "") or ""
-    return {parte.strip().lower() for parte in bruto.split(",") if parte.strip()}
-
-
 def eh_administrador(identidade: str, settings) -> bool:
+    """Lista administrativa vinda de `tb_perfil_portal.PERFIL_ACESSO`.
+
+    Substituiu `ADMIN_EMAILS` (lista fixa no ambiente) — a task de bloqueio
+    de acesso trouxe PERFIL_ACESSO como fonte real, a mesma que já resolve
+    STATUS_ACESSO (ver auth/status_acesso.py). Reaproveita a mesma consulta
+    de identidade dupla (propagandista via coluna do modo de autenticação,
+    fallback direto para administrador via REP_EMAIL) em vez de duplicá-la.
+
+    Import local pelo mesmo motivo de sempre neste módulo: um import no topo
+    fecharia ciclo com jwt_auth/context.
+    """
     if not identidade:
         return False
-    return identidade.strip().lower() in administradores(settings)
+
+    from backend.app.auth.status_acesso import resolver_status_acesso
+
+    return resolver_status_acesso(identidade, settings).perfil_acesso == "ADMINISTRADOR"
 
 
 SQL_EMAIL_DO_SETOR = """

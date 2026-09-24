@@ -21,7 +21,9 @@ CLIENT = TestClient(app)
 # DATA_SOURCE configurado no .env real (que pode estar em 'databricks' para
 # rodar a API/test_recomendacoes_integration.py contra o Databricks de
 # verdade). Fixture compartilhada em conftest.py, mesmo padrão de test_context.py.
-pytestmark = pytest.mark.usefixtures("forcar_data_source_local")
+pytestmark = pytest.mark.usefixtures(
+    "forcar_data_source_local", "liberar_acesso_por_padrao"
+)
 
 _CTX_VALIDO = ContextoResponse(
     status=StatusContexto.SETOR_RESOLVIDO,

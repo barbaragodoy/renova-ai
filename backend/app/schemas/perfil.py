@@ -115,6 +115,15 @@ class PerfilResponse(BaseModel):
     login: Optional[str] = None
     foto_path: Optional[str] = None
 
+    # "Status da conta" (bloco 1, decisão de George em 05/08/2026). Até a
+    # task de bloqueio de acesso, era derivado no frontend da existência de
+    # setor ("Ativo"/"Sem setor") — não existia coluna própria ainda. Agora
+    # vem de tb_perfil_portal.STATUS_ACESSO ("ATIVO"/"BLOQUEADO"), a mesma
+    # fonte que decide se a pessoa consegue entrar no portal. `None` quando
+    # não há linha em tb_perfil_portal — a interface trata como bloqueado,
+    # mesmo deny-by-default da checagem de acesso.
+    status_acesso: Optional[str] = None
+
     # Bloco 3 da aba, alinhado com George em 07/08/2026. Todos saem da mesma
     # linha de `tb_propagandistas` que o resto do perfil, sem consulta extra.
     cargo: Optional[str] = None

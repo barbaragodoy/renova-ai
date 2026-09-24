@@ -16,6 +16,14 @@ class StatusContexto(str, Enum):
     SETOR_RESOLVIDO = "SETOR_RESOLVIDO"
     PROPAGANDISTA_NAO_ENCONTRADO = "PROPAGANDISTA_NAO_ENCONTRADO"
     IDENTIDADE_AMBIGUA = "IDENTIDADE_AMBIGUA"
+    # Declarado para completude/documentação do contrato — na prática,
+    # resolver_contexto() nunca RETORNA este status: ele levanta o 403
+    # ACESSO_BLOQUEADO diretamente (ver auth/status_acesso.py), porque essa
+    # resposta precisa ter formato idêntico nos dois pontos de integração
+    # (login por senha e aqui) e não pode depender de cada chamador (routers
+    # que hoje duplicam a própria função _validar_contexto) tratar o status
+    # do jeito certo.
+    ACESSO_BLOQUEADO = "ACESSO_BLOQUEADO"
 
 
 class ContextoResponse(BaseModel):
@@ -24,6 +32,13 @@ class ContextoResponse(BaseModel):
     setor: Optional[str] = None
     nome: Optional[str] = None
     mensagem: Optional[str] = None
+    # E-mail corporativo real do propagandista (tb_propagandistas.rep_email,
+    # nunca o UPN bruto nem o rep_login). Adicionado para o fluxo de login
+    # por Entra ID: sem formulário de e-mail/senha, este é o único jeito da
+    # interface aprender o e-mail de quem entrou, para montar a sessão. Em
+    # AUTH_MODE=senha a interface já sabe o e-mail (digitou no formulário) e
+    # não depende deste campo, mas ele vem preenchido do mesmo jeito.
+    email: Optional[str] = None
 
 
 # tb_propagandista_teste: tabela dedicada no mesmo catálogo/schema real,
@@ -78,6 +93,19 @@ def resolver_contexto(
     if coluna_identidade not in _COLUNAS_IDENTIDADE_PERMITIDAS:
         raise ValueError(f"Coluna de identidade não permitida: {coluna_identidade}")
 
+    # A checagem de STATUS_ACESSO NÃO fica aqui, apesar do que a primeira
+    # leitura da task sugeria. Todo chamador real deste módulo passa
+    # `resolver_email_autenticado(...)` como `email` — e essa função, por
+    # padrão (aplicar_admin=True), já devolve o e-mail PERSONIFICADO quando
+    # X-Ver-Como está ativo. Checar acesso aqui checaria o status do
+    # propagandista sendo visualizado, não do administrador real — o
+    # inverso exato do que a regra exige (personificação nunca deve
+    # influenciar esta checagem). A checagem real fica em
+    # auth/jwt_auth.py::resolver_email_autenticado(), sobre `email_real`,
+    # antes do branch de personificação — todo chamador passa por lá antes
+    # de chegar aqui, então repetir a checagem neste ponto, sobre o valor
+    # já (possivelmente) personificado, seria redundante e incorreto.
+
     identidade = (
         extrair_login_do_upn(email)
         if coluna_identidade == "rep_login"
@@ -88,7 +116,7 @@ def resolver_contexto(
     with engine.connect() as conn:
         rows = conn.execute(
             text(
-                f"SELECT rep_matricula, setor, rep_nome "
+                f"SELECT rep_matricula, setor, rep_nome, rep_email "
                 f"FROM {tabela} "
                 f"WHERE LOWER({coluna_identidade}) = LOWER(:email)"
             ),
@@ -123,6 +151,7 @@ def resolver_contexto(
         matricula=row.rep_matricula,
         setor=row.setor,
         nome=row.rep_nome,
+        email=row.rep_email,
     )
 
 

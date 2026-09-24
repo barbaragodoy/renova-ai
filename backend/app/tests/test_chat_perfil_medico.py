@@ -8,7 +8,14 @@ integração.
 
 from unittest.mock import patch
 
+import pytest
+
 from backend.app.chat import perfil_medico as pm
+
+# Alguns testes deste arquivo passam por resolver_email_autenticado (via
+# TestClient), que agora checa STATUS_ACESSO antes de tudo — não é o que
+# este arquivo testa. Fixture compartilhada em conftest.py.
+pytestmark = pytest.mark.usefixtures("liberar_acesso_por_padrao")
 
 # --------------------------------------------------------------------------- #
 # Casos reais capturados da tabela em 09/08/2026

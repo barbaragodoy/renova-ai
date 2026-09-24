@@ -25,7 +25,9 @@ from backend.app.auth.context import (
 # passando independente do DATA_SOURCE configurado no .env real (que pode
 # estar em 'databricks' para rodar a API/test_context_integration.py contra
 # o Databricks de verdade). Fixture compartilhada em conftest.py.
-pytestmark = pytest.mark.usefixtures("forcar_data_source_local")
+pytestmark = pytest.mark.usefixtures(
+    "forcar_data_source_local", "liberar_acesso_por_padrao"
+)
 
 # E-mail inserido em 02_populate_propagandistas.sql (domínio ache.com.br)
 EMAIL_ACHE = "ana.lima@ache.com.br"
@@ -81,6 +83,7 @@ def test_entra_id_resolve_por_rep_login_customizado_case_insensitive():
                         rep_matricula=registro["rep_matricula"],
                         setor=registro["setor"],
                         rep_nome=registro["rep_nome"],
+                        rep_email=registro["rep_email"],
                     )
                 ]
             else:
@@ -130,7 +133,12 @@ def test_setor_resolvido_dominio_biosintetica(monkeypatch):
     de dados local (02_populate_propagandistas.sql) só tem e-mails
     @ache.com.br; em produção o match é o mesmo, apenas contra REP_EMAIL.
     """
-    row = {"rep_matricula": "REP123", "setor": "SP_CAPITAL", "rep_nome": "Carlos Bio"}
+    row = {
+        "rep_matricula": "REP123",
+        "setor": "SP_CAPITAL",
+        "rep_nome": "Carlos Bio",
+        "rep_email": "carlos.bio@biosintetica.com.br",
+    }
 
     class FakeConn:
         def execute(self, *a, **kw):

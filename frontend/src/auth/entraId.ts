@@ -131,6 +131,6 @@ export async function resolverEntrada(): Promise<Entrada> {
     estado: "recusado",
     mensagem:
       contexto.mensagem ??
-      "Sua conta corporativa não tem cadastro de propagandista no PedAI.",
+      "Sua conta corporativa não tem cadastro de propagandista no Ped.AI.",
   };
 }

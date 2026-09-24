@@ -20,7 +20,7 @@ from backend.app.config import Settings, get_settings
 from backend.app.db.databricks_connection import get_engine
 
 _MENSAGEM_BLOQUEADO = (
-    "Seu acesso ao PedAI está bloqueado temporariamente. Aguarde a "
+    "Seu acesso ao Ped.AI está bloqueado temporariamente. Aguarde a "
     "ativação da sua conta ou o fim do período de testes."
 )
 

@@ -264,7 +264,7 @@ function TelaEntraId({ entrada }: { entrada: Entrada | null }) {
         <div className="mx-auto w-full max-w-md">
           <Card className="p-6 sm:p-8">
             <p className="text-sm font-semibold tracking-[0.08em] text-[var(--color-primary)] uppercase">
-              PedAI
+              Ped.AI
             </p>
 
             <h1 className="mt-6 text-3xl leading-tight font-semibold sm:text-4xl">

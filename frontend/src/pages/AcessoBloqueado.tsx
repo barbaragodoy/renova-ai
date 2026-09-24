@@ -10,7 +10,7 @@ interface AcessoBloqueadoProps {
 }
 
 const MENSAGEM_PADRAO =
-  "Seu acesso ao PedAI está bloqueado temporariamente. Aguarde a ativação da sua conta ou o fim do período de testes.";
+  "Seu acesso ao Ped.AI está bloqueado temporariamente. Aguarde a ativação da sua conta ou o fim do período de testes.";
 
 /**
  * Tela mostrada quando a API devolve 403 `ACESSO_BLOQUEADO`
@@ -27,7 +27,7 @@ export function AcessoBloqueado({ mensagem, onSair }: AcessoBloqueadoProps) {
     <div className="grid min-h-dvh place-items-center px-6 py-12">
       <Card className="w-full max-w-md p-6 text-center sm:p-8">
         <p className="text-sm font-semibold tracking-[0.08em] text-[var(--color-primary)] uppercase">
-          PedAI
+          Ped.AI
         </p>
         <h1 className="mt-6 text-2xl leading-tight font-semibold">
           Acesso bloqueado

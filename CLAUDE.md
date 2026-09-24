@@ -68,9 +68,10 @@ Pendências que bloqueiam a Fase 4:
   conforme o valor (conferido com `vite build`). A imagem da virada precisa
   de `--build-arg VITE_AUTH_MODE=entra_id`. Sem isso, a tela pede senha e
   `POST /auth/login` responde 404.
-- 3 linhas de administrador em `tb_perfil_portal` (Cezar ×2, Eduardo) estão
-  gravadas com o e-mail, não com o UPN. Com `entra_id`, elas não batem e esses
-  dois ficam bloqueados. Corrigir no dado. Ver `known-issues.md` (24/09).
+- ~~Administradores Cezar e Eduardo gravados com o e-mail~~: **resolvido em
+  24/09**. Foram inseridas as linhas `CGMACezar@ache.com.br` e
+  `PFEduardo@ache.com.br` (`ATIVO`/`ADMINISTRADOR`). As linhas antigas, com o
+  e-mail, foram mantidas.
 - `AUTH_REQUIRE_JWT` e `AUTH_EMAIL_CLAIM` **não** influenciam o modo
   `entra_id` (o branch `entra_id` é resolvido antes, e `AUTH_EMAIL_CLAIM` só
   vale no caminho JWKS legado). Não precisam mudar na virada.

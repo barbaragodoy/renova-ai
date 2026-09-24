@@ -782,7 +782,14 @@ pelo claim `preferred_username` e, na falta dele, por `upn`. Sem nenhum dos
 dois, responde 401. O log `EASY_AUTH_DEBUG` foi removido. Os testes cobrem
 o payload real e garantem que o header `-NAME` sozinho não autentica.
 
-## ABERTO (2026-09-24) — 3 administradores gravados com e-mail em vez do UPN
+## RESOLVIDO (2026-09-24) — 3 administradores gravados com e-mail em vez do UPN
+
+**Resolução (24/09, 07:12 UTC):** INSERT em `acheinfo_dev.renovai.tb_perfil_portal`
+com `CGMACezar@ache.com.br` e `PFEduardo@ache.com.br`, `ATIVO`/`ADMINISTRADOR`,
+`ACESSO_LIBERADO_POR='3gobarbara'`. Conferido por SELECT. As 3 linhas antigas,
+com o e-mail, foram mantidas. Reversão: `DELETE ... WHERE REP_EMAIL IN
+('CGMACezar@ache.com.br','PFEduardo@ache.com.br')`.
+
 
 Domínio não é o problema. `biosintetica.com.br` é domínio verificado no mesmo
 tenant da Aché. O caminho do propagandista corta no primeiro `@` e compara
